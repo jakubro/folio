@@ -1,0 +1,683 @@
+/* Page styles: light and dark palettes, the toolbar, the rendered document and the diagram viewer. */
+
+@import "katex/dist/katex.min.css";
+@import "folio:highlight-themes";
+@import "@fontsource/arimo/400.css";
+@import "@fontsource/arimo/400-italic.css";
+@import "@fontsource/arimo/600.css";
+@import "@fontsource/arimo/600-italic.css";
+@import "@fontsource/arimo/700.css";
+@import "@fontsource/arimo/700-italic.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/400-italic.css";
+@import "@fontsource/jetbrains-mono/700.css";
+
+:root {
+  color-scheme: light;
+  --bg: #ffffff;
+  --fg: #1f2328;
+  --muted: #59636e;
+  --border: #d1d9e0;
+  --rule: #cccccc;
+  --subtle: #f6f8fa;
+  --hover: #eef1f4;
+  --accent: #0969da;
+  --mark: #fff8c5;
+  --overlay: rgb(255 255 255 / 96%);
+  --bar-height: 44px;
+  --bar-item: 32px;
+  /* KaTeX's face, also carried, draws what the subsets lack - arrows such as a footnote's back-link. */
+  --sans:
+    "Arimo", "KaTeX_Main", -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica,
+    Arial, sans-serif;
+  --mono:
+    "JetBrains Mono", "KaTeX_Main", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1a1a1a;
+  --fg: #e6e6e6;
+  --muted: #9a9a9a;
+  --border: #363636;
+  --rule: #4a4a4a;
+  --subtle: #242424;
+  --hover: #2c2c2c;
+  --accent: #4493f8;
+  --mark: #5c4b00;
+  --overlay: rgb(20 20 20 / 96%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px / 1.6 var(--sans);
+}
+
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--bar-height);
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--bar-item);
+  height: var(--bar-item);
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.icon-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.icon-button[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+main {
+  min-width: 0;
+  padding: 24px 32px 96px;
+}
+
+.markdown-body {
+  max-width: 980px;
+  margin: 0 auto;
+  overflow-wrap: break-word;
+}
+
+.full-width .markdown-body {
+  max-width: none;
+}
+
+/* Deliberately dense: tight line height and small vertical gaps, for reading long documents. */
+.markdown-body,
+.markdown-body * {
+  line-height: 1.25;
+}
+
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body :is(h1, h2, h3, h4, h5, h6) {
+  position: relative;
+  margin: 14px 0 5px;
+  font-weight: 600;
+  scroll-margin-top: calc(var(--bar-height) + 12px);
+}
+
+.markdown-body h1 {
+  margin: 27px 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 3px solid var(--rule);
+  font-size: 2.25em;
+}
+
+.markdown-body h2 {
+  margin: 21px 0 8px;
+  padding-bottom: 5px;
+  border-bottom: 2px solid var(--rule);
+  font-size: 1.75em;
+}
+
+.markdown-body h3 {
+  margin: 21px 0 8px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 1.5em;
+}
+
+.markdown-body h4 {
+  font-size: 1.25em;
+}
+
+.markdown-body :is(h5, h6) {
+  font-size: 1em;
+}
+
+.markdown-body h6 {
+  color: var(--muted);
+}
+
+.markdown-body .heading-link {
+  margin-left: 0.3em;
+  color: var(--muted);
+  opacity: 0;
+}
+
+.markdown-body .heading-link::before {
+  font-size: 0.8em;
+  font-weight: normal;
+  content: "\00B6";
+}
+
+.markdown-body .heading-link:hover {
+  text-decoration: none;
+}
+
+.markdown-body :is(h1, h2, h3, h4, h5, h6):hover > .heading-link,
+.markdown-body .heading-link:focus-visible {
+  opacity: 1;
+}
+
+.markdown-body .fold-toggle {
+  position: absolute;
+  top: 0;
+  right: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 1.25em;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: inherit;
+  cursor: pointer;
+  opacity: 0;
+  user-select: none;
+}
+
+.markdown-body .fold-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.markdown-body :is(h1, h2, h3, h4, h5, h6):is(:hover, .folded) > .fold-toggle,
+.markdown-body .fold-toggle:focus-visible {
+  opacity: 1;
+}
+
+.markdown-body p {
+  margin: 6px 0 0;
+}
+
+.markdown-body p + p {
+  margin-top: 8px;
+}
+
+.markdown-body :is(table, dl, details) {
+  margin: 8px 0;
+}
+
+.markdown-body details:has(+ details) {
+  margin-bottom: 0;
+}
+
+.markdown-body details + details {
+  margin-top: 2px;
+}
+
+.markdown-body :is(h1, h2, h3, h4) + * {
+  margin-top: 4px;
+}
+
+.markdown-body a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+
+.markdown-body :is(ul, ol) {
+  margin: 0 0 4px;
+  padding-left: 24px;
+}
+
+.markdown-body li {
+  margin: 2px 0;
+}
+
+.markdown-body :is(ul, ol) :is(ul, ol) {
+  margin: 2px 0;
+}
+
+.markdown-body .contains-task-list {
+  padding-left: 1.2em;
+  list-style: none;
+}
+
+.markdown-body .task-list-item input {
+  margin: 0 0.4em 0.2em -1.4em;
+  vertical-align: middle;
+}
+
+.markdown-body blockquote {
+  margin: 8px 0;
+  padding: 4px 0 4px 12px;
+  border-left: 0.25em solid var(--border);
+  color: var(--muted);
+}
+
+.markdown-body hr {
+  height: 2px;
+  margin: 6px 0;
+  border: 0;
+  background: var(--rule);
+}
+
+.markdown-body img {
+  max-width: 100%;
+  background: transparent;
+}
+
+.markdown-body mark {
+  background: var(--mark);
+  color: inherit;
+}
+
+.markdown-body kbd {
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--subtle);
+  font: 0.85em var(--mono);
+  font-variant-ligatures: no-contextual;
+}
+
+.markdown-body table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow: auto;
+  border-collapse: collapse;
+}
+
+.markdown-body :is(th, td) {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+}
+
+.markdown-body th {
+  font-weight: 600;
+}
+
+.markdown-body tr:nth-child(2n) {
+  background: var(--subtle);
+}
+
+.markdown-body .frontmatter :is(th, td) {
+  text-align: left;
+  vertical-align: top;
+  white-space: pre-wrap;
+}
+
+.markdown-body .frontmatter pre {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.markdown-body code {
+  padding: 0.2em 0.4em;
+  border-radius: 6px;
+  background: var(--subtle);
+  font: 13px var(--mono);
+  /* The shorthand resets this; the mono face would otherwise merge `--`, `->` and `!=` into one glyph. */
+  font-variant-ligatures: no-contextual;
+}
+
+.markdown-body pre {
+  overflow: auto;
+  margin: 8px 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--subtle);
+  /* Unhighlighted code stays inline, so the block's own face sets its line metrics. */
+  font-family: var(--mono);
+  font-size: 85%;
+}
+
+.markdown-body pre,
+.markdown-body pre * {
+  line-height: 1.2;
+}
+
+.markdown-body li pre {
+  margin: 4px 0;
+}
+
+.markdown-body pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.markdown-body pre code.hljs {
+  padding: 0;
+  background: transparent;
+}
+
+.markdown-body pre.diagram-failed {
+  border-left: 3px solid #cf222e;
+}
+
+.markdown-body details summary {
+  cursor: pointer;
+}
+
+.markdown-body .katex-display {
+  overflow: auto hidden;
+}
+
+.markdown-body .footnotes {
+  color: var(--muted);
+  font-size: 0.875em;
+}
+
+.markdown-body .mermaid {
+  position: relative;
+  margin: 10px 0;
+  text-align: center;
+}
+
+.markdown-body .mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-expand {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  opacity: 0;
+}
+
+.mermaid:hover .mermaid-expand,
+.mermaid-expand:focus-visible {
+  opacity: 1;
+}
+
+.mermaid-zoom {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: none;
+  background: var(--overlay);
+}
+
+.mermaid-zoom.visible {
+  display: block;
+}
+
+.mermaid-zoom-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+}
+
+.mermaid-zoom-viewport {
+  position: absolute;
+  inset: 56px 24px 24px;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+
+.mermaid-zoom-viewport:active {
+  cursor: grabbing;
+}
+
+.mermaid-zoom-inner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+
+.mermaid-zoom-controls {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  transform: translateX(-50%);
+  cursor: default;
+}
+
+.mermaid-zoom-controls > span {
+  width: 1px;
+  height: 20px;
+  margin: 0 4px;
+  background: var(--border);
+}
+
+.layout {
+  display: grid;
+  grid-template-areas: "tree main outline";
+  grid-template-columns: 280px minmax(0, 1fr) 240px;
+  min-height: calc(100vh - var(--bar-height));
+}
+
+.no-tree .layout {
+  grid-template-columns: 0 minmax(0, 1fr) 240px;
+}
+
+.no-outline .layout {
+  grid-template-columns: 280px minmax(0, 1fr) 0;
+}
+
+.no-tree.no-outline .layout {
+  grid-template-columns: 0 minmax(0, 1fr) 0;
+}
+
+.tree {
+  grid-area: tree;
+}
+
+main {
+  grid-area: main;
+}
+
+.outline {
+  grid-area: outline;
+}
+
+.tree,
+.outline {
+  position: sticky;
+  top: var(--bar-height);
+  height: calc(100vh - var(--bar-height));
+  overflow: auto;
+  padding: 12px 8px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.tree {
+  border-right: 1px solid var(--border);
+}
+
+.outline {
+  border-left: 1px solid var(--border);
+}
+
+.no-tree .tree,
+.no-outline .outline {
+  display: none;
+}
+
+.tree ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tree ul ul {
+  padding-left: 14px;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tree-row:hover {
+  background: var(--hover);
+}
+
+.tree-row.current {
+  background: var(--hover);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tree-row svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  color: var(--muted);
+}
+
+.tree .chevron {
+  display: inline-flex;
+  flex: none;
+  width: 15px;
+  transition: transform 0.1s;
+}
+
+.tree .expanded > .tree-row .chevron {
+  transform: rotate(90deg);
+}
+
+.outline a {
+  display: block;
+  padding: 3px 8px;
+  border-left: 2px solid transparent;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.outline a:hover {
+  color: var(--fg);
+}
+
+.outline a.current {
+  border-left-color: var(--accent);
+  color: var(--accent);
+}
+
+.outline .outline-h2 {
+  padding-left: 18px;
+}
+
+.outline .outline-h3 {
+  padding-left: 30px;
+}
+
+.outline :is(.outline-h4, .outline-h5, .outline-h6) {
+  padding-left: 42px;
+}
+
+.panel-empty {
+  margin: 4px 8px;
+  color: var(--muted);
+}
+
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: var(--bar-item);
+  white-space: nowrap;
+}
+
+.breadcrumbs a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.breadcrumbs a:hover {
+  text-decoration: underline;
+}
+
+.breadcrumbs .separator {
+  color: var(--muted);
+}
+
+.listing ul {
+  padding: 0;
+  list-style: none;
+}
+
+.listing a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.listing svg {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+
+.suspended .bar {
+  box-shadow: inset 0 -2px 0 var(--muted);
+}
+
+.missing .markdown-body {
+  opacity: 0.5;
+}
+
+.missing main::before {
+  display: block;
+  max-width: 980px;
+  margin: 0 auto 16px;
+  color: var(--muted);
+  content: "This file no longer exists. It returns here if it is saved again.";
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "files": {
+    "includes": [
+      "src/**",
+      "test/**",
+      "e2e/**",
+      "visual/*.ts",
+      "build.mjs",
+      "playwright.config.ts",
+      "site/*.mjs",
+      "site/scripts/**",
+      "site/src/**/*.mjs",
+      "site/src/**/*.ts",
+      "*.json",
+      "!package-lock.json"
+    ]
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "style": {
+        "useBlockStatements": "error",
+        "noDescendingSpecificity": "off"
+      }
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  }
+}

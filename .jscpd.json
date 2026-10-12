@@ -1,0 +1,9 @@
+{
+  "path": ["src", "test", "e2e", "visual", "scripts", "build.mjs"],
+  "format": ["javascript", "typescript", "css"],
+  "ignore": ["**/node_modules/**"],
+  "minTokens": 100,
+  "mode": "weak",
+  "reporters": ["console"],
+  "output": "/tmp/folio--jscpd"
+}

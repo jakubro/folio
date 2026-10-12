@@ -1,0 +1,18 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/cli.ts",
+    "src/client/page.ts",
+    "src/client/theme.ts",
+    "test/*.test.ts",
+    "e2e/*.test.ts"
+  ],
+  "project": ["*.mjs", "src/**/*.ts", "test/**/*.ts", "e2e/**/*.ts", "visual/**/*.ts"],
+  "ignoreDependencies": [
+    "@biomejs/biome",
+    "@fontsource/arimo",
+    "@fontsource/jetbrains-mono",
+    "highlight.js",
+    "katex"
+  ]
+}

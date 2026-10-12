@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Fail if the tag and the declared version disagree
+        run: |
+          declared=$(node -p 'require("./package.json").version')
+          if [ "$declared" != "${GITHUB_REF_NAME#v}" ]; then
+            echo "tag $GITHUB_REF_NAME, package.json declares $declared"
+            exit 1
+          fi
+
+      - name: Build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Publish
+        run: npm publish --access public

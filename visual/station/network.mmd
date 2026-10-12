@@ -1,0 +1,8 @@
+sequenceDiagram
+  participant L as Logger
+  participant R as Radio
+  participant A as Archive
+  L->>R: Reading batch
+  R->>A: Forward
+  A-->>R: Acknowledged
+  R-->>L: Clear buffer
