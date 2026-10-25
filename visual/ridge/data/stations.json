@@ -1,0 +1,27 @@
+{
+  "network": "Ridge",
+  "interval_min": 10,
+  "stations": [
+    {
+      "id": "north",
+      "elevation_m": 412,
+      "position": {"lat": 46.912, "lon": 11.204},
+      "instruments": ["anemometer", "rain gauge", "thermometer"],
+      "uplink": {"kind": "radio", "relay": true}
+    },
+    {
+      "id": "east",
+      "elevation_m": 388,
+      "position": {"lat": 46.905, "lon": 11.231},
+      "instruments": ["anemometer", "rain gauge", "thermometer"],
+      "uplink": {"kind": "radio", "relay": false}
+    },
+    {
+      "id": "south",
+      "elevation_m": 351,
+      "position": {"lat": 46.889, "lon": 11.217},
+      "instruments": ["rain gauge", "thermometer"],
+      "uplink": {"kind": "cellular", "relay": false}
+    }
+  ]
+}

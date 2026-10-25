@@ -1,4 +1,4 @@
-// Reference images of every page kind and panel state, recorded from the fixture folder.
+/** Reference images of every page kind and panel state, recorded from the fixture folder. */
 
 import { expect, type Page, test } from "@playwright/test";
 import { show } from "./show.ts";

@@ -1,10 +1,11 @@
-// The file tree beside every page: one folder level per request, loaded as folders are expanded.
+/** The file tree beside every page: one folder level per request, loaded as folders are expanded. */
 
-import { ICONS } from "./icons.ts";
+import { button, ICONS } from "./icons.ts";
+import { dataShown, setDataShown } from "./prefs.ts";
 
 export interface Entry {
   name: string;
-  kind: "folder" | "markdown" | "mermaid" | "image";
+  kind: "folder" | "markdown" | "mermaid" | "image" | "data";
 }
 
 interface Listing {
@@ -24,10 +25,11 @@ const KIND_ICONS = {
   markdown: ICONS.file,
   mermaid: ICONS.diagram,
   image: ICONS.image,
+  data: ICONS.data,
 };
 
 export async function fetchListing(urlPath: string): Promise<Listing | undefined> {
-  const response = await fetch(`${href(urlPath, true)}?tree`);
+  const response = await fetch(`${href(urlPath, true)}?tree${dataShown() ? "&data" : ""}`);
   return response.ok ? response.json() : undefined;
 }
 
@@ -46,13 +48,22 @@ export class Tree {
   onChange = () => {};
   #current: string;
   readonly #folders = new Map<string, Folder>();
-  // Loading and moving the current page both open folders; one at a time, or a folder opens twice.
+  readonly #dataToggle = button(ICONS.data, "Show or hide data files", "icon-button tree-data");
+  /** Loading and moving the current page both open folders; one at a time, or a folder opens twice. */
   #opening = Promise.resolve();
+  #changed = new Set<string>();
 
   constructor(current: string) {
     this.#current = current;
     this.element.className = "tree";
     this.element.setAttribute("aria-label", "Files");
+    this.#dataToggle.setAttribute("aria-pressed", String(dataShown()));
+    this.#dataToggle.addEventListener("click", () => {
+      setDataShown(!dataShown());
+      this.#dataToggle.setAttribute("aria-pressed", String(dataShown()));
+      this.onChange();
+    });
+    this.element.append(this.#dataToggle);
   }
 
   /** Load the root, then reopen the current page's ancestors and the folders open before. */
@@ -69,6 +80,15 @@ export class Tree {
   show(current: string): Promise<void> {
     this.#current = current;
     return this.#queue(() => this.#mark());
+  }
+
+  /** Mark documents read before that changed since, and every folder holding one. */
+  mark(changed: Set<string>): void {
+    this.#changed = changed;
+
+    for (const item of this.element.querySelectorAll<HTMLLIElement>("li[data-path]")) {
+      this.#show(item);
+    }
   }
 
   /** Expanded folders mapped to the listing version each shows. */
@@ -168,7 +188,18 @@ export class Tree {
     }
 
     item.append(row);
+    this.#show(item);
     return item;
+  }
+
+  #show(item: HTMLLIElement): void {
+    const at = item.dataset.path ?? "";
+    const inside = item.dataset.folder !== undefined;
+    const changed = inside
+      ? [...this.#changed].some((path) => path.startsWith(`${at}/`))
+      : this.#changed.has(at);
+
+    item.firstElementChild?.classList.toggle(inside ? "holds-changed" : "changed", changed);
   }
 
   async #expand(urlPath: string, item: HTMLLIElement): Promise<void> {
@@ -238,7 +269,7 @@ export class Tree {
     }
   }
 
-  // Centres the current file within the tree only; scrollIntoView would also scroll the page.
+  /** Centres the current file within the tree only; scrollIntoView would also scroll the page. */
   #reveal(): void {
     const row = this.element.querySelector(".current");
 
@@ -256,7 +287,7 @@ export class Tree {
   }
 }
 
-// Remembered per tab, so following a link keeps the tree as it was without reaching other tabs.
+/** Remembered per tab, so following a link keeps the tree as it was without reaching other tabs. */
 function remembered(): string[] {
   return JSON.parse(sessionStorage.getItem(EXPANDED) ?? "[]");
 }

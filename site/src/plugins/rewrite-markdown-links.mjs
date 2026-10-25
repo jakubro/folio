@@ -2,8 +2,10 @@ import path from "node:path";
 
 import { visit } from "unist-util-visit";
 
-// A relative target 404s under `base`: a .md link becomes its published route, anything else in
-// docs/ a repository URL. A target above docs/ (../README.md) resolves against the repo root.
+/**
+ * A relative target 404s under `base`: a .md link becomes its published route, anything else in
+ * docs/ a repository URL. A target above docs/ (../README.md) resolves against the repo root.
+ */
 export function rewriteMarkdownLinks({ docsRoot, repoRoot, base, repository, ref }) {
   return (tree, file) => {
     visit(tree, "link", (link) => {

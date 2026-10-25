@@ -1,9 +1,20 @@
-// The served folder's rules: which paths resolve inside it, which files render, and what a folder lists.
+/** The served folder's rules: which paths resolve inside it, which files render, and what a folder lists. */
 
 import fs from "node:fs";
 import path from "node:path";
 
-export type Kind = "markdown" | "mermaid" | "image";
+export type Kind = "markdown" | "mermaid" | "image" | "data";
+
+export type Format =
+  | "csv"
+  | "tsv"
+  | "jsonl"
+  | "parquet"
+  | "json"
+  | "yaml"
+  | "sqlite"
+  | "duckdb"
+  | "sql";
 
 export interface Entry {
   name: string;
@@ -25,13 +36,62 @@ const KINDS: Record<string, Kind> = {
   ".bmp": "image",
   ".ico": "image",
 };
+const FORMATS: Record<string, Format> = {
+  ".csv": "csv",
+  ".tsv": "tsv",
+  ".jsonl": "jsonl",
+  ".ndjson": "jsonl",
+  ".parquet": "parquet",
+  ".json": "json",
+  ".yaml": "yaml",
+  ".yml": "yaml",
+  ".sqlite": "sqlite",
+  ".sqlite3": "sqlite",
+  ".db": "sqlite",
+  ".duckdb": "duckdb",
+  ".sql": "sql",
+};
 const COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
 function kindOf(name: string): Kind | undefined {
-  return KINDS[path.extname(name).toLowerCase()];
+  return KINDS[path.extname(name).toLowerCase()] ?? (formatOf(name) && "data");
 }
 
-function isPruned(name: string): boolean {
+/** Whether a kind of file is a document: a page with text, blocks and includes. */
+export function isDocument(kind: Kind | undefined): kind is "markdown" | "mermaid" {
+  return kind === "markdown" || kind === "mermaid";
+}
+
+export function formatOf(name: string): Format | undefined {
+  return FORMATS[path.extname(name).toLowerCase()];
+}
+
+/** A path pattern as a regular expression: `**` crosses folders, `*` and `?` stay within one. */
+export function globOf(glob: string): RegExp {
+  let source = "";
+
+  for (let at = 0; at < glob.length; at++) {
+    const character = glob[at];
+
+    if (glob.startsWith("**/", at)) {
+      source += "(?:.*/)?";
+      at += 2;
+    } else if (glob.startsWith("**", at)) {
+      source += ".*";
+      at += 1;
+    } else if (character === "*") {
+      source += "[^/]*";
+    } else if (character === "?") {
+      source += "[^/]";
+    } else {
+      source += character.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+
+  return new RegExp(`^${source.replace(/^\.\//, "")}$`);
+}
+
+export function isPruned(name: string): boolean {
   return name.startsWith(".") || name === "node_modules";
 }
 
@@ -71,8 +131,8 @@ export function renderable(
   return { file, kind };
 }
 
-/** List one folder level: renderable files and the folders whose pruned subtree holds one. */
-export function listing(root: string, urlPath: string): Entry[] | undefined {
+/** List one folder level: renderable files, data files only when asked, and the folders holding one. */
+export function listing(root: string, urlPath: string, data = false): Entry[] | undefined {
   const dir = confine(root, urlPath);
 
   if (!dir || !fs.statSync(dir).isDirectory()) {
@@ -85,13 +145,13 @@ export function listing(root: string, urlPath: string): Entry[] | undefined {
     const full = path.join(dir, dirent.name);
 
     if (dirent.isDirectory()) {
-      if (hasRenderable(root, full)) {
+      if (hasRenderable(root, full, data)) {
         entries.push({ name: dirent.name, kind: "folder" });
       }
     } else {
       const kind = fileKind(root, full, dirent);
 
-      if (kind) {
+      if (kind && (data || kind !== "data")) {
         entries.push({ name: dirent.name, kind });
       }
     }
@@ -108,9 +168,7 @@ export function neighbours(
   root: string,
   urlPath: string,
 ): { previous: string | null; next: string | null } | undefined {
-  const kind = renderable(root, urlPath)?.kind;
-
-  if (kind !== "markdown" && kind !== "mermaid") {
+  if (!isDocument(renderable(root, urlPath)?.kind)) {
     return undefined;
   }
 
@@ -147,9 +205,9 @@ function firstPage(root: string, folder: string, walk: Entry[], direction: 1 | -
     const found =
       entry.kind === "folder"
         ? firstPage(root, entryPath, ordered(listing(root, entryPath) ?? [], direction), direction)
-        : entry.kind === "image"
-          ? null
-          : entryPath;
+        : isDocument(entry.kind)
+          ? entryPath
+          : null;
 
     if (found) {
       return found;
@@ -167,7 +225,7 @@ function join(folder: string, name: string): string {
   return folder ? `${folder}/${name}` : name;
 }
 
-function hasRenderable(root: string, dir: string): boolean {
+function hasRenderable(root: string, dir: string, data: boolean): boolean {
   const pending = [dir];
 
   for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
@@ -176,13 +234,27 @@ function hasRenderable(root: string, dir: string): boolean {
 
       if (dirent.isDirectory()) {
         pending.push(full);
-      } else if (fileKind(root, full, dirent)) {
-        return true;
+      } else {
+        const kind = fileKind(root, full, dirent);
+
+        if (kind && (data || kind !== "data")) {
+          return true;
+        }
       }
     }
   }
 
   return false;
+}
+
+/** The renderable files directly inside a real folder, judged as listings judge them. */
+export function renderableFiles(root: string, dir: string): { name: string; kind: Kind }[] {
+  return readdir(dir).flatMap((dirent) => {
+    const kind = dirent.isDirectory()
+      ? undefined
+      : fileKind(root, path.join(dir, dirent.name), dirent);
+    return kind ? [{ name: dirent.name, kind }] : [];
+  });
 }
 
 /** The unpruned folders directly inside a real folder, symlinks excluded. */
@@ -192,7 +264,39 @@ export function subfolders(dir: string): string[] {
     .map((dirent) => path.join(dir, dirent.name));
 }
 
-// Symlinked folders are never followed, so walks cannot loop; a symlinked file counts if its target does.
+/** Only links within the folder count: a scheme or a host leads outside it. */
+export function linkTarget(
+  from: string,
+  url: string,
+): { path: string; fragment: string } | undefined {
+  if (/^[a-z][a-z\d+.-]*:|^\/\//i.test(url)) {
+    return undefined;
+  }
+
+  const hash = url.indexOf("#");
+  const address = (hash < 0 ? url : url.slice(0, hash)).replace(/\?.*$/, "");
+  let decoded: string;
+
+  try {
+    decoded = decodeURIComponent(address);
+  } catch {
+    return undefined;
+  }
+
+  const target = !decoded
+    ? from
+    : decoded.startsWith("/")
+      ? path.posix.normalize(decoded.slice(1))
+      : path.posix.join(path.posix.dirname(from), decoded);
+
+  try {
+    return { path: target, fragment: hash < 0 ? "" : decodeURIComponent(url.slice(hash + 1)) };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Symlinked folders are never followed, so walks cannot loop; a symlinked file counts if its target does. */
 function fileKind(root: string, full: string, dirent: fs.Dirent): Kind | undefined {
   if (dirent.isFile()) {
     return kindOf(dirent.name);
@@ -210,8 +314,8 @@ function fileKind(root: string, full: string, dirent: fs.Dirent): Kind | undefin
   }
 }
 
-// An unreadable folder holds nothing folio can serve, so it lists as empty rather than failing the walk.
-function readdir(dir: string): fs.Dirent[] {
+/** An unreadable folder holds nothing folio can serve, so it lists as empty rather than failing the walk. */
+export function readdir(dir: string): fs.Dirent[] {
   try {
     return fs.readdirSync(dir, { withFileTypes: true }).filter((dirent) => !isPruned(dirent.name));
   } catch {

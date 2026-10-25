@@ -1,4 +1,4 @@
-// Folder watches shared by every subscriber, opened by the first and closed by the last.
+/** Folder watches shared by every subscriber, opened by the first and closed by the last. */
 
 import fs from "node:fs";
 
@@ -9,8 +9,10 @@ interface Held {
   watcher?: { close(): void };
 }
 
-// A file is watched through its folder: a save that renames a temporary file over the original
-// detaches any watch held on the original itself.
+/**
+ * A file is watched through its folder: a save that renames a temporary file over the original
+ * detaches any watch held on the original itself.
+ */
 const watchFolder: Watch = (dir, onChange) => {
   const watcher = fs.watch(dir, { persistent: false }, onChange);
   watcher.on("error", () => watcher.close());

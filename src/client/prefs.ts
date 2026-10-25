@@ -1,5 +1,7 @@
-// Per-tab preferences: theme, full width and side panels. A tab keeps its own; a tab opened from a
-// link takes the opening tab's; any other new tab starts from the last choice made in any tab.
+/**
+ * Per-tab preferences: theme, full width and side panels. A tab keeps its own; a tab opened from a
+ * link takes the opening tab's; any other new tab starts from the last choice made in any tab.
+ */
 
 import type { Theme } from "./render.ts";
 
@@ -10,12 +12,13 @@ interface Prefs {
   fullWidth: boolean;
   tree: boolean;
   outline: boolean;
+  data?: boolean;
 }
 
 const TAB = "folio.prefs";
 const LAST = "folio.lastPrefs";
 const HANDOFF = "folio.handoff";
-// Long enough to pick "Open link in new tab" from a context menu.
+/** Long enough to pick "Open link in new tab" from a context menu. */
 const HANDOFF_MS = 10_000;
 
 let prefs = load();
@@ -30,6 +33,14 @@ export function fullWidth(): boolean {
 
 export function panelShown(panel: Panel): boolean {
   return prefs[panel];
+}
+
+export function dataShown(): boolean {
+  return prefs.data === true;
+}
+
+export function setDataShown(shown: boolean): void {
+  save({ ...prefs, data: shown });
 }
 
 export function setTheme(value: Theme): void {
@@ -52,8 +63,10 @@ export function applyPrefs(): void {
   root.classList.toggle("no-outline", !prefs.outline);
 }
 
-// Every way of opening a link in another tab starts with one of these events; none relies on the
-// browser copying tab state into the new tab.
+/**
+ * Every way of opening a link in another tab starts with one of these events; none relies on the
+ * browser copying tab state into the new tab.
+ */
 export function handOffOnLinks(): void {
   for (const type of ["click", "auxclick", "contextmenu"]) {
     document.addEventListener(type, (event) => {

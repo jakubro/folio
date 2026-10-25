@@ -1,4 +1,4 @@
-// Opens a fixture page and waits until nothing on it will still change: tree, fonts and images.
+/** Opens a fixture page and waits until nothing on it will still change: tree, fonts and images. */
 
 import type { Page } from "@playwright/test";
 

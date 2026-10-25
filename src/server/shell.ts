@@ -1,4 +1,4 @@
-// The HTML every page and listing starts from; the browser fetches and renders the content itself.
+/** The HTML every page and listing starts from; the browser fetches and renders the content itself. */
 
 const ESCAPES: Record<string, string> = {
   "&": "&amp;",
@@ -7,9 +7,9 @@ const ESCAPES: Record<string, string> = {
   '"': "&quot;",
 };
 
-export function shell(title: string, rootName: string): string {
+export function shell(title: string, rootName: string, build: string): string {
   return `<!doctype html>
-<html lang="en" data-root="${escapeHtml(rootName)}">
+<html lang="en" data-root="${escapeHtml(rootName)}" data-build="${escapeHtml(build)}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

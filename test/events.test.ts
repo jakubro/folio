@@ -5,19 +5,33 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import WebSocket from "ws";
+import { Data } from "../src/server/data.ts";
 import { Hub, type Subscription } from "../src/server/events.ts";
 import { createHandler, listen } from "../src/server/http.ts";
+import type { Indexer } from "../src/server/indexer.ts";
+import { Model } from "../src/server/model.ts";
 
 interface Event {
   event: string;
   data: { type?: string; kind?: string; path?: string; version?: string | null };
 }
 
+/** The hub needs only that block sources settle, not what they are; no worker thread is started for it. */
+const indexer = { split: async () => [], close: async () => {} } as unknown as Indexer;
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-events-")));
 const log: string[] = [];
-const hub = new Hub(root, (line) => log.push(line), 200);
-const server = http.createServer(createHandler(root, root, () => {}));
+const hub = new Hub(root, "build-1", (line) => log.push(line), 200);
+const model = new Model(
+  root,
+  fs.mkdtempSync(path.join(os.tmpdir(), "folio-events-model-")),
+  indexer,
+  () => {},
+);
+const data = new Data(root, fs.mkdtempSync(path.join(os.tmpdir(), "folio-events-data-")));
+const server = http.createServer(createHandler(root, root, "build-1", model, data, () => {}));
 hub.attach(server);
+hub.follow(model);
+hub.read(data);
 let base = "";
 
 for (const [name, content] of Object.entries({
@@ -26,6 +40,9 @@ for (const [name, content] of Object.entries({
   "other.md": "other",
   "img/pic.png": "v1",
   "tree/a.md": "a",
+  "figures/scores.csv": "name,score\nada,3\n",
+  "figures/total.sql": "select sum(score) as total from 'scores.csv'",
+  "figures/page.md": "{table: scores.csv}\n\n{value: total.sql#0.total}\n",
 })) {
   fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
   fs.writeFileSync(path.join(root, name), content);
@@ -35,7 +52,10 @@ before(async () => {
   base = `http://localhost:${await listen(server, 0)}`;
 });
 
-after(() => {
+after(async () => {
+  await data.close();
+  void indexer.close();
+  model.close();
   server.closeAllConnections();
   server.close();
 });
@@ -64,7 +84,7 @@ class Tab {
     return this;
   }
 
-  // The server applies a subscription as it arrives; the pause lets it land before asserting.
+  /** The server applies a subscription as it arrives; the pause lets it land before asserting. */
   async subscribe(subscription: Subscription): Promise<void> {
     this.socket.send(JSON.stringify({ type: "subscribe", ...subscription }));
     await sleep(50);
@@ -100,13 +120,33 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** A version still parsing its block sources changes once they are ready, so tests wait for that. */
 async function versionOf(urlPath: string): Promise<string> {
-  return (await fetch(`${base}/${urlPath}?raw`)).headers.get("x-folio-version") ?? "";
+  for (;;) {
+    const version = (await fetch(`${base}/${urlPath}?raw`)).headers.get("x-folio-version") ?? "";
+
+    if (!version.endsWith("-partial")) {
+      return version;
+    }
+
+    await sleep(20);
+  }
 }
 
 async function folderVersion(urlPath: string): Promise<string> {
   return (await (await fetch(`${base}/${urlPath}?tree`)).json()).version;
 }
+
+test("a tab hears which build the server runs as soon as it connects", async () => {
+  const tab = await new Tab().connected();
+  await sleep(50);
+
+  assert.deepEqual(tab.events.find((e) => e.event === "hello")?.data, {
+    type: "hello",
+    build: "build-1",
+  });
+  tab.close();
+});
 
 test("a subscription holding current versions hears nothing until something changes", async () => {
   const tab = await new Tab().connected();
@@ -144,7 +184,7 @@ test("saving the page or a file it includes updates it; saving another file does
   fs.writeFileSync(path.join(root, "parts/part.md"), "part, edited");
   const change = (await tab.next("change")).data;
   assert.deepEqual([change.kind, change.path], ["page", "page.md"]);
-  assert.equal(change.version, await versionOf("page.md"));
+  assert.equal(change.version?.replace(/-partial$/, ""), await versionOf("page.md"));
 
   const tmp = path.join(root, ".page.md.tmp");
   fs.writeFileSync(tmp, "# Page, saved by rename");
@@ -289,6 +329,55 @@ test("refuses an update socket from another site, another host or another addres
   assert.equal(await refused(`${ws}/page.md`, { origin: base }), 403);
 });
 
+test("a page served before its block sources are parsed is answered again once they are", async () => {
+  fs.writeFileSync(path.join(root, "fresh.md"), "# Fresh\n\nNot parsed yet.");
+  const partial = (await fetch(`${base}/fresh.md?raw`)).headers.get("x-folio-version") ?? "";
+  const tab = await new Tab().connected();
+  await tab.subscribe({ page: { "fresh.md": partial } });
+  await sleep(100);
+
+  assert.match(partial, /-partial$/);
+  assert.deepEqual(
+    tab.changes().map((change) => [change.path, change.version]),
+    [["fresh.md", partial.replace(/-partial$/, "")]],
+  );
+  tab.close();
+});
+
 test("each update sent is logged", () => {
   assert.ok(log.some((line) => /^update page \/page\.md -> tab \d+$/.test(line)));
+});
+
+test("an embed is answered when a file it reads changes, through a query too, and not for others", async () => {
+  const tab = await new Tab().connected();
+  const embedVersion = async (reference: string) =>
+    (await (await fetch(`${base}/figures/page.md?embed=${encodeURIComponent(reference)}`)).json())
+      .version;
+  const table = "figures/page.md\nscores.csv";
+  const query = "figures/page.md\ntotal.sql#0.total";
+
+  await tab.subscribe({
+    embeds: {
+      [table]: await embedVersion("scores.csv"),
+      [query]: await embedVersion("total.sql#0.total"),
+    },
+  });
+  fs.writeFileSync(path.join(root, "figures/other.csv"), "a\n1\n");
+  await sleep(300);
+  assert.deepEqual(tab.changes(), []);
+
+  fs.writeFileSync(path.join(root, "figures/scores.csv"), "name,score\nada,3\nbob,4\n");
+  await tab.next("change");
+  await sleep(200);
+  assert.deepEqual(
+    tab
+      .changes()
+      .map(({ kind, path: key }) => [kind, key])
+      .sort(),
+    [
+      ["embed", table],
+      ["embed", query],
+    ],
+  );
+  tab.close();
 });

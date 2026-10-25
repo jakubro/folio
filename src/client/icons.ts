@@ -1,4 +1,4 @@
-// Inline SVG icons: 24x24, stroked in the current text colour.
+/** Inline SVG icons: 24x24, stroked in the current text colour. */
 
 const icon = (paths: string) =>
   `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
@@ -37,6 +37,18 @@ export const ICONS = {
     '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><path d="M6.5 10v4a2 2 0 002 2H14"/>',
   ),
   chevron: icon('<path d="M9 6l6 6-6 6"/>'),
+  info: icon('<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>'),
+  alert: icon('<path d="M12 3L2 20h20zM12 10v4M12 17h.01"/>'),
+  clock: icon('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+  inbox: icon(
+    '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.5-6.9A2 2 0 0016.8 4H7.2a2 2 0 00-1.7 1.1z"/>',
+  ),
+  download: icon('<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>'),
+  data: icon(
+    '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/>',
+  ),
+  filter: icon('<path d="M3 5h18l-7 8v6l-4 2v-8z"/>'),
+  sort: icon('<path d="M8 4v16M4 8l4-4 4 4M16 20V4M12 16l4 4 4-4"/>'),
 };
 
 export function button(icon: string, label: string, className = "icon-button"): HTMLButtonElement {

@@ -12,12 +12,14 @@ const BASE = "/folio";
 const DOCS_ROOT = fileURLToPath(new URL("../docs", import.meta.url));
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
-// Where a link the site does not publish is sent; pinned to the published branch.
+/** Where a link the site does not publish is sent; pinned to the published branch. */
 const REPOSITORY = "https://github.com/jakubro/folio";
 const REF = "main";
 
-// The reading path: get running, see what folio adds, look something up. The contributor document
-// sits last under an internal label, so it is not read as a promise.
+/**
+ * The reading path: get running, see what folio adds, look something up. The contributor document
+ * sits last under an internal label, so it is not read as a promise.
+ */
 const SIDEBAR = [
   { label: "Start here", slug: "index" },
   { label: "Guide", slug: "guide" },
@@ -50,8 +52,8 @@ export default defineConfig({
       title: "folio",
       plugins: [starlightThemeRapide()],
       components: { ThemeProvider: "./src/components/ThemeProvider.astro" },
-      // Inlined rather than emitted: trailingSlash "always" appends a slash to the hashed
-      // /_astro/ec.<hash>.css route, so the dev server never matches it and code blocks lose styling.
+      // Inlined rather than emitted, or code blocks lose their styling in the dev server:
+      // trailingSlash "always" appends a slash to the hashed /_astro/ec.<hash>.css route, so it never matches.
       expressiveCode: { emitExternalStylesheet: false },
       sidebar: SIDEBAR,
       social: [{ icon: "github", label: "GitHub", href: REPOSITORY }],

@@ -1,5 +1,7 @@
-// Screenshot gate: folio's pages and the documentation's pictures, served from the fixture folder and
-// compared against recorded images.
+/**
+ * Screenshot gate: folio's pages and the documentation's pictures, served from the fixture folder and
+ * compared against recorded images.
+ */
 
 import { defineConfig } from "@playwright/test";
 
@@ -8,6 +10,8 @@ const PORT = 8650;
 export default defineConfig({
   testDir: "visual",
   outputDir: "/tmp/folio--snapshots",
+  workers: "20%",
+  fullyParallel: true,
   reporter: [["list"]],
   forbidOnly: true,
   use: {
@@ -31,7 +35,9 @@ export default defineConfig({
     { name: "docs", testMatch: "pictures.spec.ts", snapshotPathTemplate: "docs/{arg}{ext}" },
   ],
   webServer: {
-    command: `node dist/cli.js visual/station --port ${PORT}`,
+    // A fresh state each run: what an earlier run read would otherwise show as marks on its pages.
+    command: `rm -rf /tmp/folio--snapshots-state && node dist/cli.js visual/station --port ${PORT}`,
+    env: { XDG_STATE_HOME: "/tmp/folio--snapshots-state" },
     url: `http://localhost:${PORT}/`,
     reuseExistingServer: false,
   },

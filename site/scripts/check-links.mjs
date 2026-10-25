@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// Postbuild link/anchor check: astro build cannot see a target page's headings while processing
-// the source that links to it, so every href, fragment and repository path resolves against dist/.
+/**
+ * Postbuild link/anchor check: astro build cannot see a target page's headings while processing
+ * the source that links to it, so every href, fragment and repository path resolves against dist/.
+ */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
@@ -10,13 +12,15 @@ const BASE = "/folio";
 const DIST = fileURLToPath(new URL("../dist", import.meta.url));
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
-// Kept in step with astro.config.mjs by hand, as BASE above already is.
+/** Kept in step with astro.config.mjs by hand, as BASE above already is. */
 const REPOSITORY = "https://github.com/jakubro/folio";
 const REF = "main";
 
 const HREF_RE = /href="([^"]+)"/g;
-// The leading whitespace is what keeps srcset out; href needs no such guard, since no attribute
-// name ends in it.
+/**
+ * The leading whitespace is what keeps srcset out; href needs no such guard, since no attribute
+ * name ends in it.
+ */
 const SRC_RE = /\ssrc="([^"]+)"/g;
 const ID_RE = /\sid="([^"]+)"/g;
 const REPO_REL_RE = /^(tree|blob)\/([^/]+)\/(.+)$/;
@@ -53,7 +57,7 @@ for (const file of htmlFiles) {
   idsByPage.set(routeFor(file), ids);
 }
 
-// The repo-relative path a repository href names, or null when it points elsewhere.
+/** The repo-relative path a repository href names, or null when it points elsewhere. */
 function repoRelativeTarget(href) {
   if (!href.startsWith(`${REPOSITORY}/`)) {
     return null;

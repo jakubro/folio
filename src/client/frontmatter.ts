@@ -1,4 +1,4 @@
-// A page's YAML frontmatter as a key/value table above its body, or as the YAML itself when unreadable.
+/** A page's YAML frontmatter as a key/value table above its body, or as the YAML itself when unreadable. */
 
 import type { Element } from "hast";
 import { isMap, isScalar, type Node, parseDocument } from "yaml";

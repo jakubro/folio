@@ -2,12 +2,13 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-# Test runner wrappers: wall-clock time and per-process address space, and total resident memory
-RUN_BOUNDED := justfile_directory() / "scripts/run-bounded.sh"
+# Test runner wrapper: time and total resident memory caps, each with a backstop, and a per-process limit
 RUN_CAPPED := justfile_directory() / "scripts/run-capped.sh"
 # Clone detector, pinned exactly: its fingerprints are the baseline's format
 JSCPD := "npx --yes jscpd@5.3.2 --config .jscpd.json --baseline .jscpd-baseline.json"
 KNIP := "npx --yes knip@6.39.0 --no-progress"
+# Browser test files run at once: a fifth of the cores, as the snapshot workers do
+E2E_JOBS := `echo $(( $(nproc) / 5 > 1 ? $(nproc) / 5 : 1 ))`
 
 # List available recipes
 default:
@@ -23,20 +24,20 @@ install:
 
 # Run the unit tests; ARGS narrows to files
 test *ARGS="test/*.test.ts":
-    {{ RUN_BOUNDED }} 10m 4096 -- node --test {{ ARGS }} 2>&1 | tee /tmp/folio--test.log
+    nice -n 19 {{ RUN_CAPPED }} 10 4096 131072 -- node --test {{ ARGS }} 2>&1 | tee /tmp/folio--test.log
 
 # Run every documented behaviour in headless Chromium against the built command
 e2e: build
-    {{ RUN_CAPPED }} 8192 -- {{ RUN_BOUNDED }} 15m 131072 -- \
-        node --test --test-concurrency=1 --test-timeout=60000 e2e/*.test.ts 2>&1 | tee /tmp/folio--e2e.log
+    nice -n 19 {{ RUN_CAPPED }} 15 $(( {{ E2E_JOBS }} * 2048 )) 131072 -- \
+        node --test --test-concurrency={{ E2E_JOBS }} --test-timeout=60000 e2e/*.test.ts 2>&1 | tee /tmp/folio--e2e.log
 
 # Compare every page against its recorded image, naming each one that changed
 snapshots: build
-    {{ RUN_CAPPED }} 8192 -- {{ RUN_BOUNDED }} 15m 131072 -- npx playwright test 2>&1 | tee /tmp/folio--snapshots.log
+    nice -n 19 {{ RUN_CAPPED }} 15 8192 131072 -- npx playwright test 2>&1 | tee /tmp/folio--snapshots.log
 
 # Re-record every page's image after an intended change to how it looks
 update-snapshots: build
-    {{ RUN_CAPPED }} 8192 -- {{ RUN_BOUNDED }} 15m 131072 -- \
+    nice -n 19 {{ RUN_CAPPED }} 15 8192 131072 -- \
         npx playwright test --update-snapshots=all 2>&1 | tee /tmp/folio--update-snapshots.log
 
 # Build the documentation site from docs/ into site/dist/, failing on any broken link
@@ -61,29 +62,18 @@ lint:
     npx biome check 2>&1 | tee -a /tmp/folio--lint.log
     npx tsc 2>&1 | tee -a /tmp/folio--lint.log
     {{ KNIP }} 2>&1 | tee -a /tmp/folio--lint.log
-    {{ JSCPD }} --fail-on-new-clones --reporters console 2>&1 | tee -a /tmp/folio--lint.log
+    {{ JSCPD }} --fail-on-new-clones --reporters json,sarif,silent 2>&1 | tee -a /tmp/folio--lint.log \
+        || { python3 scripts/new_clones.py /tmp/folio--jscpd/jscpd-report.json | tee -a /tmp/folio--lint.log; exit 1; }
     just clone-reasons 2>&1 | tee -a /tmp/folio--lint.log
 
 # Refresh the clone baseline, print every clone, and list each accepted one still lacking a reason
 dupes:
-    {{ JSCPD }} --update-baseline --reporters console 2>&1 | tee /tmp/folio--dupes.log
+    {{ JSCPD }} --update-baseline --reporters console,sarif 2>&1 | tee /tmp/folio--dupes.log
     just clone-reasons 2>&1 | tee -a /tmp/folio--dupes.log
 
 # Fail unless each clone in the baseline has a reason in .jscpd-reasons.json, and each reason a clone
 clone-reasons:
-    #!/usr/bin/env node
-    const fs = require("node:fs");
-    const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
-    const accepted = Object.keys(read(".jscpd-baseline.json").fingerprints);
-    const reasons = read(".jscpd-reasons.json");
-    const problems = [
-      ...accepted.filter((print) => !reasons[print]?.trim()).map((print) => `${print}: accepted without a reason`),
-      ...Object.keys(reasons).filter((print) => !accepted.includes(print)).map((print) => `${print}: reason for no accepted clone`),
-    ];
-    if (problems.length) {
-      console.error(problems.join("\n"));
-      process.exit(1);
-    }
+    python3 scripts/clone_reasons.py /tmp/folio--jscpd/jscpd-report.sarif
 
 # Auto-fix formatting and lint findings
 fix:

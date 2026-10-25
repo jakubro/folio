@@ -1,9 +1,10 @@
-// Full-window mermaid viewer: wheel zoom at the pointer, drag to pan, buttons and keys for both, fit.
+/** Full-window mermaid viewer: wheel zoom at the pointer, drag to pan, buttons and keys for both, fit. */
 
 import { button, ICONS } from "./icons.ts";
 
 const ZOOM_STEP_RATIO = 1.25;
-const PAN_FRACTION = 0.2; // of the viewport's own width or height, per button or key press
+/** Of the viewport's own width or height, per button or key press. */
+const PAN_FRACTION = 0.2;
 const MIN_SCALE_RATIO = 0.25;
 const MAX_SCALE_RATIO = 8;
 const DRAG_THRESHOLD_PX = 5;
@@ -46,7 +47,7 @@ class Overlay {
   #drag:
     | { startX: number; startY: number; originX: number; originY: number; moved: boolean }
     | undefined;
-  // Set by a drag that ends over the backdrop, so the click a drag-release synthesizes does not close.
+  /** Set by a drag that ends over the backdrop, so the click a drag-release synthesizes does not close. */
   #dragged = false;
 
   constructor() {
@@ -74,8 +75,8 @@ class Overlay {
 
     this.#viewport.append(this.#inner, controls);
     this.#root.append(close, this.#viewport);
-    // Appended last so a cloned diagram's duplicate ids never outrank the originals, whose markers
-    // and scoped styles resolve to the first match in document order.
+    // Appended last so a cloned diagram's duplicate ids never outrank the originals:
+    // their markers and scoped styles resolve to the first match in document order.
     document.body.append(this.#root);
 
     this.#zoomIn.addEventListener("click", () => this.#zoomAtCentre(ZOOM_STEP_RATIO));
@@ -168,7 +169,7 @@ class Overlay {
     this.#apply();
   }
 
-  // Whatever sits under the anchor before the scale change sits under it after.
+  /** Whatever sits under the anchor before the scale change sits under it after. */
   #zoomAt(factor: number, anchorX: number, anchorY: number): void {
     if (!this.#view) {
       return;
@@ -189,7 +190,7 @@ class Overlay {
     this.#zoomAt(factor, this.#viewport.clientWidth / 2, this.#viewport.clientHeight / 2);
   }
 
-  // (dx, dy) is how the content moves: panning left reveals what was to the left, so it moves right.
+  /** (dx, dy) is how the content moves: panning left reveals what was to the left, so it moves right. */
   #pan(dx: number, dy: number): void {
     if (this.#view) {
       this.#view.x += dx * this.#viewport.clientWidth * PAN_FRACTION;

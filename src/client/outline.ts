@@ -1,7 +1,9 @@
-// The outline beside every page: its headings, with the section being read highlighted.
+/** The outline beside every page: its headings, with the section being read highlighted. */
 
 export class Outline {
   readonly element = document.createElement("aside");
+  readonly header = document.createElement("div");
+  readonly footer = document.createElement("div");
   #headings: HTMLElement[] = [];
   #links: HTMLAnchorElement[] = [];
   #scheduled = false;
@@ -21,7 +23,7 @@ export class Outline {
     this.#links = this.#headings.map((heading) => {
       const link = document.createElement("a");
       link.href = `#${encodeURIComponent(heading.id)}`;
-      link.textContent = heading.textContent;
+      link.textContent = ownText(heading);
       link.className = `outline-${heading.tagName.toLowerCase()}`;
       return link;
     });
@@ -30,9 +32,9 @@ export class Outline {
       const empty = document.createElement("p");
       empty.className = "panel-empty";
       empty.textContent = "No headings";
-      this.element.replaceChildren(empty);
+      this.element.replaceChildren(this.header, empty, this.footer);
     } else {
-      this.element.replaceChildren(...this.#links);
+      this.element.replaceChildren(this.header, ...this.#links, this.footer);
     }
 
     this.#highlight();
@@ -48,8 +50,10 @@ export class Outline {
     }
   }
 
-  // The current section is the last shown heading scrolled past the toolbar; at the very bottom of
-  // the page it is the last shown heading, which may never reach the top.
+  /**
+   * The current section is the last shown heading scrolled past the toolbar; at the very bottom of
+   * the page it is the last shown heading, which may never reach the top.
+   */
   #highlight(): void {
     const line = (document.querySelector(".bar")?.getBoundingClientRect().bottom ?? 0) + 16;
     const atBottom = innerHeight + scrollY >= document.documentElement.scrollHeight - 2;
@@ -73,7 +77,7 @@ export class Outline {
     this.#reveal(this.#links[current]);
   }
 
-  // Scrolls only the outline itself; scrollIntoView would also scroll the page being read.
+  /** Scrolls only the outline itself; scrollIntoView would also scroll the page being read. */
   #reveal(link: HTMLAnchorElement | undefined): void {
     if (!link) {
       return;
@@ -90,7 +94,7 @@ export class Outline {
   }
 }
 
-// A block's title stays in view while it is closed, so only a heading in its content is folded away.
+/** A block's title stays in view while it is closed, so only a heading in its content is folded away. */
 function folded(heading: Element): boolean {
   for (
     let details = heading.closest("details");
@@ -103,4 +107,15 @@ function folded(heading: Element): boolean {
   }
 
   return false;
+}
+
+/** A tied figure the data contradicts shows the data's value beside it; the heading's text is what was typed. */
+function ownText(heading: HTMLElement): string {
+  const copy = heading.cloneNode(true) as HTMLElement;
+
+  for (const live of copy.querySelectorAll(".claim-live")) {
+    live.remove();
+  }
+
+  return copy.textContent ?? "";
 }

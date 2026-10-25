@@ -33,7 +33,7 @@ test("confine keeps every path inside the served folder", () => {
   assert.equal(confine(root, "notes/a.md\0.png"), undefined);
 });
 
-test("renderable serves markdown, mermaid and images only, judged by the real target", () => {
+test("renderable serves markdown, mermaid, images and data files only, judged by the real target", () => {
   const root = fixture({ "a.md": "", "b.mmd": "", "c.PNG": "", ".env": "", "d.txt": "" });
   fs.symlinkSync(path.join(root, "d.txt"), path.join(root, "disguised.md"));
   fs.mkdirSync(path.join(root, "folder.md"));
@@ -72,6 +72,31 @@ test("listing shows renderable files and folders holding them, folders first", (
     { name: "z.md", kind: "markdown" },
   ]);
   assert.deepEqual(listing(root, "docs/deep"), [{ name: "er", kind: "folder" }]);
+});
+
+test("data files render as data pages, and list only when data files are asked for", () => {
+  const root = fixture({
+    "a.md": "",
+    "rows.csv": "",
+    "deep/only/table.parquet": "",
+    "conf/settings.YAML": "",
+    "store/app.db": "",
+    "notes.txt": "",
+  });
+
+  assert.equal(renderable(root, "rows.csv")?.kind, "data");
+  assert.equal(renderable(root, "conf/settings.YAML")?.kind, "data");
+  assert.equal(renderable(root, "store/app.db")?.kind, "data");
+  assert.equal(renderable(root, "notes.txt"), undefined);
+  assert.deepEqual(listing(root, ""), [{ name: "a.md", kind: "markdown" }]);
+  assert.deepEqual(listing(root, "", true), [
+    { name: "conf", kind: "folder" },
+    { name: "deep", kind: "folder" },
+    { name: "store", kind: "folder" },
+    { name: "a.md", kind: "markdown" },
+    { name: "rows.csv", kind: "data" },
+  ]);
+  assert.equal(neighbours(root, "rows.csv"), undefined);
 });
 
 test("listing refuses files, missing folders and folders outside the root", () => {

@@ -4,7 +4,12 @@
     "src/cli.ts",
     "src/client/page.ts",
     "src/client/theme.ts",
+    "src/client/snapshot.ts",
+    "src/server/yaml-worker.ts",
+    "src/server/sqlite-reader.ts",
+    "src/server/draw-worker.ts",
     "test/*.test.ts",
+    "test/*-worker.ts",
     "e2e/*.test.ts"
   ],
   "project": ["*.mjs", "src/**/*.ts", "test/**/*.ts", "e2e/**/*.ts", "visual/**/*.ts"],
