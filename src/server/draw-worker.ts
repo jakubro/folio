@@ -1,15 +1,15 @@
 /** The drawing check's worker thread: tells whether a diagram or a chart would draw, away from requests. */
 
-import { parentPort } from "node:worker_threads";
+import { parentPort } from "node:worker_threads"
 
 interface Request {
-  id: number;
-  kind: "diagram" | "chart";
-  source?: string;
-  spec?: Record<string, unknown>;
+  id: number
+  kind: "diagram" | "chart"
+  source?: string
+  spec?: Record<string, unknown>
 }
 
-type Mermaid = typeof import("mermaid")["default"];
+type Mermaid = typeof import("mermaid")["default"]
 
 /**
  * One valid diagram of each kind: a kind whose sample does not lay out on this stand-in page is only
@@ -37,101 +37,102 @@ const SAMPLES = [
   "architecture-beta\n  service a(server)[A]",
   "radar-beta\n  axis a, b, c\n  curve x{1, 2, 3}",
   "C4Context\n  Person(a, A)",
-];
-const GLYPH_PX = 8;
-const LINE_PX = 16;
+]
+const GLYPH_PX = 8
+const LINE_PX = 16
 
-let mermaid: Promise<{ mermaid: Mermaid; laidOut: Set<string> }> | undefined;
-let drawn = 0;
+let mermaid: Promise<{ mermaid: Mermaid; laidOut: Set<string> }> | undefined
+let drawn = 0
 
 parentPort?.on("message", async ({ id, kind, source, spec }: Request) => {
   try {
     if (kind === "diagram") {
-      mermaid ??= load();
-      const loaded = await mermaid;
-      const { diagramType } = (await loaded.mermaid.parse(source ?? "")) as { diagramType: string };
+      mermaid ??= load()
+      const loaded = await mermaid
+      const { diagramType } = (await loaded.mermaid.parse(source ?? "")) as { diagramType: string }
 
       if (loaded.laidOut.has(diagramType)) {
-        await loaded.mermaid.render(`check-${++drawn}`, source ?? "");
+        await loaded.mermaid.render(`check-${++drawn}`, source ?? "")
       }
     } else {
       const [vegaLite, vega, { expressionInterpreter }] = await Promise.all([
         import("vega-lite"),
         import("vega"),
         import("vega-interpreter"),
-      ]);
-      const runtime = vega.parse(vegaLite.compile(spec as never).spec, {}, { ast: true });
+      ])
+      const runtime = vega.parse(vegaLite.compile(spec as never).spec, {}, { ast: true })
       const view = new vega.View(runtime, {
         renderer: "none",
         expr: expressionInterpreter as never,
-      });
-      await view.runAsync();
-      view.finalize();
+      })
+      await view.runAsync()
+      view.finalize()
     }
 
-    parentPort?.postMessage({ id });
+    parentPort?.postMessage({ id })
   } catch (error) {
-    parentPort?.postMessage({ id, error: reason(error) });
+    parentPort?.postMessage({ id, error: reason(error) })
   }
-});
+})
 
 /**
  * Mermaid lays a diagram out on a page; here a stand-in page measures every glyph alike, which is
  * enough to run the layout, though not to place it as a browser would.
  */
 async function load(): Promise<{ mermaid: Mermaid; laidOut: Set<string> }> {
-  const { Window } = await import("happy-dom");
-  const window = new Window();
-  const scope = globalThis as unknown as Record<string, unknown>;
-  const page = window as unknown as Record<string, unknown>;
+  const { Window } = await import("happy-dom")
+  const window = new Window()
+  const scope = globalThis as unknown as Record<string, unknown>
+  const page = window as unknown as Record<string, unknown>
   const box = function (this: Element) {
-    return { x: 0, y: 0, width: (this.textContent ?? "").length * GLYPH_PX, height: LINE_PX };
-  };
+    return { x: 0, y: 0, width: (this.textContent ?? "").length * GLYPH_PX, height: LINE_PX }
+  }
 
   for (const name of ["SVGElement", "SVGGraphicsElement", "Element"]) {
-    const prototype = (page[name] as { prototype: Record<string, unknown> } | undefined)?.prototype;
+    const prototype = (page[name] as { prototype: Record<string, unknown> } | undefined)?.prototype
 
     if (prototype) {
-      prototype.getBBox = box;
+      prototype.getBBox = box
       prototype.getComputedTextLength = function (this: Element) {
-        return (this.textContent ?? "").length * GLYPH_PX;
-      };
+        return (this.textContent ?? "").length * GLYPH_PX
+      }
     }
   }
 
-  (page.HTMLCanvasElement as { prototype: Record<string, unknown> }).prototype.getContext = () => ({
-    measureText: (text: string) => ({ width: String(text).length * GLYPH_PX }),
-    fillText() {},
-  });
+  ;(page.HTMLCanvasElement as { prototype: Record<string, unknown> }).prototype.getContext =
+    () => ({
+      measureText: (text: string) => ({ width: String(text).length * GLYPH_PX }),
+      fillText() {},
+    })
 
-  scope.window = window;
+  scope.window = window
 
   for (const key of Object.getOwnPropertyNames(window)) {
     if (!(key in globalThis)) {
-      scope[key] = page[key];
+      scope[key] = page[key]
     }
   }
 
   for (const key of ["document", "navigator"]) {
-    Object.defineProperty(globalThis, key, { value: page[key], configurable: true });
+    Object.defineProperty(globalThis, key, { value: page[key], configurable: true })
   }
 
-  scope.getComputedStyle = window.getComputedStyle.bind(window);
-  const { default: loaded } = await import("mermaid");
-  const laidOut = new Set<string>();
-  loaded.initialize({ startOnLoad: false, securityLevel: "strict" });
+  scope.getComputedStyle = window.getComputedStyle.bind(window)
+  const { default: loaded } = await import("mermaid")
+  const laidOut = new Set<string>()
+  loaded.initialize({ startOnLoad: false, securityLevel: "strict" })
 
   for (const sample of SAMPLES) {
     try {
-      const { diagramType } = (await loaded.parse(sample)) as { diagramType: string };
-      await loaded.render(`sample-${++drawn}`, sample);
-      laidOut.add(diagramType);
+      const { diagramType } = (await loaded.parse(sample)) as { diagramType: string }
+      await loaded.render(`sample-${++drawn}`, sample)
+      laidOut.add(diagramType)
     } catch {
       // A kind the stand-in cannot lay out is only parsed.
     }
   }
 
-  return { mermaid: loaded, laidOut };
+  return { mermaid: loaded, laidOut }
 }
 
 /**
@@ -142,8 +143,8 @@ function reason(error: unknown): string {
   const lines = String((error as Error)?.message ?? error)
     .split("\n")
     .map((line) => line.trim())
-    .filter(Boolean);
-  const caret = lines.findIndex((line) => /^-*\^$/.test(line));
+    .filter(Boolean)
+  const caret = lines.findIndex((line) => /^-*\^$/.test(line))
 
-  return (caret > 0 ? [...lines.slice(0, caret - 1), ...lines.slice(caret + 1)] : lines).join(" ");
+  return (caret > 0 ? [...lines.slice(0, caret - 1), ...lines.slice(caret + 1)] : lines).join(" ")
 }

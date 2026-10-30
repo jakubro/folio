@@ -1,18 +1,22 @@
 ---
 name: folio
-description: Write markdown that uses everything folio adds, for a folder folio serves - documents assembled from other documents' files, sections and blocks; links to any block; data files embedded as tables, inline values and Vega-Lite charts; SQL queries over the folder's data files and over its own documents; figures in prose checked against their data; query results saved into the markdown; and the folder's kinds of documents, fields, rules, health, attention, staleness and digests declared in FOLIO.md. Use when writing or editing documents in a folder folio serves, when a FOLIO.md sits in the folder or above it, or when asked to make documents live, data-backed or self-checking.
+description: folio serves a folder of markdown and data files to its reader's browser as live pages, and keeps a model of the whole folder that agents query too. Write documents there that use what folio adds, so numbers and shared text follow their sources instead of going stale as copies do - includes of files, sections and blocks; links to any block; data files and SQL results embedded as tables, values and Vega-Lite charts; figures checked against their data; results saved back into the markdown; FOLIO.md kinds, fields and rules - and check them against folio's health. Use whenever a FOLIO.md sits in the working folder or above it, folio's MCP tools (folio_document, folio_health, folio_query) are connected, documents are linked at a folio address such as http://localhost:8640/, or the user names folio - before writing or editing markdown there, before quoting a number from a data file, before moving or renaming a file, and when asked which page the reader has open, what they have read or what changed.
 ---
 
 # Writing for folio
 
-folio serves a folder of markdown to the browser and keeps a model of the whole folder: every block of every document, the data files they read, what links to and includes what, and what the reader has read. A document written for folio is assembled from the documents that own its parts, computes its numbers from the folder's data, checks the figures its prose quotes, and keeps its lists current by querying the folder. Write that way in any folder folio serves:
+**Where folio serves a folder, write documents that include, embed and check rather than copy.** folio is a command that serves one folder of markdown and data files to a browser, every page live, and keeps a model of the whole folder: every block of every document, the data files they read, what links to and includes what, what is broken and what the reader has read. The person you work for reads the folder through it. A number copied out of a CSV goes stale the day the CSV changes, and nobody notices; an embedded one redraws, and a figure tied to its data turns red when the data disagrees. A pasted paragraph drifts from the document that owns it; an included one follows it. The files stay plain markdown, and how they read outside folio is never a reason to hold back from its syntax:
 
 - **Never copy a number out of data.** Embed it with `{value: ...}`, or tie the figure you type to its data with `<data value="...">`.
 - **Never paste text another document owns.** Include its file, section or block.
 - **Never keep a list by hand that a query can produce.** Query the data files, or the documents themselves.
-- **Never describe in prose what a chart can show.** Draw it from the data.
+- **Never describe in prose what a chart or a map can show.** Draw it from the data.
 - **Link to the exact block**, not to the page around it.
 - **Give every recurring kind of document its fields and rules** in a `FOLIO.md`, so the folder checks itself.
+- **Ask folio what the folder knows** - what uses a file, what is broken, which page the reader has open and what they have read - rather than working it out from the files.
+- **Check the folder after every edit.** A broken include, link, query or figure shows to the reader in red.
+
+Where nothing marks the folder as folio's - no `FOLIO.md` at or above it, no folio tools, no folio serving it or a folder above it (*Find folio*) - write plain markdown: folio's includes, embeds and queries render nowhere else.
 
 In the raw text of this skill every include example carries a backslash before its brace, so folio does not resolve the examples when it serves these files. Write includes without the backslash.
 
@@ -20,19 +24,20 @@ Declaring a folder's conventions in `FOLIO.md`: [references/conventions.md](refe
 
 ## Find folio
 
-A folio serving the folder answers on port 8640 unless it was started with another `--port`:
+Ask a running folio what it serves. It answers `root`, the folder it serves, and lists every resource:
 
 ```sh
-curl -s 'http://localhost:8640/?api=health'
+curl -s 'http://localhost:8640/?api'
 ```
 
-The same answers come as read-only tools from folio's MCP server, which an agent starts as a command - `"args": ["mcp", "--port", "N"]` for another port:
+- **Which folio** - each folio serves one folder, on port 8640 or, when another folio holds that port, the next free one above it, unless it was started with `--port`. Use the one whose `root` is the folder you work in or a folder above it; when 8640 serves another folder, ask 8641 and up.
+- **Paths are relative to `root`**, which may lie above the folder you work in: with `root` `/srv/notes`, the file `/srv/notes/reports/weekly.md` is `reports/weekly.md` in every address, tool argument and result. With only the tools, find a file you know in `folio.documents`: `select path from folio.documents where filename = 'weekly.md'`.
+- **A socket** - a folio started with `--socket PATH`, as one shared with a container is, answers on it too: `curl -s --unix-socket PATH 'http://localhost/?api'`.
+- **Tools** - folio's MCP server gives the same answers as read-only tools; when `folio_*` tools are connected, use them. Otherwise an agent starts the server as a command. It reads the folio serving the agent's folder, wherever that folio serves; `"args": ["mcp", "--port", "N"]` or `["mcp", "--socket", "PATH"]` names one outright:
 
 ```json
 { "mcpServers": { "folio": { "command": "folio", "args": ["mcp"] } } }
 ```
-
-Without a running folio, `folio check FOLDER` still works out the folder's health on its own.
 
 Before writing into a folder, read what it declares: every `FOLIO.md` in the folder and the folders above it. `?conventions` on an existing document names its kind and the fields it reads; for a document not written yet, `?api=kinds` on its path lists the kinds, rules and health entries applying there, each kind with the `where` patterns that place a document in it.
 
@@ -59,8 +64,8 @@ curl -s 'http://localhost:8640/stations/west.md?api=kinds'
 
 ## Link to headings and blocks
 
-- Headings take GitHub's anchors: `[retry policy](design.md#retry-policy)`.
-- Every block has an id, the ¶ in its margin: `[the threshold](design.md#^3f9a1c2e)`. A block link keeps landing on its block while the block is reworded or moved. A block id is 8 hex characters folio derives - never invent one. Save the file, then read the ids from its blocks; until folio has read a document just saved, this answers 503, so ask again:
+- Headings take GitHub's anchors: `[retry policy](design.md#retry-policy)`, or GitHub's `#user-content-retry-policy` form.
+- Every block has an id, the ¶ in its margin: `[the threshold](design.md#^3f9a1c2e)`. A block link keeps landing on its block while the block is reworded or moved. A block id is 8 hex characters folio derives - never invent one. Save the file, then read the ids from its blocks; a document folio has not read yet answers 503, so ask again:
 
 ```sh
 curl -s 'http://localhost:8640/design.md?api=document'
@@ -83,7 +88,7 @@ CSV, TSV, JSON Lines, Parquet, JSON, YAML, SQLite and DuckDB files open as pages
 | `#totals` | The result of the query named `totals` in the same document |
 | `#totals#0.rain_mm` | A part of that result |
 
-A path resolves against the document's folder, or the served folder when it starts with `/`.
+A path resolves against the folder of the file it is written in - a document's, or a `.sql` file's own - or against the served folder when it starts with `/`.
 
 ````markdown
 {table: queries/wettest.sql}
@@ -124,7 +129,7 @@ from 'data/daily.csv'
 
 | Table | Columns |
 |---|---|
-| `folio.documents` | `path`, `title` (the first heading), `kind` |
+| `folio.documents` | `path`, `filename` (the file's name without its folder), `title` (the one h1; null with none, an empty one or several), `kind` |
 | `folio.headings` | `path`, `line`, `level`, `text`, `anchor` |
 | `folio.links` | `path`, `line`, `url` (as written), `target`, `fragment`, `context` |
 | `folio.tasks` | `path`, `line`, `done`, `text` |
@@ -146,7 +151,7 @@ order by t.path, t.line
 Run a query or resolve a reference before writing it into a document:
 
 ```sh
-curl -sG 'http://localhost:8640/reports/?api=query' --data-urlencode "sql=select count(*) from 'data/daily.csv'"
+curl -sG 'http://localhost:8640/reports/?api=query' --data-urlencode "sql=select count(*) from '../data/daily.csv'"
 curl -sG 'http://localhost:8640/reports/weekly.md?api=embed' --data-urlencode 'reference=#totals#0.rain_mm'
 ```
 
@@ -170,8 +175,12 @@ select s.id, s.owner, s.calibrated from kind.station s where s.status = 'active'
 
 ## Markdown folio renders
 
-- GitHub-flavoured markdown - tables, task lists, strikethrough, footnotes and bare links - plus `$...$` and `$$...$$` math, and fenced code highlighted by the language named after the fence.
+- GitHub-flavoured markdown - tables, task lists, strikethrough, footnotes and bare links - plus `$...$` and `$$...$$` math, inline math also as GitHub's ``$`...`$``, and fenced code highlighted by the language named after the fence.
+- Alerts: a quote at the top level of the page whose first line is only `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` or `[!CAUTION]` shows as a callout.
+- Colours: inline code holding exactly one colour - `#RRGGBB`, `rgb(R, G, B)` or `hsl(H, S%, L%)` - shows a swatch of it. Short hex, names and alpha forms stay plain code.
 - Diagrams: a `mermaid` fence, or a whole `.mmd` or `.mermaid` file as a page. The reader opens any diagram over the whole window to zoom and pan.
+- Maps: a `geojson` fence holding GeoJSON, or a `topojson` fence holding a TopoJSON topology, draws its shapes as a map, without fetching anything until the reader loads map tiles. Draw a map from a file the folder keeps with a fence holding only `\{include: data/stations.geojson}`.
+- 3D models: an `stl` fence holding an ASCII STL model, `solid ... endsolid`, draws as a model the reader turns by dragging.
 - HTML elements: `<details>`, `<kbd>`, `<mark>`, `<sub>`, `<sup>`, `<abbr>`, `<u>`, `<small>`, `<cite>`, `<dfn>`, definition lists, figures and tables with merged cells, each of them taking `class` and `style`. Scripts, event handlers and `javascript:` links are stripped.
 - YAML frontmatter shows as a table above the page.
 - Loose tables: rows with extra or missing cells, and pipe lines without a divider line, still render as tables.
@@ -179,27 +188,32 @@ select s.id, s.owner, s.calibrated from kind.station s where s.status = 'active'
 
 ## Edit so the reader can catch up
 
-folio remembers which blocks the reader has read, and marks each block added (green), changed (amber, the text as read a click away) or removed (a red tick) since; the tree puts a dot after each document holding a mark. A block showing an embed, chart or query result is marked when its data changes, and a block an include brings in when its file changes.
+folio remembers which blocks the reader has read, and marks each block added (green), changed (amber, the text as read a click away) or removed (a red tick) since - a table by its rows, a list by its items, code by its lines; the tree puts a dot after each document holding a mark. A block showing an embed, chart or query result is marked when its data changes, and a block an include brings in when its file changes.
 
 - Change only the blocks whose content changes. Rewrapping a paragraph, repadding a table, line endings and moving a block whole count for nothing; rewording a block, or reordering the items or rows inside it, marks it.
 - A moved or reworded block keeps its identity, its links and its history.
 - Never write change notes into a document: folio keeps every committed version and the saves it saw - all of them for 30 days, then the last of each day - compares any two block by block, and builds a digest of any period.
 - Link every new document from another one. A document unchanged for a year, never read and linked from nowhere surfaces as outlived.
-- Before moving, renaming or reshaping a file, ask what uses it - `?api=used-by` on its path lists every document including it, or embedding or querying its data - and update every link, include, embed and figure naming it.
+- Before moving, renaming or reshaping a file, ask what uses it - `?api=used-by` on its path lists every document including it, or embedding or querying its data, and `select path, line from folio.links where target = 'design.md'` every link to it - and update every link, include, embed and figure naming it.
 
 ## Check the work
 
+While folio runs, `/?api=health` - `folio_health` among the tools - lists everything wrong in the folder, each problem with its document, line and block; while it answers `"ready": false`, folio is still reading the folder, so ask again. Read every problem in a file you touched. Without a running folio, or to gate a commit:
+
 ```sh
-folio check FOLDER
+folio check ROOT
 ```
 
-It prints one problem a line - `path:line severity kind what` - and a count. It exits 1 only when a problem is an error: a violation of a rule whose severity is `error`, or a problem of a kind of check a `health` entry declares an error. Contradicted figures, broken links, missing includes, failing queries and diagrams or charts that do not draw are listed but do not fail it unless declared, so read every line naming a file you touched - exit 0 is not a clean folder. It asks the folio serving the folder when one answers, and works the health out itself otherwise.
+- **Check the folder folio serves, never one inside it.** `folio check` takes the folder it is given as the served folder: a folder inside it is checked without the `FOLIO.md` declarations above it, so their rules and health entries never run and it can report a clean folder over their violations. It asks the folio serving exactly that folder - wherever it serves, or on `--port N` or `--socket PATH` when given - and otherwise works the health out itself.
+- It prints one problem a line - `path:line`, the severity (`error`, `warning` for a rule's warning, `-` for any other problem), the kind and what is wrong - then a count. It exits 1 only when a problem is an error: a violation of a rule whose severity is `error`, or a problem of a kind of check a `health` entry declares an error. Contradicted figures, broken links, missing includes, failing queries and diagrams or charts that do not draw are listed but do not fail it unless declared, so read every line naming a file you touched - exit 0 is not a clean folder. It exits 2 when no health can be worked out.
 
 While folio runs, the same answers come per resource:
 
 | Address | Answers |
 |---|---|
+| `/?api` | The folder folio serves as `root`, and every resource |
 | `/?api=health` | Everything wrong in the folder, each problem with its document, line and block |
+| `<path>?raw` | A document's text with its includes expanded |
 | `<path>?api=document` | A document's blocks with their ids, its kind and fields, and the data it reads |
 | `<path>?api=embed&reference=<ref>` | What a reference written in the document reads |
 | `<folder>/?api=query&sql=<select>` | A query's columns, first 5,000 rows and the files it read |

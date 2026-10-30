@@ -1,6 +1,6 @@
 /** The allow-list inline HTML is sanitized against before a page draws it. */
 
-import { defaultSchema } from "rehype-sanitize";
+import { defaultSchema } from "rehype-sanitize"
 
 const EXTRA_TAGS = [
   "details",
@@ -30,8 +30,8 @@ const EXTRA_TAGS = [
   "cite",
   "dfn",
   "data",
-];
-const base = defaultSchema.attributes ?? {};
+]
+const base = defaultSchema.attributes ?? {}
 /** The HTML a page may carry: GitHub's set, plus the tags and attributes folio renders beyond it. */
 export const SCHEMA = {
   ...defaultSchema,
@@ -46,4 +46,4 @@ export const SCHEMA = {
     time: [...(base.time ?? []), "dateTime"],
     data: ["value"],
   },
-};
+}

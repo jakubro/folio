@@ -5,11 +5,11 @@ const ESCAPES: Record<string, string> = {
   "<": "&lt;",
   ">": "&gt;",
   '"': "&quot;",
-};
+}
 
-export function shell(title: string, rootName: string, build: string): string {
+export function shell(title: string, rootName: string, build: string, missing = false): string {
   return `<!doctype html>
-<html lang="en" data-root="${escapeHtml(rootName)}" data-build="${escapeHtml(build)}">
+<html lang="en" data-root="${escapeHtml(rootName)}" data-build="${escapeHtml(build)}"${missing ? " data-missing" : ""}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -21,9 +21,9 @@ export function shell(title: string, rootName: string, build: string): string {
 <script type="module" src="/?asset=page.js"></script>
 </body>
 </html>
-`;
+`
 }
 
 function escapeHtml(text: string): string {
-  return text.replace(/[&<>"]/g, (c) => ESCAPES[c]);
+  return text.replace(/[&<>"]/g, (c) => ESCAPES[c])
 }

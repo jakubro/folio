@@ -12,7 +12,7 @@ folio needs Node.js 22.18 or later.
 npx @jakubro/folio ~/notes
 ```
 
-Open `http://localhost:8640/`. Without a folder, folio serves the current directory; `--port` picks another port, and <kbd>Ctrl</kbd>+<kbd>C</kbd> stops it. To keep it installed:
+Open the address it prints: `http://localhost:8640/`, or the next free port when that one is taken. Without a folder, folio serves the current directory; `--port` picks another port, and <kbd>Ctrl</kbd>+<kbd>C</kbd> stops it. To keep it installed:
 
 ```sh
 npm install --global @jakubro/folio

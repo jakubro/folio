@@ -1,11 +1,11 @@
 /** Builds the published package into dist/: the command, and the page script and styles it serves. */
 
-import fs from "node:fs";
-import { build } from "esbuild";
+import fs from "node:fs"
+import { build } from "esbuild"
 
-const HERE = import.meta.dirname;
-const OUT = `${HERE}/dist`;
-const STYLES = `${HERE}/node_modules/highlight.js/styles`;
+const HERE = import.meta.dirname
+const OUT = `${HERE}/dist`
+const STYLES = `${HERE}/node_modules/highlight.js/styles`
 
 /**
  * highlight.js ships one stylesheet per theme; nesting each under its theme makes the switch pure CSS.
@@ -17,7 +17,7 @@ const highlightThemes = {
     builder.onResolve({ filter: /^folio:highlight-themes$/ }, (args) => ({
       path: args.path,
       namespace: "highlight-themes",
-    }));
+    }))
     builder.onLoad({ filter: /.*/, namespace: "highlight-themes" }, () => ({
       loader: "css",
       contents: [
@@ -29,11 +29,22 @@ const highlightThemes = {
             `:where(:root[data-theme="${theme}"]) {\n${fs.readFileSync(`${STYLES}/${file}`, "utf8")}\n}`,
         )
         .join("\n"),
-    }));
+    }))
   },
-};
+}
 
-fs.rmSync(OUT, { recursive: true, force: true });
+/** A stylesheet the page script injects itself is loaded as text. */
+const textStyles = {
+  name: "text-styles",
+  setup(builder) {
+    builder.onLoad({ filter: /leaflet[\\/]dist[\\/]leaflet\.css$/ }, (args) => ({
+      contents: fs.readFileSync(args.path, "utf8"),
+      loader: "text",
+    }))
+  },
+}
+
+fs.rmSync(OUT, { recursive: true, force: true })
 
 await build({
   absWorkingDir: HERE,
@@ -56,7 +67,7 @@ await build({
   },
   outdir: OUT,
   logLevel: "warning",
-});
+})
 
 const browser = {
   absWorkingDir: HERE,
@@ -70,23 +81,24 @@ const browser = {
   plugins: [highlightThemes],
   legalComments: "linked",
   logLevel: "warning",
-};
+}
 
 // Chunks load through the asset query: a relative chunk URL would land in the served folder's address space.
 await build({
   ...browser,
+  plugins: [...browser.plugins, textStyles],
   entryPoints: [{ in: "src/client/page.ts", out: "page" }],
   splitting: true,
   chunkNames: "chunk-[hash]",
   publicPath: "/?asset=",
-});
+})
 
 // A frozen page has no server to load chunks from, so its script is one file.
 await build({
   ...browser,
   entryPoints: [{ in: "src/client/snapshot.ts", out: "snapshot" }],
   format: "iife",
-});
+})
 
 // Built apart: theme.js is a classic script, which cannot import a chunk shared with the page.
 await build({
@@ -95,4 +107,4 @@ await build({
     { in: "src/client/page.css", out: "page" },
     { in: "src/client/theme.ts", out: "theme" },
   ],
-});
+})

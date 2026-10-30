@@ -13,11 +13,11 @@
     "e2e/*.test.ts"
   ],
   "project": ["*.mjs", "src/**/*.ts", "test/**/*.ts", "e2e/**/*.ts", "visual/**/*.ts"],
+  "ignoreBinaries": ["script"],
   "ignoreDependencies": [
     "@biomejs/biome",
     "@fontsource/arimo",
     "@fontsource/jetbrains-mono",
-    "highlight.js",
     "katex"
   ]
 }

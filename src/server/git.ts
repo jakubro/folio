@@ -1,12 +1,12 @@
 /** Git, read only: what the repository a file belongs to knows of it. */
 
-import { execFile } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
-import { isInside } from "./files.ts";
+import { execFile } from "node:child_process"
+import fs from "node:fs"
+import path from "node:path"
+import { isInside } from "./files.ts"
 
-const TIMEOUT_MS = 10_000;
-const MAX_BUFFER = 256 * 1024 * 1024;
+const TIMEOUT_MS = 10_000
+const MAX_BUFFER = 256 * 1024 * 1024
 /**
  * No command folio runs may write to a repository: optional locks off, no prompts, no pager; every
  * path is literal, so no name folio passes is read as a pattern or a magic pathspec.
@@ -18,7 +18,7 @@ const ENV = {
   GIT_PAGER: "cat",
   GIT_LITERAL_PATHSPECS: "1",
   LC_ALL: "C",
-};
+}
 /**
  * A repository's own config may name programs to run; each key that can is overridden, as a
  * command-line setting outranks every config file.
@@ -37,20 +37,20 @@ const SAFE = [
   "gpg.x509.program=false",
   "diff.external=",
   "protocol.allow=never",
-].flatMap((setting) => ["-c", setting]);
+].flatMap((setting) => ["-c", setting])
 
 export interface Commit {
   /** The file's blob at the commit; forty zeros where the commit removed it. */
-  blob: string;
+  blob: string
   /** The start of the second git timed it to. */
-  at: number;
-  by: string;
+  at: number
+  by: string
 }
 
-const COMMITS = 2000;
-const LOGGED = 50_000;
-const tops = new Map<string, Promise<string | undefined>>();
-const logs = new Map<string, { key: string; files: Promise<Map<string, Commit[]>> }>();
+const COMMITS = 2000
+const LOGGED = 50_000
+const tops = new Map<string, Promise<string | undefined>>()
+const logs = new Map<string, { key: string; files: Promise<Map<string, Commit[]>> }>()
 
 /**
  * The commits touching a file, newest first, at most 2,000; none outside a repository folio may
@@ -58,8 +58,8 @@ const logs = new Map<string, { key: string; files: Promise<Map<string, Commit[]>
  * HEAD.
  */
 export async function commits(file: string, root: string): Promise<Commit[]> {
-  const repository = await repositoryOf(placed(file).cwd, root);
-  return repository ? ((await logOf(repository)).get(file) ?? []).slice(0, COMMITS) : [];
+  const repository = await repositoryOf(placed(file).cwd, root)
+  return repository ? ((await logOf(repository)).get(file) ?? []).slice(0, COMMITS) : []
 }
 
 /**
@@ -68,38 +68,38 @@ export async function commits(file: string, root: string): Promise<Commit[]> {
  * `.git` file pointing anywhere else - another repository's objects - is refused.
  */
 export function repositoryOf(dir: string, root: string): Promise<string | undefined> {
-  const key = `${root}\0${dir}`;
-  let found = tops.get(key);
+  const key = `${root}\0${dir}`
+  let found = tops.get(key)
 
   if (found === undefined) {
     found = (async () => {
-      const top = await topLevel(dir);
-      const named = top && (await git(top, ["rev-parse", "--absolute-git-dir"]))?.trim();
-      const real = named && fs.existsSync(named) ? fs.realpathSync(named) : undefined;
-      return real && trusted(real, root) ? top : undefined;
-    })();
-    tops.set(key, found);
+      const top = await topLevel(dir)
+      const named = top && (await git(top, ["rev-parse", "--absolute-git-dir"]))?.trim()
+      const real = named && fs.existsSync(named) ? fs.realpathSync(named) : undefined
+      return real && trusted(real, root) ? top : undefined
+    })()
+    tops.set(key, found)
   }
 
-  return found;
+  return found
 }
 
 async function topLevel(dir: string): Promise<string | undefined> {
-  return (await git(dir, ["rev-parse", "--show-toplevel"]))?.trim() || undefined;
+  return (await git(dir, ["rev-parse", "--show-toplevel"]))?.trim() || undefined
 }
 
 function trusted(gitDir: string, root: string): boolean {
   if (isInside(root, gitDir)) {
-    return true;
+    return true
   }
 
   for (let dir = root; ; dir = path.dirname(dir)) {
     if (isInside(path.join(dir, ".git"), gitDir)) {
-      return true;
+      return true
     }
 
     if (path.dirname(dir) === dir) {
-      return false;
+      return false
     }
   }
 }
@@ -116,26 +116,26 @@ export async function touched(top: string, from: number, to: number): Promise<st
     "--no-show-signature",
     "--name-only",
     "--format=",
-  ]);
+  ])
 
   return [...new Set((output ?? "").split("\n").filter(Boolean))].map((file) =>
     path.join(top, file),
-  );
+  )
 }
 
 export function gitText(file: string, blob: string): Promise<string | undefined> {
-  return git(placed(file).cwd, ["cat-file", "blob", blob]);
+  return git(placed(file).cwd, ["cat-file", "blob", blob])
 }
 
 /** Every file a repository tracks, as absolute paths. */
 export async function tracked(top: string): Promise<Set<string>> {
-  const output = await git(top, ["ls-files", "-z"]);
+  const output = await git(top, ["ls-files", "-z"])
   return new Set(
     (output ?? "")
       .split("\0")
       .filter(Boolean)
       .map((file) => path.join(top, file)),
-  );
+  )
 }
 
 /**
@@ -143,11 +143,11 @@ export async function tracked(top: string): Promise<Set<string>> {
  * key, so no process runs to learn the log is still current.
  */
 async function logOf(top: string): Promise<Map<string, Commit[]>> {
-  const key = await headOf(top);
-  const held = logs.get(top);
+  const key = await headOf(top)
+  const held = logs.get(top)
 
   if (held?.key === key) {
-    return held.files;
+    return held.files
   }
 
   const files = git(top, [
@@ -163,45 +163,45 @@ async function logOf(top: string): Promise<Map<string, Commit[]>> {
     "--no-abbrev",
     "--format=%x01%ct%x00%an",
   ]).then((output) => {
-    const found = new Map<string, Commit[]>();
+    const found = new Map<string, Commit[]>()
 
     for (const record of (output ?? "").split("\x01")) {
-      const [head, ...rest] = record.split("\n");
-      const [time, by] = head.split("\0");
+      const [head, ...rest] = record.split("\n")
+      const [time, by] = head.split("\0")
 
       for (const line of rest) {
-        const [fields, name] = line.split("\t");
+        const [fields, name] = line.split("\t")
 
         if (line.startsWith(":") && name !== undefined) {
-          const file = path.join(top, name);
-          const blob = fields.split(" ")[3];
-          const commit = { blob, at: Number(time) * 1000, by };
-          const held = found.get(file);
+          const file = path.join(top, name)
+          const blob = fields.split(" ")[3]
+          const commit = { blob, at: Number(time) * 1000, by }
+          const held = found.get(file)
 
           if (held) {
-            held.push(commit);
+            held.push(commit)
           } else {
-            found.set(file, [commit]);
+            found.set(file, [commit])
           }
         }
       }
     }
 
-    return found;
-  });
+    return found
+  })
 
-  logs.set(top, { key, files });
-  return files;
+  logs.set(top, { key, files })
+  return files
 }
 
 async function headOf(top: string): Promise<string> {
-  const dir = path.join(top, ".git");
+  const dir = path.join(top, ".git")
   const stamp = ["logs/HEAD", "HEAD", "packed-refs"].map((name) => {
-    const stat = fs.statSync(path.join(dir, name), { throwIfNoEntry: false });
-    return stat ? `${stat.mtimeMs}:${stat.size}` : "";
-  });
+    const stat = fs.statSync(path.join(dir, name), { throwIfNoEntry: false })
+    return stat ? `${stat.mtimeMs}:${stat.size}` : ""
+  })
 
-  return stamp[0] ? stamp.join("|") : ((await git(top, ["rev-parse", "HEAD"])) ?? "");
+  return stamp[0] ? stamp.join("|") : ((await git(top, ["rev-parse", "HEAD"])) ?? "")
 }
 
 /** Run git in a folder; undefined when git is missing, the folder is in no repository, or it fails. */
@@ -212,17 +212,17 @@ function git(cwd: string, args: string[]): Promise<string | undefined> {
       ["--no-pager", ...SAFE, ...args],
       { cwd, env: ENV, timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER, encoding: "utf8" },
       (error, stdout) => resolve(error ? undefined : stdout),
-    );
-  });
+    )
+  })
 }
 
 /** A removed file's folder may be gone too: git is asked from the nearest folder still there. */
 function placed(file: string): { cwd: string; spec: string } {
-  let cwd = path.dirname(file);
+  let cwd = path.dirname(file)
 
   while (!fs.existsSync(cwd) && path.dirname(cwd) !== cwd) {
-    cwd = path.dirname(cwd);
+    cwd = path.dirname(cwd)
   }
 
-  return { cwd, spec: path.relative(cwd, file) };
+  return { cwd, spec: path.relative(cwd, file) }
 }

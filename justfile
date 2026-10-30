@@ -5,8 +5,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 # Test runner wrapper: time and total resident memory caps, each with a backstop, and a per-process limit
 RUN_CAPPED := justfile_directory() / "scripts/run-capped.sh"
 # Clone detector, pinned exactly: its fingerprints are the baseline's format
-JSCPD := "npx --yes jscpd@5.3.2 --config .jscpd.json --baseline .jscpd-baseline.json"
-KNIP := "npx --yes knip@6.39.0 --no-progress"
+JSCPD := "npx --yes jscpd@5.4.2 --config .jscpd.json --baseline .jscpd-baseline.json"
+KNIP := "npx --yes knip@6.43.0 --no-progress"
 # Browser test files run at once: a fifth of the cores, as the snapshot workers do
 E2E_JOBS := `echo $(( $(nproc) / 5 > 1 ? $(nproc) / 5 : 1 ))`
 
@@ -24,7 +24,7 @@ install:
 
 # Run the unit tests; ARGS narrows to files
 test *ARGS="test/*.test.ts":
-    nice -n 19 {{ RUN_CAPPED }} 10 4096 131072 -- node --test {{ ARGS }} 2>&1 | tee /tmp/folio--test.log
+    nice -n 19 {{ RUN_CAPPED }} 10 6144 131072 -- node --test {{ ARGS }} 2>&1 | tee /tmp/folio--test.log
 
 # Run every documented behaviour in headless Chromium against the built command
 e2e: build

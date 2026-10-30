@@ -6,7 +6,7 @@ The pictures show an invented folder: a small network of weather stations, with 
 
 ## Reading
 
-**The window** - the folder's tree on the left, the page in the middle, its outline on the right. Following a link swaps only the page, so the tree and the outline stay where they are. <kbd>←</kbd> and <kbd>→</kbd> step through the pages in the tree's order, and <kbd>Alt</kbd>+<kbd>←</kbd> and <kbd>Alt</kbd>+<kbd>→</kbd> hide or show the tree and the outline. Theme, full width and panels are chosen per tab.
+**The window** - the folder's tree on the left, the page in the middle, its outline on the right. Following a link swaps only the page, so the tree and the outline stay where they are. <kbd>←</kbd> and <kbd>→</kbd> step through the pages in the tree's order, and <kbd>Alt</kbd>+<kbd>←</kbd> and <kbd>Alt</kbd>+<kbd>→</kbd> hide or show the tree and the outline. A double-click on the toolbar gives the page the whole window, and another puts the layout back. Theme, full width and panels are chosen per tab.
 
 ![folio showing a page with a formula, highlighted code and a flowchart, between the folder's file tree and the page's outline](images/folio.png)
 
@@ -16,13 +16,15 @@ The pictures show an invented folder: a small network of weather stations, with 
 
 ![A page with one section folded under its heading, and the pointer over another heading showing the fold control on its left and the ¶ after its text](images/sections-folded.png)
 
-**Linked from** - below every page, the documents of the folder that link to it, each with the words around the link; the outline lists them too. A link saved anywhere in the folder joins the list at once.
+**Linked from** - below every page, the documents of the folder that link to it, each named by its h1 when it has exactly one, else by its path, with the words around the link; the outline lists them too. A link saved anywhere in the folder joins the list at once.
 
 ![A station's page ending in the list of the three documents linking to it, each with the words around its link](images/backlinks.png)
 
-**Diagrams** - a ` ```mermaid ` fence or a whole `.mmd` file draws as a diagram. The button in its corner opens it over the whole window, where the wheel zooms, dragging pans and <kbd>Escape</kbd> closes.
+**Diagrams** - a ` ```mermaid ` fence or a whole `.mmd` file draws as a diagram. The buttons in its corner open it over the whole window, where the wheel zooms, dragging pans and <kbd>Escape</kbd> closes, switch it to its source and copy the source; a chart, a map and a 3D model have the same switch and copy.
 
 ![A flowchart open in the full-window viewer, with the zoom, fit and pan controls along the bottom](images/diagram-viewer.png)
+
+**Copy as markdown** - the copy button beside the download button copies the page as markdown, as it shows: included sections in place, embedded values filled in, tables and query results as markdown tables in the order their views show them. The copy button in a block's margin copies that block, a heading its whole section.
 
 **Freeze** - the download button saves the page as one HTML file, with its diagrams, charts, values and tables as they are now. It opens anywhere, offline and without folio, and its tables still sort and filter.
 
@@ -36,13 +38,17 @@ The pictures show an invented folder: a small network of weather stations, with 
 
 **Loose tables** - rows with too many or too few cells, and pipe lines with no divider line, still render as tables.
 
-**Math and diagrams** - `$...$` inline and `$$...$$` on a line of its own render as formulas. A diagram that cannot be drawn shows its source with a red bar; point at it to read the error.
+**Math, diagrams and maps** - `$...$` inline and `$$...$$` on a line of its own render as formulas. A ` ```geojson ` or ` ```topojson ` fence draws as a map of its shapes, offline until you press *Load map* for OpenStreetMap's tiles, and an ` ```stl ` fence as a 3D model you turn by dragging. A diagram that cannot be drawn shows its source with a red bar; point at it to read the error.
+
+![A page drawing the stations and the track between them as a map, its tiles not yet loaded, and a rain gauge's funnel as a 3D model](images/map-and-model.png)
 
 ## Data
 
-**Data files open as pages** - CSV, TSV, JSON Lines, Parquet, JSON, YAML, SQLite and DuckDB files open in the browser: rows as a table, nested data as a tree that folds, a database as its tables. *Used by* below a file lists the documents that read it. The tree hides data files until you press the table button at its top.
+**Data files open as pages** - CSV, TSV, JSON Lines, Parquet, JSON, YAML, SQLite and DuckDB files open in the browser: rows as a table whose rows open into their records - a long file 200 rows at a time, sorted and filtered over all of it - nested data as a tree that folds with its records as tables, a database as its tables. Under each column's header a strip shows how its values spread over the whole file, the side panel lists the fields, and a value or a bar picked there filters every view to the records holding it, with the filter as a query to copy. A card above a filter's records names what sets them apart from the rest, and a field of a few values compares every other field by its values. *Used by* below a file lists the documents that read it. The tree hides data files until you press the table button at its top.
 
-![A JSON file open as a tree, one station's entry unfolded to its id, elevation and nested position, instruments and uplink](images/data-tree.png)
+![A JSON file open as a tree, its stations a table with one station's record open: its id, elevation and nested position, instruments and uplink](images/data-tree.png)
+
+![A CSV file's fields compared by station: a column per station with its count, a row per field with its median and spread, and the comparison as a query](images/compare.png)
 
 **Tables you can sort and filter** - click a column's header to sort by it, again to reverse, a third time to go back to the order as written. The filter button beside a table's corner filters all rows or one column's and hides columns. None of it touches the file, a save keeps the view, and the view lives in the page's address, so a copied link reopens it.
 
@@ -69,7 +75,7 @@ from 'data/daily.csv'
 
 ## Keeping up
 
-**What is new to you** - folio remembers which blocks you have read, in any browser. Open a page you read before and a green bar marks each block added since, an amber bar each one changed and a red tick each one removed; click an amber bar to see what the block said when you read it. A mark clears once its block has been on screen for a moment. Rewrapping a paragraph or repadding a table marks nothing.
+**What is new to you** - folio remembers which blocks you have read, in any browser. Open a page you read before and a green bar marks each block added since, an amber bar each one changed and a red tick each one removed; click an amber bar to see what the block said when you read it. In a table, a list or a block of code the bars sit beside each row, item or line that changed, and a changed row tints the cells that changed. A mark clears once what it marks has been on screen for a moment. Rewrapping a paragraph or repadding a table marks nothing.
 
 ![A station's page with an amber bar beside a reworded paragraph and its earlier wording open below it, a red tick where a section was removed and a green bar beside a new paragraph](images/marks.png)
 
@@ -77,9 +83,9 @@ from 'data/daily.csv'
 
 ![The report after a new day of readings, with amber bars beside the sentence holding a value, the query's result, the table and the chart](images/data-changed.png)
 
-**Catch up** - a dot in the tree marks each document you read that changed since, and an outlined dot each folder holding one. The inbox button counts them and opens the list, newest change first.
+**Catch up** - a dot in the tree marks each document you read that changed since, and an outlined dot each folder holding one. The inbox button counts them and opens the list, newest change first, grouped by when: since yesterday, the past week, month, quarter and year, and older.
 
-![The catch-up list naming two documents with how many blocks changed and when, beside the tree marking them with dots](images/catch-up.png)
+![The catch-up list naming two documents under the past week, with how many blocks changed and when, beside the tree marking them with dots](images/catch-up.png)
 
 **What needs you** - folio's front page: errors in the folder, problems in documents you have read, what the folder's own declarations flag for attention, and what changed since you read it.
 
@@ -137,15 +143,15 @@ A kind places documents by where they live and reads typed fields from their lab
 
 ```text
 $ folio check
-report.md:3 - figure 9.4 is contradicted: the data says 8.9 (#totals#0.temp_c)
-notes/uplink.md:3 - link Links to notes/antenna.md, which is not there
-notes/uplink.md:5 - include Includes parts/frequencies.md, which is not there
-stations/west.md:5 - field calibrated: before the storms is not a date
-stations/south.md:1 error rule An active station has no owner
+report.md:3          -      figure   9.4 is contradicted: the data says 8.9 (#totals#0.temp_c)
+notes/uplink.md:3    -      link     Links to notes/antenna.md, which is not there
+notes/uplink.md:5    -      include  Includes parts/frequencies.md, which is not there
+stations/west.md:5   -      field    calibrated: before the storms is not a date
+stations/south.md:1  error  rule     An active station has no owner
 folio check: 1 error, 4 other problems
 ```
 
-**Agents** - `folio mcp` is an MCP server whose tools read the running folio: documents and their blocks, queries, health, what changed, history, what you have read and what you are looking at. An agent starts it as a command:
+**Agents** - `folio mcp` is an MCP server whose tools read the folio serving the agent's folder: documents and their blocks, queries, health, what changed, history, what you have read and what you are looking at. An agent starts it as a command:
 
 ```json
 { "mcpServers": { "folio": { "command": "folio", "args": ["mcp"] } } }

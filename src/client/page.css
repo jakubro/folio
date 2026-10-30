@@ -29,6 +29,7 @@
   --overlay: rgb(255 255 255 / 96%);
   --bar-height: 44px;
   --bar-item: 32px;
+  --pin-gap: 4px;
   /* KaTeX's face, also carried, draws what the subsets lack - arrows such as a footnote's back-link. */
   --sans:
     "Arimo", "KaTeX_Main", -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica,
@@ -53,6 +54,10 @@
   --read-changed: #d29922;
   --read-removed: #f85149;
   --overlay: rgb(20 20 20 / 96%);
+}
+
+:root.frozen {
+  --pin-gap: 0px;
 }
 
 * {
@@ -174,6 +179,10 @@ main {
 
 .read-mark.clearing {
   opacity: 0;
+}
+
+.markdown-body :is(td, th).cell-changed {
+  background: color-mix(in srgb, var(--read-changed) 20%, transparent);
 }
 
 .tree-row.changed::after,
@@ -356,6 +365,7 @@ main {
 }
 
 .block-provenance,
+.block-copy,
 .problem-flag {
   position: absolute;
   display: flex;
@@ -371,17 +381,21 @@ main {
 }
 
 .block-provenance[hidden],
+.block-copy[hidden],
+.icon-button[hidden],
 .problem-flag[hidden] {
   display: none;
 }
 
 .block-provenance svg,
+.block-copy svg,
 .problem-flag svg {
   width: 14px;
   height: 14px;
 }
 
-.block-provenance:hover {
+.block-provenance:hover,
+.block-copy:hover {
   color: var(--accent);
 }
 
@@ -491,7 +505,7 @@ main {
   max-width: none;
 }
 
-.markdown-body [data-folio-id] {
+.markdown-body :is([data-folio-id], .data-tree > [data-key]) {
   scroll-margin-top: calc(var(--bar-height) + 12px);
 }
 
@@ -678,6 +692,66 @@ main {
   color: var(--muted);
 }
 
+.markdown-body blockquote.markdown-alert {
+  border-left-color: var(--alert);
+  color: inherit;
+}
+
+.markdown-body .markdown-alert-note {
+  --alert: #0969da;
+}
+
+.markdown-body .markdown-alert-tip {
+  --alert: #1a7f37;
+}
+
+.markdown-body .markdown-alert-important {
+  --alert: #8250df;
+}
+
+.markdown-body .markdown-alert-warning {
+  --alert: #9a6700;
+}
+
+.markdown-body .markdown-alert-caution {
+  --alert: #d1242f;
+}
+
+:root[data-theme="dark"] .markdown-body .markdown-alert-note {
+  --alert: #4493f8;
+}
+
+:root[data-theme="dark"] .markdown-body .markdown-alert-tip {
+  --alert: #3fb950;
+}
+
+:root[data-theme="dark"] .markdown-body .markdown-alert-important {
+  --alert: #ab7df8;
+}
+
+:root[data-theme="dark"] .markdown-body .markdown-alert-warning {
+  --alert: #d29922;
+}
+
+:root[data-theme="dark"] .markdown-body .markdown-alert-caution {
+  --alert: #f85149;
+}
+
+.markdown-body .markdown-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--alert);
+  font-weight: 600;
+}
+
+.markdown-body .markdown-alert-title svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
 .markdown-body hr {
   height: 2px;
   margin: 6px 0;
@@ -721,6 +795,70 @@ main {
 
 .markdown-body th {
   font-weight: 600;
+}
+
+/* pins.ts takes --pinned from 0 to 1 as it pins a header. A collapsed table paints the header's top
+   and bottom borders where the header was, so the layers above and below it draw them. */
+@property --pinned {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+.markdown-body thead :is(th, td) {
+  background-color: color-mix(in srgb, var(--bg) calc(var(--pinned) * 100%), transparent);
+}
+
+.markdown-body thead th.cell-changed {
+  background: linear-gradient(
+      color-mix(in srgb, var(--read-changed) 20%, transparent),
+      color-mix(in srgb, var(--read-changed) 20%, transparent)
+    )
+    color-mix(in srgb, var(--bg) calc(var(--pinned) * 100%), transparent);
+}
+
+/* Only the running animation makes the header hold these layers, so it also supplies --pin-content.
+   Shadows, not wider insets, cover the outer borders: insets widen what the table scrolls. Each line
+   sits where the table draws the resting header's border; the upper layer also fills the strip above
+   the cells' fill, and the pixel under the toolbar that a header pinned below the line leaves open.
+   The lower layer hangs from a cell: on the header it would add a pixel to the header's height, on a
+   row a pixel to the table's width. */
+.markdown-body thead::before,
+.markdown-body thead > tr:last-child > :first-child::before {
+  position: absolute;
+  right: 0;
+  left: 0;
+  box-shadow:
+    -1px 0 var(--bg),
+    1px 0 var(--bg);
+  opacity: var(--pinned);
+  pointer-events: none;
+  content: var(--pin-content, none);
+}
+
+.markdown-body thead::before {
+  bottom: calc(100% - 1px);
+  height: calc(2px + var(--pin-gap));
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.markdown-body thead > tr:last-child > :first-child::before {
+  top: calc(100% - 0.5px);
+  height: 1px;
+  background: var(--border);
+  box-shadow:
+    -1px 0 var(--border),
+    1px 0 var(--border);
+}
+
+@media print {
+  .markdown-body thead {
+    /* biome-ignore lint/complexity/noImportantStyles: an animation outranks all but important */
+    --pinned: 0 !important;
+    /* biome-ignore lint/complexity/noImportantStyles: an animation outranks all but important */
+    transform: none !important;
+  }
 }
 
 .markdown-body tr:nth-child(2n) {
@@ -867,6 +1005,16 @@ main {
   font-variant-ligatures: no-contextual;
 }
 
+.markdown-body .color-swatch {
+  display: inline-block;
+  width: 0.75em;
+  height: 0.75em;
+  margin-left: 0.3em;
+  border: 1px solid var(--muted);
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
 .markdown-body pre {
   overflow: auto;
   margin: 8px 0;
@@ -890,6 +1038,37 @@ main {
 .markdown-body pre code {
   padding: 0;
   background: transparent;
+}
+
+.markdown-body pre:has(> .code-copy) {
+  position: relative;
+  overflow: visible;
+  padding-right: 36px;
+}
+
+.markdown-body pre:has(> .code-copy) > code {
+  display: block;
+  overflow-x: auto;
+}
+
+:is(.markdown-body, .data-panel-query) .code-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  opacity: 0;
+}
+
+:is(.markdown-body, .data-panel-query) .code-copy svg {
+  width: 14px;
+  height: 14px;
+}
+
+:is(.markdown-body, .data-panel-query) pre:hover > .code-copy,
+.markdown-body .code-copy:focus-visible,
+.markdown-body .code-copy.copied {
+  opacity: 1;
 }
 
 .markdown-body pre code.hljs {
@@ -960,6 +1139,497 @@ main {
 
 .markdown-body .data-null {
   color: var(--muted);
+}
+
+.markdown-body table.data-records td {
+  vertical-align: top;
+}
+
+.markdown-body .data-cell {
+  display: block;
+  max-width: 28em;
+  max-height: 3lh;
+  overflow: hidden;
+  overflow-wrap: break-word;
+}
+
+.markdown-body .data-cell.data-token {
+  white-space: nowrap;
+}
+
+.markdown-body .data-cell.data-wide {
+  width: 57em;
+  max-width: none;
+}
+
+.markdown-body .data-record-body .data-cell.data-wide {
+  width: auto;
+}
+
+.markdown-body .data-tree table {
+  font: 14px / 1.5 var(--sans);
+}
+
+.markdown-body .data-key,
+.markdown-body .data-k {
+  color: var(--muted);
+}
+
+.markdown-body .data-key {
+  white-space: nowrap;
+}
+
+.markdown-body table.data-opens > tbody > tr:not([data-follows]) {
+  cursor: pointer;
+}
+
+.markdown-body table.data-opens > tbody > tr:not([data-follows]):hover > td {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.markdown-body table.data-opens > tbody > tr.open > td {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.markdown-body tr.data-record > td {
+  padding: 0;
+  background: var(--bg);
+}
+
+.markdown-body .data-record-body {
+  position: sticky;
+  left: 0;
+  box-sizing: border-box;
+  padding: 6px 10px 8px;
+  border-left: 3px solid var(--accent);
+}
+
+.markdown-body dl.record-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  margin: 0;
+}
+
+.markdown-body dl.record-fields > :is(dt, dd) {
+  margin: 0;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.markdown-body dl.record-fields > dt {
+  color: var(--muted);
+  font-style: normal;
+  font-weight: 500;
+}
+
+.markdown-body dl.record-fields > dd.data-empty {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.875em;
+}
+
+.markdown-body dl.record-fields table {
+  margin: 2px 0;
+}
+
+.markdown-body .data-text {
+  white-space: pre-wrap;
+}
+
+.markdown-body .data-pair {
+  margin-right: 0.9em;
+}
+
+.markdown-body .data-shared {
+  margin-bottom: 4px;
+}
+
+.markdown-body .data-count {
+  margin-right: 0.4em;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 0.8em;
+}
+
+.markdown-body ol.data-items {
+  margin: 0;
+  padding-left: 2em;
+}
+
+.markdown-body .data-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.markdown-body .data-filter {
+  margin-left: 12px;
+  color: var(--fg);
+}
+
+.markdown-body tr.data-stats > td {
+  padding: 4px 8px 6px;
+  vertical-align: top;
+  font-weight: normal;
+}
+
+.data-no-stats tr.data-stats,
+.markdown-body .data-gone {
+  display: none;
+}
+
+.data-chart {
+  display: block;
+  overflow: visible;
+}
+
+.data-chart .data-hit {
+  fill: transparent;
+}
+
+.data-chart .data-pick {
+  cursor: pointer;
+}
+
+.data-chart .data-bar {
+  fill: var(--accent);
+  pointer-events: none;
+}
+
+.data-chart .data-pick:is(:hover, :focus-visible) .data-bar {
+  opacity: 0.65;
+}
+
+.data-chart g:focus-visible {
+  outline: none;
+}
+
+.data-chart .data-base {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.data-ends {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.data-stat-note {
+  max-width: 16em;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.data-top {
+  display: grid;
+  gap: 1px;
+  min-width: 136px;
+}
+
+.data-top-line {
+  display: grid;
+  grid-template-columns: minmax(3.5em, 1fr) 28px 2.4em;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--fg);
+  font: 12px / 1.4 var(--sans);
+  text-align: left;
+}
+
+button.data-top-line {
+  cursor: pointer;
+}
+
+button.data-top-line:hover {
+  background: var(--hover);
+}
+
+.data-top-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.data-track {
+  height: 6px;
+  border-radius: 0 3px 3px 0;
+  background: var(--subtle);
+}
+
+.data-fill {
+  display: block;
+  height: 100%;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+
+.data-top-share,
+.data-more-values {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.data-top-share {
+  text-align: right;
+}
+
+.data-more-values {
+  padding: 0 2px;
+}
+
+.data-meter {
+  display: block;
+  grid-column: 1 / -1;
+  height: 2px;
+  margin-top: 2px;
+  background: var(--border);
+}
+
+.data-meter > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.data-panel-head {
+  margin: 0 8px 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.data-panel-filter {
+  margin: 0 8px 8px;
+  font-size: 13px;
+}
+
+.data-panel-error {
+  margin: 0 8px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.data-panel :is(.data-switch, .data-panel-filter button),
+.markdown-body .data-filter .data-switch {
+  margin-left: 4px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.data-fields {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.data-panel .data-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 8px;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg);
+  font: 13px / 1.3 var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.data-panel .data-field:hover,
+.data-panel .data-field[aria-expanded="true"] {
+  background: var(--hover);
+}
+
+.data-field-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.data-field-count {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.data-field-count .data-chart {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.data-field-detail {
+  padding: 4px 8px 10px;
+}
+
+.data-order {
+  margin-top: 6px;
+}
+
+.data-panel-empties {
+  margin: 10px 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.data-panel-empties summary {
+  cursor: pointer;
+}
+
+.data-panel-query {
+  margin: 12px 0 0;
+  font-size: 12px;
+}
+
+.data-panel-query pre {
+  position: relative;
+  margin: 0 4px;
+  padding: 6px 30px 6px 8px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--subtle);
+  font: 12px / 1.4 var(--mono);
+}
+
+.markdown-body .data-findings {
+  margin: 4px 0 12px;
+  padding: 8px 12px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.markdown-body .data-findings-title {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.markdown-body .data-legend {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.markdown-body .data-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin: 0 4px 0 8px;
+  border-radius: 2px;
+  vertical-align: -1px;
+}
+
+.markdown-body .data-here {
+  background: var(--accent);
+}
+
+.markdown-body .data-elsewhere {
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
+.data-chart .data-bar.data-elsewhere {
+  fill: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
+.markdown-body .data-findings-list {
+  display: grid;
+  gap: 2px;
+}
+
+.markdown-body .data-finding {
+  display: grid;
+  grid-template-columns: minmax(10em, 14em) minmax(0, 1fr) 128px;
+  align-items: center;
+  gap: 12px;
+  padding: 3px 6px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.markdown-body .data-finding:disabled {
+  cursor: default;
+}
+
+.markdown-body .data-finding:not(:disabled):hover {
+  background: var(--hover);
+}
+
+.markdown-body .data-finding code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markdown-body .data-paired {
+  display: grid;
+  gap: 2px;
+}
+
+.markdown-body .data-paired .data-track {
+  height: 5px;
+}
+
+.markdown-body .data-findings-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.markdown-body table.data-compare-table td {
+  min-width: 120px;
+  vertical-align: top;
+}
+
+.markdown-body table.data-compare-table tbody th {
+  font-weight: normal;
+  text-align: left;
+}
+
+.markdown-body .data-compare-bar,
+.markdown-body .data-compare-spark {
+  display: block;
+  width: 96px;
+  margin-top: 2px;
+}
+
+.data-panel .data-compare-by {
+  display: block;
+  margin: 8px 0 0;
+}
+
+.markdown-body th.data-flash {
+  animation: landed 1.5s ease-out;
 }
 
 .markdown-body .embed-missing {
@@ -1060,16 +1730,162 @@ main {
   height: auto;
 }
 
-.mermaid-expand {
+.markdown-body .drawn-toolbar {
   position: absolute;
   top: 4px;
   right: 4px;
+  z-index: 1;
+  display: flex;
+  gap: 2px;
+  border-radius: 6px;
+  background: var(--bg);
   opacity: 0;
 }
 
-.mermaid:hover .mermaid-expand,
-.mermaid-expand:focus-visible {
+.markdown-body .drawn-toolbar .icon-button {
+  width: 24px;
+  height: 24px;
+}
+
+.markdown-body .drawn-toolbar svg {
+  width: 14px;
+  height: 14px;
+}
+
+.markdown-body :is(.mermaid, .embed-chart, .geo-map, .stl-model):hover > .drawn-toolbar,
+.markdown-body .drawn-toolbar:focus-within,
+.markdown-body .showing-source > .drawn-toolbar {
   opacity: 1;
+}
+
+.markdown-body .embed-chart {
+  position: relative;
+}
+
+.markdown-body .mermaid.showing-source > svg,
+.markdown-body .mermaid:not(.showing-source) > .drawn-source,
+.markdown-body .mermaid.showing-source .mermaid-expand,
+.markdown-body .embed-chart.showing-source > .chart,
+.markdown-body .embed-chart.drawn > pre > .code-copy {
+  display: none;
+}
+
+.markdown-body .geo-map {
+  position: relative;
+  margin: 8px 0;
+}
+
+.markdown-body .geo-map-canvas {
+  height: 300px;
+  border-radius: 6px;
+  background: var(--subtle);
+  font-family: var(--sans);
+}
+
+.markdown-body .geo-map > .drawn-toolbar {
+  z-index: 1001;
+}
+
+.markdown-body .stl-model {
+  position: relative;
+  margin: 8px 0;
+}
+
+.markdown-body .stl-canvas {
+  height: 300px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--subtle);
+}
+
+.markdown-body .stl-canvas canvas {
+  display: block;
+}
+
+.markdown-body .stl-controls {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  display: flex;
+  gap: 2px;
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.markdown-body .stl-controls .icon-button {
+  width: 24px;
+  height: 24px;
+}
+
+.markdown-body .stl-controls svg {
+  width: 14px;
+  height: 14px;
+}
+
+.markdown-body .stl-model > pre,
+.markdown-body .stl-model > pre > .code-copy,
+.markdown-body .stl-model.showing-source > :is(.stl-canvas, .stl-controls),
+.markdown-body .geo-map > pre,
+.markdown-body .geo-map > pre > .code-copy,
+.markdown-body .geo-map.showing-source > .geo-map-canvas,
+.markdown-body .geo-map.showing-source > .geo-map-tiles,
+.markdown-body .geo-map-tiles[hidden] {
+  display: none;
+}
+
+.markdown-body :is(.geo-map, .stl-model).showing-source > pre {
+  display: block;
+}
+
+.markdown-body .geo-map-tiles {
+  position: absolute;
+  right: 8px;
+  bottom: 24px;
+  z-index: 1000;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.875em;
+  cursor: pointer;
+}
+
+.markdown-body .geo-map .leaflet-bar a,
+.markdown-body .geo-map .leaflet-popup-content-wrapper,
+.markdown-body .geo-map .leaflet-popup-tip,
+.markdown-body .geo-map .leaflet-control-attribution {
+  border-color: var(--border);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.markdown-body .geo-map .leaflet-control-attribution a {
+  color: var(--accent);
+}
+
+.markdown-body .drawing-reason {
+  margin: 8px 0 4px;
+  color: var(--muted);
+}
+
+.markdown-body .mermaid > .drawn-source {
+  text-align: left;
+}
+
+.markdown-body .embed-chart.drawn.showing-source > pre {
+  display: block;
+}
+
+.markdown-body .showing-source > pre {
+  overflow: visible;
+  padding-right: 60px;
+}
+
+.markdown-body .showing-source > pre > code {
+  display: block;
+  overflow-x: auto;
 }
 
 .mermaid-zoom {

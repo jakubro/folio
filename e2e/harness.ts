@@ -1,20 +1,20 @@
 /** Fixture folders, a folio server and a headless Chromium for the browser tests; each test file gets its own. */
 
-import assert from "node:assert/strict";
-import { type ChildProcess, spawn } from "node:child_process";
-import fs from "node:fs";
-import net from "node:net";
-import os from "node:os";
-import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { after, before } from "node:test";
-import { DuckDBInstance } from "@duckdb/node-api";
-import { type Browser, type BrowserContext, chromium, type Page } from "playwright";
+import assert from "node:assert/strict"
+import { type ChildProcess, spawn } from "node:child_process"
+import fs from "node:fs"
+import net from "node:net"
+import os from "node:os"
+import path from "node:path"
+import { DatabaseSync } from "node:sqlite"
+import { after, before } from "node:test"
+import { DuckDBInstance } from "@duckdb/node-api"
+import { type Browser, type BrowserContext, chromium, type Page } from "playwright"
 
-export const CLI = path.join(import.meta.dirname, "../dist/cli.js");
-export const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-")));
-const state = fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-state-"));
-export const ENV = { ...process.env, XDG_STATE_HOME: state };
+export const CLI = path.join(import.meta.dirname, "../dist/cli.js")
+export const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-")))
+const state = fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-state-"))
+export const ENV = { ...process.env, XDG_STATE_HOME: state }
 
 export const FILES: Record<string, string> = {
   "notes/guide.md": [
@@ -87,34 +87,34 @@ export const FILES: Record<string, string> = {
   ".git/HEAD.md": "x",
   ".cache/x.md": "x",
   "node_modules/pkg/README.md": "x",
-};
+}
 
-let server: ChildProcess;
-export let port = 0;
-export let base = "";
-export let output = "";
-export let browser: Browser;
-export let context: BrowserContext;
+let server: ChildProcess
+export let port = 0
+export let base = ""
+export let output = ""
+export let browser: Browser
+export let context: BrowserContext
 
 before(async () => {
-  write(FILES);
-  port = await freePort();
-  base = `http://localhost:${port}`;
-  server = spawn(process.execPath, [CLI, root, "--port", String(port)], { env: ENV });
+  write(FILES)
+  port = await freePort()
+  base = `http://localhost:${port}`
+  server = spawn(process.execPath, [CLI, root, "--port", String(port), "--verbose"], { env: ENV })
   server.stdout?.on("data", (chunk) => {
-    output += chunk;
-  });
-  await until(() => output.includes(base));
-  browser = await chromium.launch();
-  context = await browser.newContext({ viewport: { width: 1400, height: 800 } });
-});
+    output += chunk
+  })
+  await until(() => output.includes(base))
+  browser = await chromium.launch()
+  context = await browser.newContext({ viewport: { width: 1400, height: 800 } })
+})
 
 after(async () => {
-  await browser?.close();
-  server?.kill();
-  fs.rmSync(root, { recursive: true, force: true });
-  fs.rmSync(state, { recursive: true, force: true });
-});
+  await browser?.close()
+  server?.kill()
+  fs.rmSync(root, { recursive: true, force: true })
+  fs.rmSync(state, { recursive: true, force: true })
+})
 
 export function visible(page: Page, text: string): Promise<boolean> {
   return page.evaluate(
@@ -123,7 +123,7 @@ export function visible(page: Page, text: string): Promise<boolean> {
         .find((p) => p.textContent === t)
         ?.checkVisibility() ?? false,
     text,
-  );
+  )
 }
 
 export const LEDGER = [
@@ -157,27 +157,27 @@ export const LEDGER = [
   ...Array.from({ length: 300 }, (_, i) => `| run-${i + 1} | ${(i * 7) % 300} |`),
   "",
   "Below the tables.",
-].join("\n");
+].join("\n")
 
 export async function open(urlPath: string): Promise<Page> {
-  const page = await context.newPage();
-  await page.goto(`${base}/${urlPath}`);
-  await page.waitForSelector(".markdown-body > *");
-  await page.waitForSelector(".tree .current");
+  const page = await context.newPage()
+  await page.goto(`${base}/${urlPath}`)
+  await page.waitForSelector(".markdown-body > *")
+  await page.waitForSelector(".tree .current")
   // The first subscription lands after the first render; saves before it would go unheard.
-  await page.waitForTimeout(300);
-  return page;
+  await page.waitForTimeout(300)
+  return page
 }
 
 export async function pathOf(page: Page): Promise<string> {
-  return page.evaluate(() => decodeURIComponent(location.pathname).slice(1));
+  return page.evaluate(() => decodeURIComponent(location.pathname).slice(1))
 }
 
 export async function settled(urlPath: string): Promise<Page> {
-  const page = await context.newPage();
-  await page.goto(`${base}/${urlPath}`);
-  await landed(page);
-  return page;
+  const page = await context.newPage()
+  await page.goto(`${base}/${urlPath}`)
+  await landed(page)
+  return page
 }
 
 /**
@@ -187,25 +187,25 @@ export async function settled(urlPath: string): Promise<Page> {
 export async function sourced(page: Page): Promise<void> {
   await page.waitForFunction(
     () => !document.querySelector(".markdown-body > [data-folio-source]:not([data-folio-id])"),
-  );
-  await page.waitForTimeout(100);
+  )
+  await page.waitForTimeout(100)
 }
 
 export async function landed(page: Page): Promise<void> {
-  await page.waitForSelector(".markdown-body > *");
-  await page.waitForSelector(".tree .current");
-  await page.waitForTimeout(300);
+  await page.waitForSelector(".markdown-body > *")
+  await page.waitForSelector(".tree .current")
+  await page.waitForTimeout(300)
 }
 
 /** Marks the frame and the document, so a reload or a rebuilt frame shows as a lost mark. */
 export async function keepFrame(page: Page): Promise<void> {
   await page.evaluate(() => {
-    (window as { kept?: boolean }).kept = true;
+    ;(window as { kept?: boolean }).kept = true
 
     for (const selector of [".bar", ".tree", ".outline"]) {
-      (document.querySelector(selector) as HTMLElement).dataset.kept = "";
+      ;(document.querySelector(selector) as HTMLElement).dataset.kept = ""
     }
-  });
+  })
 }
 
 export async function frameOf(page: Page) {
@@ -222,59 +222,59 @@ export async function frameOf(page: Page) {
     ),
     current: document.querySelector(".tree .current")?.textContent,
     outline: document.querySelector(".outline a")?.textContent,
-  }));
+  }))
 }
 
 export function write(files: Record<string, string | Buffer>): void {
-  writeIn(root, files);
+  writeIn(root, files)
 }
 
 export function writeIn(folder: string, files: Record<string, string | Buffer>): void {
   for (const [name, content] of Object.entries(files)) {
-    fs.mkdirSync(path.dirname(path.join(folder, name)), { recursive: true });
-    fs.writeFileSync(path.join(folder, name), content);
+    fs.mkdirSync(path.dirname(path.join(folder, name)), { recursive: true })
+    fs.writeFileSync(path.join(folder, name), content)
   }
 }
 
 export async function mark(page: Page): Promise<void> {
   await page.evaluate(() => {
-    (document.querySelector(".markdown-body") as HTMLElement).dataset.mark = "";
-  });
+    ;(document.querySelector(".markdown-body") as HTMLElement).dataset.mark = ""
+  })
 }
 
 export async function marked(page: Page): Promise<boolean> {
   return page.evaluate(
     () => (document.querySelector(".markdown-body") as HTMLElement).dataset.mark === "",
-  );
+  )
 }
 
 export async function waitText(page: Page, text: string): Promise<void> {
   await page.waitForFunction(
     (t) => document.querySelector(".markdown-body")?.textContent?.includes(t),
     text,
-  );
+  )
 }
 
 export function freePort(): Promise<number> {
   return new Promise((resolve) => {
     const probe = net.createServer().listen(0, "127.0.0.1", () => {
-      const { port } = probe.address() as net.AddressInfo;
-      probe.close(() => resolve(port));
-    });
-  });
+      const { port } = probe.address() as net.AddressInfo
+      probe.close(() => resolve(port))
+    })
+  })
 }
 
 export async function waitFor(condition: () => Promise<boolean>): Promise<void> {
   for (let i = 0; i < 100 && !(await condition()); i++) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 100))
   }
 
-  assert.ok(await condition(), "the condition never held");
+  assert.ok(await condition(), "the condition never held")
 }
 
 export async function until(condition: () => boolean): Promise<void> {
   for (let i = 0; i < 100 && !condition(); i++) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50))
   }
 }
 
@@ -285,13 +285,13 @@ export async function cells(page: Page, table: number, column: number): Promise<
         .filter((row) => !(row as HTMLElement).hidden)
         .map((row) => (row as HTMLTableRowElement).cells[c]?.textContent ?? ""),
     [table, column],
-  );
+  )
 }
 
 export async function panel(page: Page, table: number): Promise<void> {
-  await page.hover(`.markdown-body table >> nth=${table}`);
-  await page.click(".table-control");
-  await page.waitForSelector(".table-panel:not([hidden])");
+  await page.hover(`.markdown-body table >> nth=${table}`)
+  await page.click(".table-control")
+  await page.waitForSelector(".table-panel:not([hidden])")
 }
 
 export async function caption(page: Page, table: number): Promise<string | null> {
@@ -300,13 +300,13 @@ export async function caption(page: Page, table: number): Promise<string | null>
       document.querySelectorAll(".markdown-body table")[t].querySelector("caption")?.textContent ??
       null,
     table,
-  );
+  )
 }
 
 export async function writeData(): Promise<void> {
   if (fs.existsSync(path.join(root, "store/shop.duckdb"))) {
-    write({ "store/visits.csv": "city,visits\nOslo,1204\nLima,87\nRome,9\n" });
-    return;
+    write({ "store/visits.csv": "city,visits\nOslo,1204\nLima,87\nRome,9\n" })
+    return
   }
 
   write({
@@ -317,33 +317,33 @@ export async function writeData(): Promise<void> {
     "store/kit.json": '{"name":"kit","parts":[{"id":1},{"id":2}]}',
     "store/people.yaml": "- name: ada\n  age: 36\n- name: bob\n",
     "store/broken.csv": Buffer.from("city,visits\nOslo,1204\nL\xffma,87\nRome,9\n", "latin1"),
-  });
+  })
 
-  const sqlite = new DatabaseSync(path.join(root, "store/shop.sqlite"));
+  const sqlite = new DatabaseSync(path.join(root, "store/shop.sqlite"))
   sqlite.exec(
     `pragma journal_mode = wal; create table orders (id integer, item text); ${Array.from({ length: 12 }, (_, i) => `insert into orders values (${i}, 'item ${i}');`).join(" ")}`,
-  );
-  sqlite.close();
+  )
+  sqlite.close()
 
-  const duck = await DuckDBInstance.create(path.join(root, "store/shop.duckdb"));
-  const connection = await duck.connect();
-  await connection.run("create table stock as select range as id from range(3)");
+  const duck = await DuckDBInstance.create(path.join(root, "store/shop.duckdb"))
+  const connection = await duck.connect()
+  await connection.run("create table stock as select range as id from range(3)")
   await connection.run(
     `copy (select range as n from range(3)) to '${path.join(root, "store/visits.parquet")}' (format parquet)`,
-  );
+  )
   await connection.run(
     `copy (select range as n from range(6000)) to '${path.join(root, "store/many.parquet")}' (format parquet)`,
-  );
-  connection.closeSync();
-  duck.closeSync();
+  )
+  connection.closeSync()
+  duck.closeSync()
 }
 
 export async function openData(urlPath: string): Promise<Page> {
-  const page = await context.newPage();
-  await page.goto(`${base}/${urlPath}`);
-  await page.waitForSelector(".markdown-body > h1");
-  await page.waitForTimeout(300);
-  return page;
+  const page = await context.newPage()
+  await page.goto(`${base}/${urlPath}`)
+  await page.waitForSelector(".markdown-body > h1")
+  await page.waitForTimeout(300)
+  return page
 }
 
 export function snapshotOf(folder: string): string[] {
@@ -351,33 +351,33 @@ export function snapshotOf(folder: string): string[] {
     .readdirSync(folder)
     .sort()
     .map((name) => {
-      const stat = fs.statSync(path.join(folder, name));
-      return `${name} ${stat.size} ${stat.mtimeMs}`;
-    });
+      const stat = fs.statSync(path.join(folder, name))
+      return `${name} ${stat.size} ${stat.mtimeMs}`
+    })
 }
 
 /** A folio of its own on a fresh folder and port, sharing the suite's state folder. */
 export async function serveFolder(
   folder: string,
 ): Promise<{ base: string; stop: () => void; stopped: Promise<unknown> }> {
-  const own = await freePort();
-  let said = "";
-  const child = spawn(process.execPath, [CLI, folder, "--port", String(own)], { env: ENV });
+  const own = await freePort()
+  let said = ""
+  const child = spawn(process.execPath, [CLI, folder, "--port", String(own)], { env: ENV })
   child.stdout?.on("data", (chunk) => {
-    said += chunk;
-  });
-  await until(() => said.includes("serving"));
-  await until(() => said.includes("model:"));
+    said += chunk
+  })
+  await until(() => said.includes("serving"))
+  await until(() => said.includes("documents in"))
   return {
     base: `http://localhost:${own}`,
     stop: () => child.kill(),
     stopped: new Promise((resolve) => child.once("exit", resolve)),
-  };
+  }
 }
 
 export function snapshotTree(folder: string): string[] {
   return (fs.readdirSync(folder, { recursive: true }) as string[]).sort().map((name) => {
-    const stat = fs.statSync(path.join(folder, name));
-    return `${name} ${stat.size} ${stat.mtimeMs}`;
-  });
+    const stat = fs.statSync(path.join(folder, name))
+    return `${name} ${stat.size} ${stat.mtimeMs}`
+  })
 }

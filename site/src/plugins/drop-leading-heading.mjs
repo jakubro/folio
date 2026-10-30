@@ -4,10 +4,10 @@
  */
 export function dropLeadingHeading() {
   return (tree) => {
-    const first = tree.children[0];
+    const first = tree.children[0]
 
     if (first?.type === "heading" && first.depth === 1) {
-      tree.children.shift();
+      tree.children.shift()
     }
-  };
+  }
 }

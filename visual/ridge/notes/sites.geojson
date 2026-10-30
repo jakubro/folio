@@ -1,0 +1,28 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {"station": "north", "elevation_m": 412},
+      "geometry": {"type": "Point", "coordinates": [11.204, 46.912]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"station": "east", "elevation_m": 388},
+      "geometry": {"type": "Point", "coordinates": [11.231, 46.905]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"station": "south", "elevation_m": 351},
+      "geometry": {"type": "Point", "coordinates": [11.217, 46.889]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"name": "Ridge track"},
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[11.204, 46.912], [11.214, 46.909], [11.231, 46.905], [11.226, 46.896], [11.217, 46.889]]
+      }
+    }
+  ]
+}

@@ -3,9 +3,9 @@
  * compared against recorded images.
  */
 
-import { defineConfig } from "@playwright/test";
+import { defineConfig } from "@playwright/test"
 
-const PORT = 8650;
+const PORT = 8650
 
 export default defineConfig({
   testDir: "visual",
@@ -41,4 +41,4 @@ export default defineConfig({
     url: `http://localhost:${PORT}/`,
     reuseExistingServer: false,
   },
-});
+})

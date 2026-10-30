@@ -1,7 +1,7 @@
 /** Inline SVG icons: 24x24, stroked in the current text colour. */
 
 const icon = (paths: string) =>
-  `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+  `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`
 
 export const ICONS = {
   expand: icon('<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>'),
@@ -49,14 +49,31 @@ export const ICONS = {
   ),
   filter: icon('<path d="M3 5h18l-7 8v6l-4 2v-8z"/>'),
   sort: icon('<path d="M8 4v16M4 8l4-4 4 4M16 20V4M12 16l4 4 4-4"/>'),
-};
+  copy: icon(
+    '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>',
+  ),
+  check: icon('<path d="M20 6L9 17l-5-5"/>'),
+  code: icon('<path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/>'),
+  reset: icon('<path d="M3 12a9 9 0 109-9 9.7 9.7 0 00-6.7 2.7L3 8"/><path d="M3 3v5h5"/>'),
+  alert_note: icon('<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>'),
+  alert_tip: icon(
+    '<path d="M9 18h6M10 21h4M12 3a6 6 0 00-3.6 10.8c.8.6 1.1 1.3 1.1 2.2h5c0-.9.3-1.6 1.1-2.2A6 6 0 0012 3z"/>',
+  ),
+  alert_important: icon(
+    '<path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/><path d="M12 7v4M12 14h.01"/>',
+  ),
+  alert_warning: icon('<path d="M12 3L2 20h20zM12 10v4M12 17h.01"/>'),
+  alert_caution: icon(
+    '<path d="M7.9 2h8.2L22 7.9v8.2L16.1 22H7.9L2 16.1V7.9z"/><path d="M12 8v4M12 16h.01"/>',
+  ),
+}
 
 export function button(icon: string, label: string, className = "icon-button"): HTMLButtonElement {
-  const element = document.createElement("button");
-  element.type = "button";
-  element.className = className;
-  element.title = label;
-  element.setAttribute("aria-label", label);
-  element.innerHTML = icon;
-  return element;
+  const element = document.createElement("button")
+  element.type = "button"
+  element.className = className
+  element.title = label
+  element.setAttribute("aria-label", label)
+  element.innerHTML = icon
+  return element
 }

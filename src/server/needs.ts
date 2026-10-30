@@ -3,60 +3,60 @@
  * attention, and changes to what they read.
  */
 
-import { createHash } from "node:crypto";
-import { conventionsOf } from "./conventions.ts";
-import type { Data } from "./data.ts";
-import { recordsOf, runDeclared } from "./declared.ts";
-import { healthOf } from "./health.ts";
-import type { Model } from "./model.ts";
-import { changesState } from "./versions.ts";
+import { createHash } from "node:crypto"
+import { conventionsOf } from "./conventions.ts"
+import type { Data } from "./data.ts"
+import { recordsOf, runDeclared } from "./declared.ts"
+import { healthOf } from "./health.ts"
+import type { Model } from "./model.ts"
+import { changesState } from "./versions.ts"
 
 export interface Need {
-  source: "error" | "problem" | "attention" | "changed";
-  path: string;
-  line?: number;
-  block?: string;
-  what: string;
-  name?: string;
-  at?: string;
+  source: "error" | "problem" | "attention" | "changed"
+  path: string
+  line?: number
+  block?: string
+  what: string
+  name?: string
+  at?: string
 }
 
 export interface NeedsState {
-  ready: boolean;
-  needs: Need[];
-  version: string;
-  watched: string[];
+  ready: boolean
+  needs: Need[]
+  version: string
+  watched: string[]
 }
 
-const RANK: Need["source"][] = ["error", "problem", "attention", "changed"];
+const RANK: Need["source"][] = ["error", "problem", "attention", "changed"]
 
 export async function needsOf(model: Model, data: Data): Promise<NeedsState> {
-  const health = await healthOf(model, data).state();
+  const health = await healthOf(model, data).state()
 
   if (!health.ready) {
-    return { ready: false, needs: [], version: "", watched: [] };
+    return { ready: false, needs: [], version: "", watched: [] }
   }
 
-  await model.reads.load();
-  const read = new Set(model.reads.documents().map(({ path: at }) => at));
-  const needs: Need[] = [];
-  const dirs = new Set<string>();
+  await model.reads.load()
+  const read = new Set(model.reads.documents().map(({ path: at }) => at))
+  const needs: Need[] = []
+  const dirs = new Set<string>()
 
   for (const { kind, path: at, line, block, what, severity } of health.problems) {
-    const source = severity === "error" ? "error" : read.has(at) ? "problem" : undefined;
+    const source = severity === "error" ? "error" : read.has(at) ? "problem" : undefined
 
     if (source) {
-      needs.push({ source, path: at, line, ...(block && { block }), what: `${kind}: ${what}` });
+      needs.push({ source, path: at, line, ...(block && { block }), what: `${kind}: ${what}` })
     }
   }
 
   for (const declaration of conventionsOf(model).all()) {
     for (const [name, definition] of Object.entries(declaration.attention)) {
-      needs.push(...(await attention(model, data, declaration, name, definition, dirs)));
+      needs.push(...(await attention(model, data, declaration, name, definition, dirs)))
     }
   }
 
-  const { documents } = await changesState(model.root, model, data);
+  const { documents } = await changesState(model.root, model, data)
 
   for (const { path: at, blocks, at: when } of documents) {
     needs.push({
@@ -64,17 +64,17 @@ export async function needsOf(model: Model, data: Data): Promise<NeedsState> {
       path: at,
       what: `${blocks} ${blocks === 1 ? "block" : "blocks"} changed since you read it`,
       at: when,
-    });
+    })
   }
 
-  needs.sort((a, b) => RANK.indexOf(a.source) - RANK.indexOf(b.source));
+  needs.sort((a, b) => RANK.indexOf(a.source) - RANK.indexOf(b.source))
 
   return {
     ready: true,
     needs,
     version: createHash("sha1").update(JSON.stringify(needs)).digest("hex").slice(0, 16),
     watched: [...dirs],
-  };
+  }
 }
 
 async function attention(
@@ -89,10 +89,10 @@ async function attention(
     grid,
     error,
     watch: read,
-  } = await runDeclared(model, data, declaration, `attention ${name}`, query);
+  } = await runDeclared(model, data, declaration, `attention ${name}`, query)
 
   for (const dir of read) {
-    dirs.add(dir);
+    dirs.add(dir)
   }
 
   return grid?.columns.some((column) => column.name === "path")
@@ -111,5 +111,5 @@ async function attention(
           path: declaration.path,
           what: `The attention query ${name} cannot run: ${error ?? "it returns no path column."}`,
         },
-      ];
+      ]
 }

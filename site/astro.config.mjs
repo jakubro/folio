@@ -1,20 +1,21 @@
-import { fileURLToPath } from "node:url";
+import { fileURLToPath } from "node:url"
 
-import starlight from "@astrojs/starlight";
-import { defineConfig } from "astro/config";
-import mermaid from "astro-mermaid";
-import starlightThemeRapide from "starlight-theme-rapide";
+import starlight from "@astrojs/starlight"
+import { defineConfig } from "astro/config"
+import mermaid from "astro-mermaid"
+import starlightThemeRapide from "starlight-theme-rapide"
 
-import { dropLeadingHeading } from "./src/plugins/drop-leading-heading.mjs";
-import { rewriteMarkdownLinks } from "./src/plugins/rewrite-markdown-links.mjs";
+import { dropLeadingHeading } from "./src/plugins/drop-leading-heading.mjs"
+import { rewriteMarkdownLinks } from "./src/plugins/rewrite-markdown-links.mjs"
+import { unescapeIncludes } from "./src/plugins/unescape-includes.mjs"
 
-const BASE = "/folio";
-const DOCS_ROOT = fileURLToPath(new URL("../docs", import.meta.url));
-const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const BASE = "/folio"
+const DOCS_ROOT = fileURLToPath(new URL("../docs", import.meta.url))
+const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url))
 
 /** Where a link the site does not publish is sent; pinned to the published branch. */
-const REPOSITORY = "https://github.com/jakubro/folio";
-const REF = "main";
+const REPOSITORY = "https://github.com/jakubro/folio"
+const REF = "main"
 
 /**
  * The reading path: get running, see what folio adds, look something up. The contributor document
@@ -29,7 +30,7 @@ const SIDEBAR = [
     collapsed: true,
     items: [{ label: "Architecture", slug: "architecture" }],
   },
-];
+]
 
 export default defineConfig({
   site: "https://jakubro.github.io",
@@ -43,6 +44,7 @@ export default defineConfig({
         rewriteMarkdownLinks,
         { docsRoot: DOCS_ROOT, repoRoot: REPO_ROOT, base: BASE, repository: REPOSITORY, ref: REF },
       ],
+      unescapeIncludes,
     ],
   },
   integrations: [
@@ -59,4 +61,4 @@ export default defineConfig({
       social: [{ icon: "github", label: "GitHub", href: REPOSITORY }],
     }),
   ],
-});
+})

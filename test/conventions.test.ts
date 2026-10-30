@@ -1,39 +1,40 @@
-import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { after, test } from "node:test";
-import { conventionsOf } from "../src/server/conventions.ts";
-import { Data } from "../src/server/data.ts";
-import { documentsOf } from "../src/server/documents.ts";
-import { healthOf } from "../src/server/health.ts";
-import { Indexer } from "../src/server/indexer.ts";
-import { Model } from "../src/server/model.ts";
+import assert from "node:assert/strict"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import { monitorEventLoopDelay } from "node:perf_hooks"
+import { after, test } from "node:test"
+import { conventionsOf } from "../src/server/conventions.ts"
+import { Data } from "../src/server/data.ts"
+import { documentsOf } from "../src/server/documents.ts"
+import { healthOf } from "../src/server/health.ts"
+import { Indexer } from "../src/server/indexer.ts"
+import { Model } from "../src/server/model.ts"
 
-const indexer = new Indexer(new URL("../src/server/index-worker.ts", import.meta.url));
+const indexer = new Indexer(new URL("../src/server/index-worker.ts", import.meta.url))
 
-after(() => indexer.close());
+after(() => indexer.close())
 
 async function served(files: Record<string, string>) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-conventions-")));
-  const store = fs.mkdtempSync(path.join(os.tmpdir(), "folio-conventions-store-"));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-conventions-")))
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), "folio-conventions-store-"))
 
   for (const [name, text] of Object.entries(files)) {
-    fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
-    fs.writeFileSync(path.join(root, name), text);
+    fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true })
+    fs.writeFileSync(path.join(root, name), text)
   }
 
-  const model = new Model(root, store, indexer, () => {});
-  await model.start();
-  return { root, model, data: new Data(root, store) };
+  const model = new Model(root, store, indexer, () => {})
+  await model.start()
+  return { root, model, data: new Data(root, store) }
 }
 
-const fence = (body: string) => `\`\`\`yaml folio\n${body}\n\`\`\``;
+const fence = (body: string) => `\`\`\`yaml folio\n${body}\n\`\`\``
 
 async function until(test: () => boolean | Promise<boolean>): Promise<void> {
   for (let tries = 0; !(await test()); tries++) {
-    assert.ok(tries < 200, "timed out");
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.ok(tries < 200, "timed out")
+    await new Promise((resolve) => setTimeout(resolve, 25))
   }
 }
 
@@ -43,17 +44,17 @@ test("a declaration applies to its folder and below, a deeper one adding to it a
     "team/FOLIO.md": `# Team\n\n${fence("kinds:\n  note:\n    where: notes/*.md\n  plan:\n    where: plans/*.md\nhealth:\n  - where: drafts/**\n    skip: [link]")}\n`,
     "team/notes/a.md": "# A\n",
     "elsewhere/b.md": "# B\n",
-  });
-  const conventions = conventionsOf(model);
+  })
+  const conventions = conventionsOf(model)
 
   try {
     assert.deepEqual(conventions.describe("team/notes/a.md").declarations, [
       "FOLIO.md",
       "team/FOLIO.md",
-    ]);
-    assert.deepEqual(conventions.describe("elsewhere/b.md").declarations, ["FOLIO.md"]);
+    ])
+    assert.deepEqual(conventions.describe("elsewhere/b.md").declarations, ["FOLIO.md"])
 
-    const layered = conventions.layered("team/notes/a.md");
+    const layered = conventions.layered("team/notes/a.md")
     assert.deepEqual(
       layered.kinds.map(({ name, definition, from }) => [
         name,
@@ -64,11 +65,11 @@ test("a declaration applies to its folder and below, a deeper one adding to it a
         ["note", String(/^notes\/[^/]*\.md$/), "team/FOLIO.md"],
         ["plan", String(/^plans\/[^/]*\.md$/), "team/FOLIO.md"],
       ],
-    );
+    )
     assert.deepEqual(
       layered.rules.map(({ name }) => name),
       ["titled"],
-    );
+    )
     assert.deepEqual(
       layered.health.map(({ definition, from }) => [
         definition.where.map(String),
@@ -79,15 +80,15 @@ test("a declaration applies to its folder and below, a deeper one adding to it a
         [[String(/^old\/.*$/)], "all", ""],
         [[String(/^drafts\/.*$/)], ["link"], "team"],
       ],
-    );
+    )
 
-    fs.writeFileSync(path.join(root, "team/FOLIO.md"), `# Team\n\n${fence("kinds: {}")}\n`);
-    await until(() => conventions.layered("team/notes/a.md").kinds[0]?.from.path === "FOLIO.md");
+    fs.writeFileSync(path.join(root, "team/FOLIO.md"), `# Team\n\n${fence("kinds: {}")}\n`)
+    await until(() => conventions.layered("team/notes/a.md").kinds[0]?.from.path === "FOLIO.md")
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
 
 test("only yaml folio fences of FOLIO.md declare: a plain yaml fence, another fence and an old folio.md do not", async () => {
   const { model, data } = await served({
@@ -106,22 +107,22 @@ test("only yaml folio fences of FOLIO.md declare: a plain yaml fence, another fe
     "team/folio.md": `# Old name\n\n${fence("kinds:\n  team: {where: '*.md'}")}\n`,
     "a.md": "# A\n",
     "team/b.md": "# B\n",
-  });
-  const conventions = conventionsOf(model);
+  })
+  const conventions = conventionsOf(model)
 
   try {
     assert.deepEqual(
       conventions.layered("team/b.md").kinds.map(({ name }) => name),
       ["note"],
-    );
-    assert.deepEqual(conventions.describe("team/b.md").declarations, ["FOLIO.md"]);
-    assert.deepEqual(conventions.declaration("team/folio.md"), undefined);
-    assert.deepEqual((await healthOf(model, data).state()).problems, []);
+    )
+    assert.deepEqual(conventions.describe("team/b.md").declarations, ["FOLIO.md"])
+    assert.deepEqual(conventions.declaration("team/folio.md"), undefined)
+    assert.deepEqual((await healthOf(model, data).state()).problems, [])
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
 
 test("a declaration that cannot be read is listed in health, and its other fences still apply", async () => {
   const { model, data } = await served({
@@ -140,7 +141,7 @@ test("a declaration that cannot be read is listed in health, and its other fence
       "",
     ].join("\n"),
     "a.md": "# A\n",
-  });
+  })
 
   try {
     assert.deepEqual(
@@ -167,22 +168,22 @@ test("a declaration that cannot be read is listed in health, and its other fence
         ],
         ["declaration", 22, "health is a list."],
       ],
-    );
+    )
     assert.deepEqual(
       conventionsOf(model)
         .layered("a.md")
         .kinds.map(({ name }) => name),
       ["note"],
-    );
+    )
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
 
 test("a kind places documents by where they live and reads typed fields from their text and place", async () => {
   const part = (id: string, fits: string) =>
-    `---\ngrams: 5\n---\n# ${id} A part\n\n**Fits:** ${fits}\n\n**Stocked:** 2026-10-20\n\n## Use\n\nHolds the drive shaft.\n\n## Makers\n\n- [Noor](../../makers/noor.md)\n- [Lev](../../makers/lev.md)\n`;
+    `---\ngrams: 5\n---\n# ${id} A part\n\n**Fits:** ${fits}\n\n**Stocked:** 2026-10-20\n\n## Use\n\nHolds the drive shaft.\n\n## Makers\n\n- [Noor](../../makers/noor.md)\n- [Lev](../../makers/lev.md)\n`
   const { root, model, data } = await served({
     "FOLIO.md": `# Workshop\n\n${fence(
       [
@@ -206,10 +207,10 @@ test("a kind places documents by where they live and reads typed fields from the
     ),
     "parts/retired/gear-3_third.md": part("gear-3", "None"),
     "parts/README.md": "# Not a part\n",
-  });
-  const conventions = conventionsOf(model);
-  const written = fs.readdirSync(root, { recursive: true }).map(String).sort();
-  const before = written.map((name) => fs.statSync(path.join(root, name)).mtimeMs);
+  })
+  const conventions = conventionsOf(model)
+  const written = fs.readdirSync(root, { recursive: true }).map(String).sort()
+  const before = written.map((name) => fs.statSync(path.join(root, name)).mtimeMs)
 
   try {
     assert.deepEqual(conventions.describe("parts/stock/gear-1_first.md"), {
@@ -225,9 +226,9 @@ test("a kind places documents by where they live and reads typed fields from the
         use: "Holds the drive shaft.",
         makers: ["makers/noor.md", "makers/lev.md"],
       },
-    });
-    assert.equal(conventions.describe("parts/README.md").kind, undefined);
-    assert.deepEqual(conventions.describe("parts/retired/gear-3_third.md").fields?.fits, []);
+    })
+    assert.equal(conventions.describe("parts/README.md").kind, undefined)
+    assert.deepEqual(conventions.describe("parts/retired/gear-3_third.md").fields?.fits, [])
     assert.deepEqual(
       (await healthOf(model, data).state()).problems
         .filter(({ kind }) => kind === "field")
@@ -236,17 +237,17 @@ test("a kind places documents by where they live and reads typed fields from the
         ["parts/retired/gear-2_second.md", 6, "fits: once the frame is welded names no part"],
         ["parts/retired/gear-2_second.md", 8, "stocked: soon is not a date"],
       ],
-    );
+    )
     assert.deepEqual(
       written.map((name) => fs.statSync(path.join(root, name)).mtimeMs),
       before,
       "no document is written",
-    );
+    )
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
 
 test("a field refuses a day its month lacks and text that is no link, takes a link to the web, and keeps commas inside link text", async () => {
   const { model, data } = await served({
@@ -264,7 +265,7 @@ test("a field refuses a day its month lacks and text that is no link, takes a li
     )}\n`,
     "parts/gear-1.md":
       "# gear-1\n\n**Stocked:** 2026-02-30\n\n**Datasheet:** https://example.com/parts/1\n\n**Makers:** [Noor, the founder](noor.md), [Lev](lev.md)\n\n**Supplier:** TBD\n",
-  });
+  })
 
   try {
     assert.deepEqual(conventionsOf(model).describe("parts/gear-1.md").fields, {
@@ -272,24 +273,24 @@ test("a field refuses a day its month lacks and text that is no link, takes a li
       datasheet: "https://example.com/parts/1",
       makers: ["parts/noor.md", "parts/lev.md"],
       supplier: null,
-    });
+    })
     assert.deepEqual(
       (await healthOf(model, data).state()).problems
         .filter(({ kind }) => kind === "field")
         .map(({ what }) => what),
       ["stocked: 2026-02-30 is not a date", "supplier: TBD is not a link"],
-    );
+    )
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
 
 test("a kind that cannot be read is listed where it is declared, and the declaration's other kinds still apply", async () => {
   const { model, data } = await served({
     "FOLIO.md": `# K\n\n${fence("kinds:\n  good:\n    where: '*.md'\n  bad:\n    where: '*.md'\n    fields:\n      n: {from: guess}")}\n`,
     "a.md": "# A\n",
-  });
+  })
 
   try {
     assert.deepEqual(
@@ -299,13 +300,13 @@ test("a kind that cannot be read is listed where it is declared, and the declara
         what,
       ]),
       [["declaration", 7, "bad.n: from is one of frontmatter, label, section, folder, name"]],
-    );
-    assert.equal(conventionsOf(model).describe("a.md").kind, "good");
+    )
+    assert.equal(conventionsOf(model).describe("a.md").kind, "good")
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
 
 test("a rule lists each row its query returns where the row lands, with its message and severity", async () => {
   const rules = [
@@ -325,7 +326,7 @@ test("a rule lists each row its query returns where the row lands, with its mess
     "    query: select nothing from kind.part",
     "  pathless:",
     "    query: select 1 as n",
-  ].join("\n");
+  ].join("\n")
   const { root, model, data } = await served({
     "FOLIO.md": `# Rules\n\nWhy each exists.\n\n${fence(
       "kinds:\n  part:\n    where: parts/**/gear-*.md\n    fields:\n      id: {from: name, pattern: '^([a-z]+-\\d+)'}\n      bin: {from: folder}\n      grams: {from: label, type: number}",
@@ -334,9 +335,9 @@ test("a rule lists each row its query returns where the row lands, with its mess
     "parts/retired/gear-2.md": "# gear-2\n\n**Grams:** 5\n",
     "parts/retired/team/FOLIO.md": `# Team\n\n${fence("rules:\n  retired-heavy:\n    query: select 'parts/stock/gear-1.md' as path")}\n`,
     "parts/retired/team/gear-3.md": "# gear-3\n\n**Grams:** 8\n",
-  });
-  data.useDocuments(documentsOf(model));
-  const health = healthOf(model, data);
+  })
+  data.useDocuments(documentsOf(model))
+  const health = healthOf(model, data)
   const listed = async () =>
     (await health.state()).problems
       .filter(({ kind }) => kind === "rule")
@@ -346,7 +347,7 @@ test("a rule lists each row its query returns where the row lands, with its mess
         severity,
         what,
         Boolean(block),
-      ]);
+      ])
 
   try {
     assert.deepEqual(await listed(), [
@@ -367,17 +368,17 @@ test("a rule lists each row its query returns where the row lands, with its mess
       ["parts/retired/gear-2.md", 1, "warning", "Retired while heavy", true],
       ["parts/stock/gear-1.md", 1, "error", "gear-1 has no weight", true],
       ["parts/stock/gear-1.md", 1, "warning", "gear-1 has no weight", true],
-    ]);
+    ])
 
-    fs.writeFileSync(path.join(root, "parts/stock/gear-1.md"), "# gear-1\n\n**Grams:** 2\n");
-    await until(async () => !(await listed()).some(([at]) => at === "parts/stock/gear-1.md"));
-    fs.writeFileSync(path.join(root, "parts/stock/gear-1.md"), "# gear-1\n\nWeight forgotten.\n");
-    await until(async () => (await listed()).some(([at]) => at === "parts/stock/gear-1.md"));
+    fs.writeFileSync(path.join(root, "parts/stock/gear-1.md"), "# gear-1\n\n**Grams:** 2\n")
+    await until(async () => !(await listed()).some(([at]) => at === "parts/stock/gear-1.md"))
+    fs.writeFileSync(path.join(root, "parts/stock/gear-1.md"), "# gear-1\n\nWeight forgotten.\n")
+    await until(async () => (await listed()).some(([at]) => at === "parts/stock/gear-1.md"))
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
 
 test("a declaration scopes health by folder and kind of check, and only health", async () => {
   const { root, model, data } = await served({
@@ -400,14 +401,14 @@ test("a declaration scopes health by folder and kind of check, and only health",
     "team/FOLIO.md": `# Team\n\n${fence("health:\n  - where: '*.md'\n    skip: [link]")}\n`,
     "team/c.md": "# C\n\n[gone](nowhere.md)\n",
     "d.md": "# D\n\n[gone](nowhere.md)\n",
-  });
-  data.useDocuments(documentsOf(model));
-  const health = healthOf(model, data);
+  })
+  data.useDocuments(documentsOf(model))
+  const health = healthOf(model, data)
   const listed = async () =>
-    (await health.state()).problems.map(({ kind, path: at }) => `${kind} ${at}`).sort();
+    (await health.state()).problems.map(({ kind, path: at }) => `${kind} ${at}`).sort()
 
   try {
-    assert.deepEqual(await listed(), ["field archive/b.md", "link d.md"]);
+    assert.deepEqual(await listed(), ["field archive/b.md", "link d.md"])
     assert.deepEqual(
       (
         await data.query(
@@ -417,13 +418,13 @@ test("a declaration scopes health by folder and kind of check, and only health",
       ).grid.rows,
       [["archive/b.md"], ["copies/a.md"], ["d.md"], ["team/c.md"]],
       "a scoped-out folder is still queryable",
-    );
+    )
 
     fs.writeFileSync(
       path.join(root, "FOLIO.md"),
       `# Scope\n\n${fence("health:\n  - where: copies/**\n    skip: all\n  - where: archive/**\n    skip: [colour]")}\n`,
-    );
-    await until(async () => (await listed()).includes("link archive/b.md"));
+    )
+    await until(async () => (await listed()).includes("link archive/b.md"))
     assert.deepEqual(
       (await health.state()).problems
         .filter(({ kind }) => kind === "declaration")
@@ -431,12 +432,12 @@ test("a declaration scopes health by folder and kind of check, and only health",
       [
         "7 Health skips all, or kinds of check among figure, link, include, loop, diagram, chart, query, data, declaration, field, rule, view; not colour.",
       ],
-    );
+    )
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
 
 test("each row a rule returns is its own entry, and a rule past the row limit says how many it returned", async () => {
   const { model, data } = await served({
@@ -452,23 +453,23 @@ test("each row a rule returns is its own entry, and a rule past the row limit sa
       ].join("\n"),
     )}\n`,
     "a.md": "# A\n",
-  });
+  })
 
   try {
     const problems = (await healthOf(model, data).state()).problems.filter(
       ({ kind }) => kind === "rule",
-    );
-    assert.equal(problems.filter(({ what }) => what === "Same row").length, 2);
-    assert.equal(problems.filter(({ what }) => what === "many").length, 10_000);
+    )
+    assert.equal(problems.filter(({ what }) => what === "Same row").length, 2)
+    assert.equal(problems.filter(({ what }) => what === "many").length, 10_000)
     assert.deepEqual(
       problems.filter(({ path: at }) => at === "FOLIO.md").map(({ what }) => what),
       ["The rule many returns more rows than health lists: 10,000 of 10,005 shown."],
-    );
+    )
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
 
 test("a label starts any line of a paragraph or list item, numbered ones too, and a text field reads as plain text", async () => {
   const { model, data } = await served({
@@ -501,7 +502,7 @@ test("a label starts any line of a paragraph or list item, numbered ones too, an
       "Holds the *drive* shaft, see [here](x.md).",
       "",
     ].join("\n"),
-  });
+  })
 
   try {
     assert.deepEqual(conventionsOf(model).describe("parts/gear-1.md").fields, {
@@ -510,12 +511,12 @@ test("a label starts any line of a paragraph or list item, numbered ones too, an
       grams: 9,
       stocked: "2026-10-20",
       use: "Holds the drive shaft, see here.",
-    });
+    })
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
 
 test("a where naming a folder as it is, which places nothing, is a problem of its declaration", async () => {
   const { model, data } = await served({
@@ -531,7 +532,7 @@ test("a where naming a folder as it is, which places nothing, is a problem of it
     )}\n`,
     "parts/gear-1.md": "# gear-1\n",
     "archive/old.md": "# Old\n",
-  });
+  })
 
   try {
     assert.deepEqual(
@@ -552,20 +553,20 @@ test("a where naming a folder as it is, which places nothing, is a problem of it
           "This entry skips nothing at archive, a folder: archive/** skips every document in it.",
         ],
       ],
-    );
+    )
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
 
 test("a health entry counts kinds of check as errors where it applies, and nothing else changes", async () => {
   const { model, data } = await served({
     "FOLIO.md": `# Severity\n\n${fence("health:\n  - where: strict/**\n    error: [include]\n  - where: '**'\n    error: nothing")}\n`,
     "strict/a.md": "# A\n\n{include: missing.md}\n\n[gone](nowhere.md)\n",
     "loose/b.md": "# B\n\n{include: missing.md}\n",
-  });
-  const health = healthOf(model, data);
+  })
+  const health = healthOf(model, data)
 
   try {
     assert.deepEqual(
@@ -578,19 +579,19 @@ test("a health entry counts kinds of check as errors where it applies, and nothi
         "include strict/a.md error",
         "link strict/a.md -",
       ],
-    );
+    )
     assert.match(
       (await health.state()).problems.find(({ kind }) => kind === "declaration")?.what ?? "",
       /Health counts as errors all, or kinds of check among .*; not nothing\./,
-    );
+    )
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
 
 test("a list of links reads the links in a line carrying notes, tags and punctuation, and the ids its prose names", async () => {
-  const part = (fits: string) => `# Part\n\n**Fits:** ${fits}\n`;
+  const part = (fits: string) => `# Part\n\n**Fits:** ${fits}\n`
   const { model, data } = await served({
     "FOLIO.md": `# Workshop\n\n${fence(
       [
@@ -615,20 +616,20 @@ test("a list of links reads the links in a line carrying notes, tags and punctua
     "parts/context.md": part("None. Pairs with [axle-3](axle-3.md)"),
     "parts/mentioned.md": part("after axle-5"),
     "parts/moved.md": part("[axle-3](old/axle-3.md), later"),
-  });
-  const fits = (name: string) => conventionsOf(model).describe(`parts/${name}.md`).fields?.fits;
-  data.useDocuments(documentsOf(model));
+  })
+  const fits = (name: string) => conventionsOf(model).describe(`parts/${name}.md`).fields?.fits
+  data.useDocuments(documentsOf(model))
 
   try {
-    assert.deepEqual(fits("noted"), ["parts/gear-12.md"]);
-    assert.deepEqual(fits("both"), ["parts/gear-12.md", "parts/gear-14.md"]);
-    assert.deepEqual(fits("empty"), []);
-    assert.deepEqual(fits("stopped"), ["parts/axle-5.md"]);
-    assert.deepEqual(fits("gone"), [null]);
-    assert.deepEqual(fits("prose"), [null]);
-    assert.deepEqual(fits("context"), []);
-    assert.deepEqual(fits("mentioned"), ["parts/axle-5.md"]);
-    assert.deepEqual(fits("moved"), ["parts/axle-3.md"]);
+    assert.deepEqual(fits("noted"), ["parts/gear-12.md"])
+    assert.deepEqual(fits("both"), ["parts/gear-12.md", "parts/gear-14.md"])
+    assert.deepEqual(fits("empty"), [])
+    assert.deepEqual(fits("stopped"), ["parts/axle-5.md"])
+    assert.deepEqual(fits("gone"), [null])
+    assert.deepEqual(fits("prose"), [null])
+    assert.deepEqual(fits("context"), [])
+    assert.deepEqual(fits("mentioned"), ["parts/axle-5.md"])
+    assert.deepEqual(fits("moved"), ["parts/axle-3.md"])
     assert.deepEqual(
       (await healthOf(model, data).state()).problems
         .filter(({ kind }) => kind === "field")
@@ -638,7 +639,7 @@ test("a list of links reads the links in a line carrying notes, tags and punctua
         ["parts/gone.md", "fits: [gear-99](gear-99.md) names no part"],
         ["parts/prose.md", "fits: once the frame is welded names no part"],
       ],
-    );
+    )
     assert.deepEqual(
       (
         await data.query(
@@ -652,12 +653,12 @@ test("a list of links reads the links in a line carrying notes, tags and punctua
         ["parts/noted.md", "parts/gear-12.md"],
         ["parts/stopped.md", "parts/axle-5.md"],
       ],
-    );
+    )
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
 
 test("a note split at a comma, a link to the web or in angle brackets and a document's own id stay notes, and each listed item is its own line", async () => {
   const { model, data } = await served({
@@ -680,16 +681,16 @@ test("a note split at a comma, a link to the web or in angle brackets and a docu
     "parts/angle.md": "# Angle\n\n**Fits:** [c](<gear-12.md>) (angle), [d](<frame>)\n",
     "parts/listed.md":
       "# Listed\n\n## Spares\n\nThese, in order:\n\n- [gear-12](gear-12.md)\n- once the frame\n  is welded\n",
-  });
+  })
   const field = (name: string, key: string) =>
-    (conventionsOf(model).describe(`parts/${name}.md`).fields as Record<string, unknown>)[key];
+    (conventionsOf(model).describe(`parts/${name}.md`).fields as Record<string, unknown>)[key]
 
   try {
-    assert.deepEqual(field("gear-14", "fits"), ["parts/gear-12.md"]);
-    assert.deepEqual(field("split", "fits"), ["parts/gear-12.md"]);
-    assert.deepEqual(field("web", "fits"), ["https://example.com/catalogue/12"]);
-    assert.deepEqual(field("angle", "fits"), ["parts/gear-12.md", null]);
-    assert.deepEqual(field("listed", "spares"), ["parts/gear-12.md", null]);
+    assert.deepEqual(field("gear-14", "fits"), ["parts/gear-12.md"])
+    assert.deepEqual(field("split", "fits"), ["parts/gear-12.md"])
+    assert.deepEqual(field("web", "fits"), ["https://example.com/catalogue/12"])
+    assert.deepEqual(field("angle", "fits"), ["parts/gear-12.md", null])
+    assert.deepEqual(field("listed", "spares"), ["parts/gear-12.md", null])
     assert.deepEqual(
       (await healthOf(model, data).state()).problems
         .filter(({ kind }) => kind === "field")
@@ -698,12 +699,12 @@ test("a note split at a comma, a link to the web or in angle brackets and a docu
         ["parts/angle.md", "fits: [d](<frame>) names no part"],
         ["parts/listed.md", "spares: once the frame is welded names no part"],
       ],
-    );
+    )
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
 
 test("among ids without digits, a missing one in a list of them is still reported", async () => {
   const { model, data } = await served({
@@ -719,21 +720,199 @@ test("among ids without digits, a missing one in a list of them is still reporte
     )}\n`,
     "pages/alpha.md": "# Alpha\n",
     "pages/beta.md": "# Beta\n\n**After:** alpha, gamma\n",
-  });
+  })
 
   try {
     assert.deepEqual(conventionsOf(model).describe("pages/beta.md").fields?.after, [
       "pages/alpha.md",
       null,
-    ]);
+    ])
     assert.deepEqual(
       (await healthOf(model, data).state()).problems
         .filter(({ kind }) => kind === "field")
         .map(({ what }) => what),
       ["after: gamma names no page"],
-    );
+    )
   } finally {
-    model.close();
-    await data.close();
+    model.close()
+    await data.close()
   }
-});
+})
+
+test("a list field of one line built to make its reading backtrack never holds up the server", async () => {
+  const part = (fits: string) => `# Part\n\n**Fits:** ${fits}\n`
+  const stalls = monitorEventLoopDelay({ resolution: 10 })
+  stalls.enable()
+  const { model, data } = await served({
+    "FOLIO.md": `# Workshop\n\n${fence(
+      [
+        "kinds:",
+        "  part:",
+        "    where: parts/*.md",
+        "    fields:",
+        "      fits: {from: label, type: list, of: link, to: part}",
+        "      uses: {from: section, type: list, of: link, to: part}",
+      ].join("\n"),
+    )}\n`,
+    "parts/links.md": part(`[](${"[](!".repeat(40_000)}`),
+    "parts/tags.md": part("<a ".repeat(13_000)),
+    "parts/commas.md": part(",".repeat(160_000)),
+    "parts/brackets.md": part("[".repeat(40_000)),
+    "parts/dots.md": part(`a${".".repeat(40_000)}x`),
+    "parts/spaces.md": part(`a${" ".repeat(40_000)}x`),
+    "parts/items.md": `# Part\n\n## Uses\n\n- ${" ".repeat(40_000)}x\u2028y\n`,
+  })
+  data.useDocuments(documentsOf(model))
+
+  try {
+    for (const name of ["links", "tags", "commas", "brackets", "dots", "spaces", "items"]) {
+      assert.ok(conventionsOf(model).describe(`parts/${name}.md`).fields, name)
+    }
+
+    await healthOf(model, data).state()
+    stalls.disable()
+    assert.ok(stalls.max < 1e9, `the server stood still for ${Math.round(stalls.max / 1e6)} ms`)
+  } finally {
+    model.close()
+    await data.close()
+  }
+})
+
+test("a text field of 160,000 dots, underscores or `](` never holds up the server, and ordinary text reads as before", async () => {
+  const part = (line: string) =>
+    `# Part\n\n**Note:** ${line}\n**Tags:** ${line}\n\n## Use\n\n${line}\n`
+  const stalls = monitorEventLoopDelay({ resolution: 10 })
+  stalls.enable()
+  const { model, data } = await served({
+    "FOLIO.md": `# Workshop\n\n${fence(
+      [
+        "kinds:",
+        "  part:",
+        "    where: parts/*.md",
+        "    fields:",
+        "      note: {from: label}",
+        "      tags: {from: label, type: list}",
+        "      use: {from: section}",
+      ].join("\n"),
+    )}\n`,
+    "parts/dots.md": part(`a${".".repeat(160_000)}x`),
+    "parts/underscores.md": part(`a${"_".repeat(160_000)}x`),
+    "parts/brackets.md": part("](".repeat(80_000)),
+    "parts/plain.md": [
+      "# Part",
+      "",
+      "**Note:** See [the guide](guide.md), *this*, `code`, www.example.com and name@example.com.",
+      "**Tags:** www.example.com, name@example.com",
+      "",
+      "## Use",
+      "",
+      "Turn ~~left~~ right at https://example.com/a_b.",
+      "",
+    ].join("\n"),
+  })
+  data.useDocuments(documentsOf(model))
+
+  try {
+    for (const name of ["dots", "underscores", "brackets"]) {
+      assert.ok(conventionsOf(model).describe(`parts/${name}.md`).fields, name)
+    }
+
+    assert.deepEqual(conventionsOf(model).describe("parts/plain.md").fields, {
+      note: "See the guide, this, code, www.example.com and name@example.com.",
+      tags: ["www.example.com", "name@example.com"],
+      use: "Turn left right at https://example.com/a_b.",
+    })
+    await healthOf(model, data).state()
+    stalls.disable()
+    assert.ok(stalls.max < 1e9, `the server stood still for ${Math.round(stalls.max / 1e6)} ms`)
+  } finally {
+    model.close()
+    await data.close()
+  }
+})
+
+test("a text field of markers in turn or of brackets after an image label reads as fast as ordinary text of its length", async () => {
+  const sentence = "Some *emphasis* and _more_ text, `code`, ~~gone~~ and [a link](x). "
+  const lines: Record<string, string> = {
+    warm: sentence,
+    ordinary: sentence.repeat(Math.ceil(160_000 / sentence.length)).slice(0, 160_000),
+    image: `![${"](".repeat(80_000)}`,
+    undefined: `![x] ${"](".repeat(80_000)}`,
+    turns: "._".repeat(80_000),
+    tildes: ".~".repeat(80_000),
+  }
+  const { model, data } = await served({
+    "FOLIO.md": `# Workshop\n\n${fence(
+      [
+        "kinds:",
+        "  part:",
+        "    where: parts/*.md",
+        "    fields:",
+        "      note: {from: label}",
+        "      use: {from: section}",
+      ].join("\n"),
+    )}\n`,
+    ...Object.fromEntries(
+      Object.entries(lines).map(([name, line]) => [
+        `parts/${name}.md`,
+        `# Part\n\n**Note:** ${line}\n\n## Use\n\n${line}\n`,
+      ]),
+    ),
+  })
+  data.useDocuments(documentsOf(model))
+  const read = (name: string) => {
+    const started = performance.now()
+    assert.ok(conventionsOf(model).describe(`parts/${name}.md`).fields?.note, name)
+    return performance.now() - started
+  }
+
+  try {
+    read("warm")
+    const ordinary = read("ordinary")
+
+    for (const name of ["image", "undefined", "turns", "tildes"]) {
+      const took = read(name)
+      assert.ok(
+        took < 1.5 * ordinary + 200,
+        `${name} took ${Math.round(took)} ms, ordinary text ${Math.round(ordinary)} ms`,
+      )
+    }
+
+    await healthOf(model, data).state()
+  } finally {
+    model.close()
+    await data.close()
+  }
+})
+
+test("a link whose address holds brackets, a tag holding a < and a bracket before a link read as written", async () => {
+  const { model, data } = await served({
+    "FOLIO.md": `# Kinds\n\n${fence(
+      [
+        "kinds:",
+        "  part:",
+        "    where: parts/*.md",
+        "    fields:",
+        "      links: {from: label, type: list, of: link}",
+        "      one: {from: label, type: link}",
+      ].join("\n"),
+    )}\n`,
+    "parts/a.md":
+      '# A\n\n**Links:** [draft](notes/[draft].md), [query](https://x.y/?f[s]=1) <span title="a<b">spare</span>\n',
+    "parts/b.md": "# B\n\n**Links:** [a [b](b.md)\n\n**One:** [a [b](b.md)\n",
+  })
+
+  try {
+    assert.deepEqual(conventionsOf(model).describe("parts/a.md").fields?.links, [
+      "parts/notes/[draft].md",
+      "https://x.y/?f[s]=1",
+    ])
+    assert.deepEqual(conventionsOf(model).describe("parts/b.md").fields, {
+      links: ["parts/b.md"],
+      one: "parts/b.md",
+    })
+  } finally {
+    model.close()
+    await data.close()
+  }
+})
