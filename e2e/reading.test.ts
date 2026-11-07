@@ -1,4 +1,4 @@
-/** Headless Chromium run of folio's documented behaviour: what folio remembers as read. */
+/** Headless Chromium run of Folio's documented behaviour: what Folio remembers as read. */
 
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -7,7 +7,7 @@ import path from "node:path"
 import { test } from "node:test"
 import { browser, context, landed, serveFolder, snapshotTree, waitFor, writeIn } from "./harness.ts"
 
-test("Reading counts, Glance does not count, Version, Shared, Survives restarts, Folder untouched, Inspectable: folio remembers what was read", async () => {
+test("Reading counts, Glance does not count, Version, Shared, Survives restarts, Folder untouched, Inspectable: Folio remembers what was read", async () => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-reading-")))
   const sections = Array.from(
     { length: 24 },

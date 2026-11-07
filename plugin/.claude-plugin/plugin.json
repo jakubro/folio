@@ -1,0 +1,35 @@
+{
+  "name": "folio",
+  "version": "0.4.0",
+  "description": "A live view of a folder of markdown and data. The MCP server whose read-only tools answer from the Folio serving the folder, run with npx, and the skill that writes documents using what Folio adds.",
+  "author": {
+    "name": "Jakub Roman"
+  },
+  "homepage": "https://jakubro.github.io/folio/",
+  "repository": "https://github.com/jakubro/folio",
+  "license": "GPL-3.0-only",
+  "keywords": [
+    "markdown",
+    "documentation",
+    "data",
+    "mcp"
+  ],
+  "userConfig": {
+    "folio": {
+      "type": "string",
+      "title": "Folio",
+      "description": "The Folio to read: its address, such as localhost:8641, or the path of a unix socket it serves on. Left empty, the Folio serving the folder Claude Code was opened in, or a folder above it"
+    }
+  },
+  "mcpServers": {
+    "folio": {
+      "command": "npx",
+      "args": [
+        "--yes",
+        "@jakubro/folio@0.4.0",
+        "mcp",
+        "${user_config.folio}"
+      ]
+    }
+  }
+}

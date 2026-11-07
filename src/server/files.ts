@@ -52,6 +52,8 @@ const FORMATS: Record<string, Format> = {
   ".sql": "sql",
 }
 const COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" })
+const WALKED = new Map<string, { file: string } | { folders: [string, number | undefined][] }>()
+const SETTLED_MS = 1000
 
 function kindOf(name: string): Kind | undefined {
   return KINDS[path.extname(name).toLowerCase()] ?? (formatOf(name) && "data")
@@ -97,6 +99,16 @@ export function isPruned(name: string): boolean {
 
 export function isInside(root: string, target: string): boolean {
   return target === root || target.startsWith(root + path.sep)
+}
+
+export function belowRoot(root: string, written: string): string | undefined {
+  const prefix = root.endsWith("/") ? root : `${root}/`
+
+  return written === root
+    ? ""
+    : written.startsWith(prefix)
+      ? written.slice(prefix.length)
+      : undefined
 }
 
 /** Resolve a URL path through symlinks to an existing path inside root, which must itself be real. */
@@ -159,7 +171,8 @@ export function listing(root: string, urlPath: string, data = false): Entry[] | 
 
   return entries.sort(
     (a, b) =>
-      Number(b.kind === "folder") - Number(a.kind === "folder") || COLLATOR.compare(a.name, b.name),
+      Number(b.kind === "folder") - Number(a.kind === "folder") ||
+      (a.kind === "folder" ? COLLATOR.compare(a.name, b.name) : byStem(a.name, b.name)),
   )
 }
 
@@ -221,16 +234,44 @@ function ordered(entries: Entry[], direction: 1 | -1): Entry[] {
   return direction > 0 ? entries : [...entries].reverse()
 }
 
+function byStem(a: string, b: string): number {
+  const [first, second] = [path.parse(a), path.parse(b)]
+  return COLLATOR.compare(first.name, second.name) || COLLATOR.compare(first.ext, second.ext)
+}
+
 function join(folder: string, name: string): string {
   return folder ? `${folder}/${name}` : name
 }
 
+/**
+ * A folder holding no page is walked to its bottom, so the answer is kept: one found holds while a walk would
+ * still find that file, none while no folder walked has changed - kept only when each changed well before the
+ * walk, as a folder's time moves in steps of milliseconds and a change in the same step would go unseen.
+ */
 function hasRenderable(root: string, dir: string, data: boolean): boolean {
+  const key = `${data}\0${dir}`
+  const held = WALKED.get(key)
+
+  if (
+    held &&
+    ("file" in held
+      ? stillServed(root, dir, held.file, data)
+      : held.folders.every(([folder, changed]) => changedAt(folder) === changed))
+  ) {
+    return "file" in held
+  }
+
   const pending = [dir]
+  const folders: [string, number | undefined][] = []
+  const walked = Date.now()
+  let linked = false
 
   for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
+    folders.push([current, changedAt(current)])
+
     for (const dirent of readdir(current)) {
       const full = path.join(current, dirent.name)
+      linked ||= dirent.isSymbolicLink() && kindOf(dirent.name) !== undefined
 
       if (dirent.isDirectory()) {
         pending.push(full)
@@ -238,13 +279,48 @@ function hasRenderable(root: string, dir: string, data: boolean): boolean {
         const kind = fileKind(root, full, dirent)
 
         if (kind && (data || kind !== "data")) {
+          WALKED.set(key, { file: full })
           return true
         }
       }
     }
   }
 
+  // A link's target may appear or move away with no folder walked changing.
+  if (
+    !linked &&
+    folders.every(([, changed]) => changed !== undefined && changed < walked - SETTLED_MS)
+  ) {
+    WALKED.set(key, { folders })
+  } else {
+    WALKED.delete(key)
+  }
+
   return false
+}
+
+function stillServed(root: string, dir: string, file: string, data: boolean): boolean {
+  try {
+    for (let folder = path.dirname(file); folder !== dir; folder = path.dirname(folder)) {
+      if (!fs.lstatSync(folder).isDirectory() || folder === path.dirname(folder)) {
+        return false
+      }
+    }
+
+    const real = fs.realpathSync(file)
+    const kind = isInside(root, real) && fs.statSync(real).isFile() ? kindOf(real) : undefined
+    return kind !== undefined && (data || kind !== "data")
+  } catch {
+    return false
+  }
+}
+
+function changedAt(folder: string): number | undefined {
+  try {
+    return fs.statSync(folder).ctimeMs
+  } catch {
+    return undefined
+  }
 }
 
 /** The renderable files directly inside a real folder, judged as listings judge them. */
@@ -314,8 +390,8 @@ function fileKind(root: string, full: string, dirent: fs.Dirent): Kind | undefin
   }
 }
 
-/** An unreadable folder holds nothing folio can serve, so it lists as empty rather than failing the walk. */
-export function readdir(dir: string): fs.Dirent[] {
+/** An unreadable folder holds nothing Folio can serve, so it lists as empty rather than failing the walk. */
+function readdir(dir: string): fs.Dirent[] {
   try {
     return fs.readdirSync(dir, { withFileTypes: true }).filter((dirent) => !isPruned(dirent.name))
   } catch {

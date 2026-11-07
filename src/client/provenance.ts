@@ -1,9 +1,14 @@
-/** Where a block came from, opened from its margin, and a flag beside each block holding a problem. */
+/** A block's origin or latest versions, opened from its margin, and a flag beside each block holding a problem. */
 
 import type { Provenance as Traced } from "../server/provenance.ts"
 import { ICONS } from "./icons.ts"
 import { href } from "./tree.ts"
 
+const HEADINGS = "h1, h2, h3, h4, h5, h6"
+const LATEST = 3
+const GAP_PX = 4
+const MARGIN_PX = 8
+const WIDTH_PX = 600
 const PROBLEMS = ".claim-contradicted, .embed-missing, .diagram-failed, .include-missing"
 const SPACING_MS = 200
 const STATES = {
@@ -17,6 +22,10 @@ export class Provenance {
   readonly #panel = document.createElement("div")
   #article: HTMLElement | undefined
   #under: HTMLElement | undefined
+  #shown: "provenance" | "versions" | undefined
+  /** Measured at the click: the margin buttons move on with the pointer. */
+  #button = { offset: 0, height: 0 }
+  #offset = 0
   readonly #flagged = new Map<HTMLElement, HTMLElement>()
   /** Folding moves blocks into a hidden section, and finding text in it unhides it: neither resizes the page. */
   readonly #folds = new MutationObserver(() => this.#request(false))
@@ -31,6 +40,8 @@ export class Provenance {
     this.#panel.hidden = true
     main.append(this.#layer, this.#panel)
     new ResizeObserver(() => this.#request(false)).observe(document.body)
+    new ResizeObserver(() => this.#settle()).observe(this.#panel)
+    addEventListener("resize", () => this.#settle())
     addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         this.close()
@@ -58,16 +69,20 @@ export class Provenance {
     this.#request(true)
   }
 
-  async open(block: HTMLElement): Promise<void> {
+  async open(block: HTMLElement, from: HTMLElement): Promise<void> {
     const page = decodeURIComponent(location.pathname).slice(1)
     const { folioId: id = "", folioSource: source = page } = block.dataset
     const asked = ++this.#asked
 
-    if (this.#under === block) {
+    if (this.#under === block && this.#shown === "provenance") {
       this.close()
       return
     }
 
+    this.#show(block, from, "provenance", [
+      ...this.#top("Where this block came from"),
+      waiting("Finding where this block came from"),
+    ])
     const twins = [
       ...(this.#article?.querySelectorAll(
         `[data-folio-source="${CSS.escape(source)}"][data-folio-id="${CSS.escape(id)}"]`,
@@ -75,23 +90,112 @@ export class Provenance {
     ]
     const response = await fetch(
       `${href(page)}?provenance=${encodeURIComponent(id)}&source=${encodeURIComponent(source)}&at=${Math.max(0, twins.indexOf(block))}`,
-    )
-    const traced: Partial<Traced> = response.ok ? await response.json() : {}
+    ).catch(() => undefined)
+    const traced: Partial<Traced> = response?.ok ? await response.json() : {}
+
+    if (asked === this.#asked) {
+      this.#fill(this.#body(traced))
+    }
+  }
+
+  async versions(block: HTMLElement, from: HTMLElement): Promise<void> {
+    const page = decodeURIComponent(location.pathname).slice(1)
+    const { folioId: id = "", folioSource: source = page } = block.dataset
+    const asked = ++this.#asked
+
+    if (this.#under === block && this.#shown === "versions") {
+      this.close()
+      return
+    }
+
+    this.#show(block, from, "versions", [
+      ...this.#top("This block's past versions"),
+      waiting("Reading this block's past versions"),
+    ])
+    const { blockVersions, versionList } = await import("./history.ts")
+    const versions = await blockVersions(source, id).catch(() => [])
 
     if (asked !== this.#asked) {
       return
     }
 
-    this.#under = block
-    this.#panel.replaceChildren(...this.#body(traced))
-    this.#panel.hidden = false
-    this.#place()
+    const shown = Object.assign(document.createElement("div"), { className: "markdown-body" })
+    const all = document.createElement("p")
+
+    all.append(
+      Object.assign(document.createElement("a"), {
+        href: `${href(source)}?history&block=${encodeURIComponent(id)}`,
+        textContent: `All ${versions.length} version${versions.length === 1 ? "" : "s"}`,
+      }),
+    )
+    shown.append(versionList(source, versions, LATEST), ...(versions.length > 0 ? [all] : []))
+    this.#fill([...this.#top("This block's past versions"), shown])
   }
 
   close(): void {
     this.#asked++
     this.#under = undefined
+    this.#shown = undefined
     this.#panel.hidden = true
+  }
+
+  #show(
+    block: HTMLElement,
+    from: HTMLElement,
+    shown: "provenance" | "versions",
+    nodes: Node[],
+  ): void {
+    const top = block.getBoundingClientRect().top
+    const button = from.getBoundingClientRect()
+
+    this.#under = block
+    this.#shown = shown
+    this.#button = { offset: button.top - top, height: button.height }
+    this.#panel.hidden = false
+    this.#fill(nodes)
+  }
+
+  #fill(nodes: Node[]): void {
+    this.#panel.replaceChildren(...nodes)
+    this.#settle()
+  }
+
+  /** Flipped and kept inside the window as its content or size changes, never as the page moves. */
+  #settle(): void {
+    const block = this.#under?.getBoundingClientRect()
+    const right = this.#article?.getBoundingClientRect().right
+
+    if (!block || right === undefined || this.#panel.hidden) {
+      return
+    }
+
+    this.#panel.style.maxWidth = `${Math.min(WIDTH_PX, right - GAP_PX - MARGIN_PX)}px`
+    const height = this.#panel.offsetHeight
+    const top = block.top + this.#button.offset
+    const floor = (document.querySelector(".bar")?.getBoundingClientRect().bottom ?? 0) + MARGIN_PX
+    const ceiling = innerHeight - MARGIN_PX
+    const seen = top >= floor && top + this.#button.height <= ceiling
+    const placed = seen && top + height > ceiling ? top + this.#button.height - height : top
+
+    this.#offset = (seen ? Math.max(floor, Math.min(placed, ceiling - height)) : placed) - block.top
+    this.#place()
+  }
+
+  #top(text: string): [HTMLParagraphElement, HTMLButtonElement] {
+    const close = Object.assign(document.createElement("button"), {
+      className: "mark-panel-close",
+      type: "button",
+      textContent: "Close",
+    })
+
+    close.addEventListener("click", () => this.close())
+    return [
+      Object.assign(document.createElement("p"), {
+        className: "mark-panel-title",
+        textContent: text,
+      }),
+      close,
+    ]
   }
 
   /** Every embed drawn asks again and each answer lays the page out, so asks are answered once per spacing. */
@@ -139,7 +243,7 @@ export class Provenance {
         })
         flag.dataset.folioId = block.dataset.folioId
         flag.dataset.folioSource = block.dataset.folioSource
-        flag.addEventListener("click", () => void this.open(block))
+        flag.addEventListener("click", () => void this.open(block, flag))
         this.#flagged.set(flag, block)
         return flag
       }),
@@ -147,20 +251,10 @@ export class Provenance {
   }
 
   #body(traced: Partial<Traced>): Node[] {
-    const close = Object.assign(document.createElement("button"), {
-      className: "mark-panel-close",
-      type: "button",
-      textContent: "Close",
-    })
-    const title = Object.assign(document.createElement("p"), {
-      className: "mark-panel-title",
-      textContent: "Where this block came from",
-    })
-
-    close.addEventListener("click", () => this.close())
+    const [title, close] = this.#top("Where this block came from")
 
     if (!traced.source || !traced.lines) {
-      return [title, close, line("Not known yet: folio is still reading this file.")]
+      return [title, close, line("Not known yet: Folio is still reading this file.")]
     }
 
     const { source, lines, changed, included, data = [], claims = [], conventions } = traced
@@ -266,9 +360,9 @@ export class Provenance {
       block.checkVisibility() ? block.getBoundingClientRect() : undefined,
     )
 
-    for (const [index, flag] of [...this.#flagged.keys()].entries()) {
+    for (const [index, [flag, block]] of [...this.#flagged].entries()) {
       const rect = rects[index]
-      const top = `calc(${(rect?.top ?? 0) + scrollY}px + 1.25em)`
+      const top = `calc(${(rect?.top ?? 0) + scrollY}px + ${block.matches(HEADINGS) ? 0 : 1.25}em)`
       const left = `${article.right + scrollX}px`
 
       // A write that changes nothing still marks the page for layout again.
@@ -282,11 +376,18 @@ export class Provenance {
     const under = this.#under?.getBoundingClientRect()
 
     if (under && !this.#panel.hidden) {
-      this.#panel.style.top = `${under.bottom + scrollY + 4}px`
-      this.#panel.style.left = `${article.left + scrollX}px`
-      this.#panel.style.width = `${article.width}px`
+      const left = Math.max(MARGIN_PX, article.right - GAP_PX - this.#panel.offsetWidth)
+      this.#panel.style.top = `${under.top + this.#offset + scrollY}px`
+      this.#panel.style.left = `${left + scrollX}px`
     }
   }
+}
+
+function waiting(text: string): HTMLParagraphElement {
+  const shown = Object.assign(document.createElement("p"), { className: "panel-waiting" })
+
+  shown.append(Object.assign(document.createElement("span"), { className: "spinner" }), text)
+  return shown
 }
 
 function line(text: string): HTMLParagraphElement {

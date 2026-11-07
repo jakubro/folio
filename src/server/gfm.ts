@@ -411,7 +411,7 @@ const resolveStrikethrough: Resolver = (events, context) => {
 }
 
 /**
- * As micromark-util-resolve-all, which folio reaches only through micromark.
+ * As micromark-util-resolve-all, which Folio reaches only through micromark.
  * micromark's own emphasis resolver is skipped: run after this one, it finds nothing to do.
  */
 function resolveAll(constructs: Construct[], events: Events, context: Context): Events {

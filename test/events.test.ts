@@ -5,10 +5,11 @@ import os from "node:os"
 import path from "node:path"
 import { after, before, test } from "node:test"
 import WebSocket from "ws"
+import { blockVersion } from "../src/server/blocks.ts"
 import { Data } from "../src/server/data.ts"
 import { Hub, type Subscription } from "../src/server/events.ts"
 import { createHandler, listen } from "../src/server/http.ts"
-import type { Indexer } from "../src/server/indexer.ts"
+import { Indexer } from "../src/server/indexer.ts"
 import { Model } from "../src/server/model.ts"
 
 interface Event {
@@ -64,9 +65,9 @@ class Tab {
   readonly events: Event[] = []
   readonly socket: WebSocket
 
-  constructor(options: WebSocket.ClientOptions = {}) {
-    this.socket = new WebSocket(`${base.replace("http", "ws")}/?events`, {
-      origin: base,
+  constructor(options: WebSocket.ClientOptions = {}, origin = base) {
+    this.socket = new WebSocket(`${origin.replace("http", "ws")}/?events`, {
+      origin,
       ...options,
     })
     this.socket.on("message", (data) => {
@@ -409,4 +410,101 @@ test("an embed is answered when a file it reads changes, through a query too, an
     ],
   )
   tab.close()
+})
+
+test("a page's change reaches its tab while another item of the tab is still being worked out", async () => {
+  const tab = await new Tab().connected()
+  const slow = data as unknown as Record<string, unknown>
+  slow.reads = () =>
+    new Promise((resolve) =>
+      setTimeout(() => resolve({ files: [], version: "slow", dirs: [] }), 1500),
+    )
+
+  try {
+    await tab.subscribe({
+      page: { "page.md": await versionOf("page.md") },
+      embeds: { "figures/page.md\nscores.csv": "stale" },
+    })
+    const started = Date.now()
+    fs.writeFileSync(path.join(root, "page.md"), "# Page, saved while an embed is read")
+
+    while (!tab.changes().some((change) => change.kind === "page")) {
+      await sleep(10)
+    }
+
+    const waited = Date.now() - started
+    assert.ok(waited < 1000, `the page's change waited ${waited} ms`)
+  } finally {
+    delete slow.reads
+    tab.close()
+  }
+})
+
+test("a page's marks and embeds reach its tab while slow work no tab waits on fills the engine", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-events-lane-")))
+  fs.writeFileSync(path.join(folder, "t.csv"), "a\n1\n")
+  fs.writeFileSync(path.join(folder, "q.sql"), "select * from 't.csv'")
+  fs.writeFileSync(path.join(folder, "page.md"), "# Page\n\n{table: q.sql}\n")
+  const parser = new Indexer(new URL("../src/server/index-worker.ts", import.meta.url))
+  const reading = new Model(
+    folder,
+    fs.mkdtempSync(path.join(os.tmpdir(), "folio-events-lane-model-")),
+    parser,
+    () => {},
+  )
+  const busy = new Data(
+    folder,
+    fs.mkdtempSync(path.join(os.tmpdir(), "folio-events-lane-data-")),
+    4000,
+  )
+  const lane = new Hub(folder, "build-1", () => {}, 200)
+  const served = http.createServer(
+    createHandler(folder, folder, "build-1", reading, busy, () => {}),
+  )
+  lane.attach(served)
+  lane.follow(reading)
+  lane.read(busy)
+  const origin = `http://localhost:${await listen(served, 0)}`
+  const slow = "select sum(hash(a.range + b.range)) from range(200000) a, range(200000) b"
+  const background: Promise<unknown>[] = []
+
+  try {
+    await reading.start()
+    await reading.reads.read(
+      "page.md",
+      (reading.held("page.md") ?? []).map((block) => ({
+        id: block.id,
+        version: blockVersion(block.text, block.kind),
+        embeds: { "page.md\nq.sql": "seen" },
+      })),
+    )
+    background.push(...[1, 2].map(() => busy.query(slow, folder).catch((error: Error) => error)))
+    await sleep(300)
+    const tab = await new Tab({}, origin).connected()
+    const started = Date.now()
+    await tab.subscribe({ reads: { "page.md": "stale" }, embeds: { "page.md\nq.sql": "stale" } })
+
+    while (tab.changes().length < 2 && Date.now() - started < 2000) {
+      await sleep(10)
+    }
+
+    tab.close()
+    assert.deepEqual(
+      tab
+        .changes()
+        .map(({ kind, path: key }) => [kind, key])
+        .sort(),
+      [
+        ["embed", "page.md\nq.sql"],
+        ["reads", "page.md"],
+      ],
+    )
+  } finally {
+    await Promise.all(background)
+    served.closeAllConnections()
+    served.close()
+    reading.close()
+    await busy.close()
+    await parser.close()
+  }
 })

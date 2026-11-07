@@ -1,9 +1,10 @@
-/** ASCII STL fences drawn as 3D models the reader turns by dragging and zooms with buttons. */
+/** ASCII STL fences drawn as 3D models to turn by dragging and zoom with buttons, or the wheel full-window. */
 
 import * as THREE from "three"
 import { OrbitControls } from "three/addons/controls/OrbitControls.js"
 import { STLLoader } from "three/addons/loaders/STLLoader.js"
 import { button, ICONS } from "./icons.ts"
+import type { Live } from "./zoom.ts"
 
 const ZOOM_STEP = 0.8
 const FIELD_OF_VIEW = 40
@@ -11,7 +12,7 @@ const DRAWN = new Set<{ host: HTMLElement; dispose: () => void }>()
 const LEFT = new MutationObserver(() => release())
 
 /** An ASCII STL model, drawn once on screen as WebGL contexts are few; throws why when it cannot be. */
-export function modelOf(source: string, owner: Document): HTMLElement {
+export function modelOf(source: string, owner: Document): { figure: HTMLElement; live: Live } {
   let geometry: THREE.BufferGeometry
 
   release()
@@ -32,13 +33,16 @@ export function modelOf(source: string, owner: Document): HTMLElement {
   const zoomIn = button(ICONS.zoomIn, "Zoom in")
   const zoomOut = button(ICONS.zoomOut, "Zoom out")
   const reset = button(ICONS.reset, "Reset view")
+  let view: ReturnType<typeof draw> | undefined
+  let full = false
   const shown = new IntersectionObserver((entries) => {
     if (entries.some((entry) => entry.isIntersecting)) {
       shown.disconnect()
-      const view = draw(canvas, geometry)
-      zoomIn.addEventListener("click", () => view.zoom(ZOOM_STEP))
-      zoomOut.addEventListener("click", () => view.zoom(1 / ZOOM_STEP))
-      reset.addEventListener("click", () => view.reset())
+      const drawn = draw(canvas, geometry, full)
+      view = drawn
+      zoomIn.addEventListener("click", () => drawn.zoom(ZOOM_STEP))
+      zoomOut.addEventListener("click", () => drawn.zoom(1 / ZOOM_STEP))
+      reset.addEventListener("click", () => drawn.reset())
     }
   })
 
@@ -47,13 +51,23 @@ export function modelOf(source: string, owner: Document): HTMLElement {
   controls.className = "stl-controls"
   controls.append(zoomIn, zoomOut, reset)
   shown.observe(canvas)
-  return figure
+  return {
+    figure,
+    live: {
+      parts: [canvas, controls],
+      moved: (intoViewer) => {
+        full = intoViewer
+        view?.wheel(intoViewer)
+      },
+    },
+  }
 }
 
 function draw(
   host: HTMLElement,
   geometry: THREE.BufferGeometry,
-): { zoom: (factor: number) => void; reset: () => void } {
+  wheel: boolean,
+): { zoom: (factor: number) => void; reset: () => void; wheel: (on: boolean) => void } {
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true })
   const material = new THREE.MeshStandardMaterial({
     color: 0xb8c0cc,
@@ -91,7 +105,7 @@ function draw(
   camera.near = distance / 100
   camera.far = distance * 100
   controls.target.copy(sphere.center)
-  controls.enableZoom = false
+  controls.enableZoom = wheel
   controls.update()
   controls.saveState()
   controls.addEventListener("change", render)
@@ -118,6 +132,9 @@ function draw(
       controls.update()
     },
     reset: () => controls.reset(),
+    wheel: (on) => {
+      controls.enableZoom = on
+    },
   }
 }
 

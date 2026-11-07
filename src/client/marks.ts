@@ -9,6 +9,7 @@ import type { PartMark } from "../server/parts.ts"
 import type { LinkMark, Mark, Removed } from "../server/reads.ts"
 import { drawDiff } from "./diff.ts"
 import { embedVersions } from "./embeds.ts"
+import { foldedUnder } from "./folds.ts"
 
 export interface Marked {
   marks: Mark[]
@@ -27,12 +28,23 @@ interface Units {
 
 type Shown = PartMark & { data?: string[] }
 
+interface Placed {
+  element: HTMLElement
+  target: () => DOMRect | undefined
+  hiddenUnder: () => HTMLElement | undefined
+}
+
 const GUTTER_PX = 34
 const CLEAR_MS = 600
+/** Time on screen, its tab shown, a read mark gets before it goes; time away pauses the count. */
+const SHOWN_MS = 5000
+const TICK_MS = 100
+const SHOWN = 0.5
 const LABELS = {
   new: "New since you last read this page",
   changed: "Changed since you read it - show what it said",
   removed: "Removed since you read it - show what it said",
+  folded: "Changed inside since you read it - unfold to see",
 }
 
 export class Marks {
@@ -42,7 +54,8 @@ export class Marks {
   readonly #upstream = document.createElement("p")
   #article: HTMLElement | undefined
   #marked: Marked | undefined
-  #placed: { element: HTMLElement; target: () => DOMRect | undefined }[] = []
+  #placed: Placed[] = []
+  readonly #folded = new Map<HTMLElement, HTMLElement>()
   #open: { source: string; id: string; part?: string } | undefined
   #panelUnder: HTMLElement | undefined
   #scheduled = false
@@ -50,6 +63,11 @@ export class Marks {
   readonly #parted = new Set<HTMLElement>()
   readonly #subjects = new Map<HTMLElement, { unit?: HTMLElement; cells: Element[] }>()
   readonly #rows = new Set<HTMLElement>()
+  #lingering: Pick<Marked, "marks" | "removed"> = { marks: [], removed: [] }
+  readonly #readKeys = new Set<string>()
+  readonly #seenMs = new Map<string, number>()
+  readonly #onSince = new Map<string, number>()
+  #ticking: ReturnType<typeof setInterval> | undefined
 
   /** The note on what changed upstream sits beside the page, so its coming and going moves no text. */
   constructor(main: HTMLElement, beside: HTMLElement) {
@@ -62,6 +80,8 @@ export class Marks {
     main.append(this.#layer, this.#panel)
     new ResizeObserver(() => this.#schedule()).observe(document.body)
     addEventListener("resize", () => this.#schedule())
+    document.addEventListener("folio:folds", () => this.#schedule())
+    document.addEventListener("toggle", () => this.#schedule(), true)
     addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !this.#panel.hidden) {
         this.#close()
@@ -74,6 +94,13 @@ export class Marks {
   }
 
   show(article: HTMLElement, marked: Marked | undefined): void {
+    if (article !== this.#article) {
+      this.#lingering = { marks: [], removed: [] }
+      this.#readKeys.clear()
+      this.#seenMs.clear()
+      this.#onSince.clear()
+    }
+
     this.#article = article
     this.#marked = marked
 
@@ -123,7 +150,7 @@ export class Marks {
     return changedShare(mark.before, mark.after)
   }
 
-  cleared(read: { source: string; id: string; part?: string }[]): void {
+  markRead(read: { source: string; id: string; part?: string }[]): void {
     if (!this.#marked) {
       return
     }
@@ -135,13 +162,33 @@ export class Marks {
       part === undefined ? [] : [{ ...block, part }],
     )
     const gone = (item: { source: string; id: string }) => whole.some((block) => same(block, item))
+    const partsRead = (mark: Mark) =>
+      parts.filter((block) => same(block, mark)).map(({ part }) => part)
 
+    for (const mark of this.#marked.marks) {
+      const left = partsRead(mark)
+
+      if (gone(mark)) {
+        this.#lingering.marks.push(mark)
+      } else if (mark.parts && left.length > 0) {
+        this.#lingering.marks.push({
+          ...mark,
+          parts: {
+            ...mark.parts,
+            marked: mark.parts.marked.filter((shown) => left.includes(partKey(shown))),
+            gone: mark.parts.gone.filter(({ key }) => left.includes(`gone:${key}`)),
+          },
+        })
+      }
+    }
+
+    this.#lingering.removed.push(...this.#marked.removed.filter(gone))
     this.#marked = {
       ...this.#marked,
       marks: this.#marked.marks
         .filter((mark) => !gone(mark))
         .map((mark) => {
-          const left = parts.filter((block) => same(block, mark)).map(({ part }) => part)
+          const left = partsRead(mark)
           return mark.parts && left.length > 0
             ? {
                 ...mark,
@@ -156,26 +203,45 @@ export class Marks {
       removed: this.#marked.removed.filter((removed) => !gone(removed)),
     }
 
-    for (const element of [...this.#layer.children] as HTMLElement[]) {
-      const { folioSource: source = "", folioId: id = "", folioPart: part } = element.dataset
-      const cleared =
-        part === undefined
-          ? gone({ source, id })
-          : parts.some((block) => same(block, { source, id }) && block.part === part)
-
-      if (cleared) {
-        this.#unmark(element)
-        element.classList.add("clearing")
-        setTimeout(() => element.remove(), CLEAR_MS)
-      }
+    for (const { source, id, part } of read) {
+      this.#readKeys.add(keyOf(source, id, part))
     }
+
+    this.#tick()
   }
 
   /** Placed against the document, as the block link is, so no block element is touched. */
   place(): void {
     const left = (this.#article?.getBoundingClientRect().left ?? 0) + scrollX - GUTTER_PX
+    const folded = new Set(this.#placed.flatMap(({ hiddenUnder }) => hiddenUnder() ?? []))
 
-    for (const { element, target } of this.#placed) {
+    for (const [heading, bar] of this.#folded) {
+      if (!folded.has(heading)) {
+        bar.remove()
+        this.#folded.delete(heading)
+      }
+    }
+
+    for (const heading of folded) {
+      if (!this.#folded.has(heading)) {
+        const bar = Object.assign(document.createElement("span"), {
+          className: "read-mark mark-folded",
+          title: LABELS.folded,
+        })
+        bar.setAttribute("aria-label", LABELS.folded)
+        // Beneath every other mark, so a folded heading's own bar stays the one clicked.
+        this.#layer.prepend(bar)
+        this.#folded.set(heading, bar)
+      }
+    }
+
+    for (const { element, target } of [
+      ...this.#placed,
+      ...[...this.#folded].map(([heading, element]) => ({
+        element,
+        target: () => rectOf(heading),
+      })),
+    ]) {
       const rect = target()
       element.hidden = !rect
 
@@ -206,6 +272,7 @@ export class Marks {
 
     this.#layer.replaceChildren()
     this.#placed = []
+    this.#folded.clear()
     this.#parted.clear()
     this.#showUpstream(marked?.upstream ?? [])
 
@@ -234,7 +301,10 @@ export class Marks {
       }
     }
 
-    for (const mark of marked.marks) {
+    const marks = [...marked.marks, ...this.#stillLingering(marked).marks]
+    const removed = [...marked.removed, ...this.#stillLingering(marked).removed]
+
+    for (const mark of marks) {
       for (const block of this.#find(mark.source, mark.id)) {
         if (mark.mark === "changed" && this.#drawParts(block, mark)) {
           continue
@@ -250,34 +320,171 @@ export class Marks {
           )
         }
 
-        this.#placed.push({ element: bar, target: () => rectOf(block) })
+        this.#put(
+          bar,
+          () => rectOf(block),
+          () => foldedUnder(block),
+        )
       }
     }
 
-    for (const { source, id, text, after, before } of marked.removed) {
+    for (const { source, id, text, after, before } of removed) {
       const next = before ? this.#find(source, before)[0] : undefined
-      const previous = after ? this.#find(source, after).at(-1) : undefined
+      const found = after ? this.#find(source, after).at(-1) : undefined
+      // The frontmatter is drawn last, so the block before a removed one in the file may sit after it.
+      const previous =
+        found && next && found.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_PRECEDING
+          ? undefined
+          : found
       const tick = this.#bar("removed", source, id)
 
       tick.dataset.folioVersion = "removed"
       tick.addEventListener("click", () =>
         this.#toggle({ source, id }, tick, "Removed since you read it", () => struck(text)),
       )
-      this.#placed.push({
-        element: tick,
-        target: () =>
-          between(previous && rectOf(previous), next && rectOf(next), article.offsetTop),
-      })
+      this.#put(
+        tick,
+        () =>
+          between(
+            previous && !previous.contains(next ?? null) ? rectOf(previous) : undefined,
+            next && rectOf(next),
+            article.offsetTop,
+          ),
+        () => tickFolded(previous, next, before !== undefined && next === undefined),
+      )
     }
 
     this.#layer.append(...this.#placed.map(({ element }) => element))
     this.place()
+    clearInterval(this.#ticking)
+    this.#ticking = this.#placed.length > 0 ? setInterval(() => this.#tick(), TICK_MS) : undefined
+  }
+
+  #stillLingering(marked: Marked): Pick<Marked, "marks" | "removed"> {
+    const again = new Set([
+      ...marked.marks.flatMap((mark) => [
+        keyOf(mark.source, mark.id),
+        ...(mark.parts?.marked ?? []).map((part) => keyOf(mark.source, mark.id, partKey(part))),
+        ...(mark.parts?.gone ?? []).map(({ key }) => keyOf(mark.source, mark.id, `gone:${key}`)),
+      ]),
+      ...marked.removed.map(({ source, id }) => keyOf(source, id)),
+    ])
+
+    return {
+      marks: this.#lingering.marks.flatMap((mark) => {
+        if (!mark.parts) {
+          return again.has(keyOf(mark.source, mark.id)) ? [] : [mark]
+        }
+
+        const marked = mark.parts.marked.filter(
+          (part) => !again.has(keyOf(mark.source, mark.id, partKey(part))),
+        )
+        const gone = mark.parts.gone.filter(
+          ({ key }) => !again.has(keyOf(mark.source, mark.id, `gone:${key}`)),
+        )
+
+        return marked.length + gone.length > 0
+          ? [{ ...mark, parts: { ...mark.parts, marked, gone } }]
+          : []
+      }),
+      removed: this.#lingering.removed.filter(({ source, id }) => !again.has(keyOf(source, id))),
+    }
+  }
+
+  /** On screen as reading counts it: half the marked block or half the window, the tab shown. */
+  #tick(): void {
+    const now = performance.now()
+    const shown = document.visibilityState === "visible"
+
+    for (const { element, target } of this.#placed) {
+      const key = keyOf(
+        element.dataset.folioSource ?? "",
+        element.dataset.folioId ?? "",
+        element.dataset.folioPart,
+      )
+      const rect =
+        element.isConnected && !element.classList.contains("clearing") ? target() : undefined
+      const visible = rect ? Math.min(rect.bottom, innerHeight) - Math.max(rect.top, 0) : 0
+      const on =
+        shown &&
+        rect !== undefined &&
+        visible > 0 &&
+        (visible >= rect.height * SHOWN || visible >= innerHeight * SHOWN)
+      const since = this.#onSince.get(key)
+
+      if (on && since !== undefined) {
+        this.#seenMs.set(key, (this.#seenMs.get(key) ?? 0) + now - since)
+      }
+
+      if (on) {
+        this.#onSince.set(key, now)
+      } else {
+        this.#onSince.delete(key)
+      }
+
+      if (
+        this.#readKeys.has(key) &&
+        (this.#seenMs.get(key) ?? 0) >= SHOWN_MS &&
+        !this.holding(element) &&
+        !element.classList.contains("clearing")
+      ) {
+        this.#fade(element, key)
+      }
+    }
+  }
+
+  #fade(element: HTMLElement, key: string): void {
+    const cells = this.#subjects.get(element)?.cells ?? []
+
+    for (const cell of cells) {
+      cell.classList.add("cell-clearing")
+    }
+
+    element.classList.add("clearing")
+    this.#readKeys.delete(key)
+    this.#seenMs.delete(key)
+    this.#onSince.delete(key)
+    this.#forget(element)
+    setTimeout(() => {
+      this.#unmark(element)
+
+      for (const cell of cells) {
+        cell.classList.remove("cell-clearing")
+      }
+
+      element.remove()
+      this.#placed = this.#placed.filter((placed) => placed.element !== element)
+      this.#schedule()
+    }, CLEAR_MS)
+  }
+
+  #forget(element: HTMLElement): void {
+    const { folioSource: source = "", folioId: id = "", folioPart: part } = element.dataset
+    const isIt = (item: { source: string; id: string }) => item.source === source && item.id === id
+
+    if (part === undefined) {
+      this.#lingering.marks = this.#lingering.marks.filter((mark) => !isIt(mark))
+      this.#lingering.removed = this.#lingering.removed.filter((removed) => !isIt(removed))
+      return
+    }
+
+    this.#lingering.marks = this.#lingering.marks.map((mark) =>
+      isIt(mark) && mark.parts
+        ? {
+            ...mark,
+            parts: {
+              ...mark.parts,
+              marked: mark.parts.marked.filter((shown) => partKey(shown) !== part),
+              gone: mark.parts.gone.filter(({ key }) => `gone:${key}` !== part),
+            },
+          }
+        : mark,
+    )
   }
 
   /** Marks a block part by part only when the page draws as many parts as the mark counts. */
   #drawParts(block: HTMLElement, mark: Mark): boolean {
-    const units =
-      block.parentElement === this.#article ? unitsIn(block, this.writtenRows) : undefined
+    const units = standsAlone(block, this.#article) ? unitsIn(block, this.writtenRows) : undefined
     const shown = units && partsShown(block, mark, units)
 
     if (!units || !shown) {
@@ -316,7 +523,11 @@ export class Marks {
         )
       }
 
-      this.#placed.push({ element: bar, target: () => units.rect(part.at, part.count) })
+      this.#put(
+        bar,
+        () => units.rect(part.at, part.count),
+        () => foldedUnder(block),
+      )
     }
 
     for (const { key, text, after, before } of mark.parts?.gone ?? []) {
@@ -328,9 +539,9 @@ export class Marks {
       tick.addEventListener("click", () =>
         this.#toggle({ source, id, part }, tick, "Removed since you read it", () => struck(text)),
       )
-      this.#placed.push({
-        element: tick,
-        target: () => {
+      this.#put(
+        tick,
+        () => {
           const above = after === undefined ? undefined : units.rect(after, 1)
           const below = before === undefined ? undefined : units.rect(before, 1)
           const top = rectOf(block)?.top
@@ -342,11 +553,25 @@ export class Marks {
             ? between(above, below, top ?? 0)
             : undefined
         },
-      })
+        () => foldedUnder(block),
+      )
     }
 
     this.#parted.add(block)
     return true
+  }
+
+  /** A mark a fold hides has no place, so it is neither shown nor counted as on screen. */
+  #put(
+    element: HTMLElement,
+    target: () => DOMRect | undefined,
+    hiddenUnder: () => HTMLElement | undefined,
+  ): void {
+    this.#placed.push({
+      element,
+      hiddenUnder,
+      target: () => (hiddenUnder() ? undefined : target()),
+    })
   }
 
   #unmark(bar: HTMLElement): void {
@@ -652,6 +877,41 @@ function union(rects: (DOMRect | undefined)[]): DOMRect | undefined {
   return new DOMRect(left, top, right - left, bottom - top)
 }
 
+/**
+ * A block removed right after a folded heading was inside its section; one right after a `<details>`' opening was
+ * inside it only when the block after it is drawn as no element of its own - the closing tag.
+ */
+function tickFolded(
+  previous: HTMLElement | undefined,
+  next: HTMLElement | undefined,
+  closedAfter: boolean,
+): HTMLElement | undefined {
+  const opening = previous?.matches(".folded")
+    ? previous
+    : previous instanceof HTMLDetailsElement && closedAfter
+      ? previous.open
+        ? (previous.querySelector<HTMLElement>(":scope > summary .folded") ?? undefined)
+        : (previous.querySelector<HTMLElement>(":scope > summary") ?? previous)
+      : undefined
+
+  return (next && foldedUnder(next)) ?? (previous && foldedUnder(previous)) ?? opening
+}
+
+/** A block drawn on its own - in the article, a folded section or a `<details>` - never in another's drawing. */
+function standsAlone(block: HTMLElement, article: HTMLElement | undefined): boolean {
+  for (let node = block.parentElement; node; node = node.parentElement) {
+    if (node === article) {
+      return true
+    }
+
+    if (!(node instanceof HTMLDetailsElement || node.classList.contains("fold"))) {
+      return false
+    }
+  }
+
+  return false
+}
+
 function between(above: DOMRect | undefined, below: DOMRect | undefined, top: number): DOMRect {
   return new DOMRect(0, above ? above.bottom + 2 : below ? below.top - 6 : top, 0, 4)
 }
@@ -681,6 +941,10 @@ function earlier(
 
 function struck(text: string): Node {
   return Object.assign(document.createElement("del"), { textContent: text })
+}
+
+function keyOf(source: string, id: string, part?: string): string {
+  return `${source}\0${id}\0${part ?? ""}`
 }
 
 function partKey(part: { at: number; count: number }): string {

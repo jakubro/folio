@@ -192,11 +192,16 @@ test("Source, Themes, Pages without maps: a map switches to its source, reads in
     await map
       .locator(".drawn-toolbar button")
       .evaluateAll((all) => all.map((one) => (one as HTMLElement).title)),
-    ["Show source", "Copy source"],
+    ["Expand map", "Show source", "Copy source"],
   )
   await map.locator(".source-switch").click()
   await map.locator('.source-switch[aria-pressed="true"]').waitFor()
   assert.equal(await map.locator(".geo-map-canvas").isHidden(), true)
+  assert.equal(
+    await map.locator(".drawn-expand").isHidden(),
+    true,
+    "no expand while the source shows",
+  )
   assert.equal(await map.locator(":scope > pre code").textContent(), `${SHAPES}\n`)
   await map.locator(".source-copy").click()
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), SHAPES)
@@ -372,9 +377,20 @@ test("Source, Themes, Pages without models: a model switches to its source, read
     await model.locator(".drawn-toolbar").evaluate((bar) => getComputedStyle(bar).opacity),
     "1",
   )
+  assert.deepEqual(
+    await model
+      .locator(".drawn-toolbar button")
+      .evaluateAll((all) => all.map((one) => (one as HTMLElement).title)),
+    ["Expand model", "Show source", "Copy source"],
+  )
   await model.locator(".source-switch").click()
   await model.locator('.source-switch[aria-pressed="true"]').waitFor()
   assert.equal(await model.locator(".stl-canvas").isHidden(), true)
+  assert.equal(
+    await model.locator(".drawn-expand").isHidden(),
+    true,
+    "no expand while the source shows",
+  )
   assert.equal(await model.locator(":scope > pre code").textContent(), `${TETRA}\n`)
   await model.locator(".source-copy").click()
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), TETRA)
@@ -427,6 +443,194 @@ test("Source, Themes, Pages without models: a model switches to its source, read
     "a page without models loads none of it",
   )
   await Promise.all([page.close(), plain.close()])
+})
+
+test("Map, Back on the page, On the page, Closing: a map opens live filling the viewer, what the page showed enlarged, and the page keeps the view it was left at", async () => {
+  write({
+    "drawings/to-live.md": "# To live\n\n[Live](live.md)\n",
+    "drawings/live.md": [
+      "# Live",
+      "",
+      "```geojson",
+      SHAPES,
+      "```",
+      "",
+      ...Array.from({ length: 60 }, (_, i) => `Below ${i}.\n`),
+    ].join("\n"),
+  })
+  const page = await context.newPage()
+  await page.route("https://tile.openstreetmap.org/**", (route) =>
+    route.fulfill({ body: PIXEL, contentType: "image/png" }),
+  )
+  await page.goto(`${base}/drawings/to-live.md`)
+  await page.click('.markdown-body a[href="live.md"]')
+  await page.waitForSelector(".geo-map .leaflet-overlay-pane path")
+  const map = page.locator(".markdown-body .geo-map")
+  const state = () =>
+    page.evaluate(() => {
+      const canvas = document.querySelector(".geo-map-canvas") as HTMLElement
+      const box = canvas.getBoundingClientRect()
+      const area = (
+        canvas.querySelector('path.leaflet-interactive:not([d*="a5,5"])') as Element
+      ).getBoundingClientRect()
+      const point = (
+        canvas.querySelector('path.leaflet-interactive[d*="a5,5"]') as Element
+      ).getBoundingClientRect()
+      const port = document.querySelector(".viewer-viewport")?.getBoundingClientRect()
+      return {
+        inViewer: Boolean(canvas.closest(".viewer.visible .viewer-stage")),
+        box: { width: box.width, height: box.height },
+        fills: port ? box.width === port.width && box.height === port.height : false,
+        area: area.width,
+        offset: {
+          x: point.left + point.width / 2 - (box.left + box.width / 2),
+          y: point.top + point.height / 2 - (box.top + box.height / 2),
+        },
+        figure: (document.querySelector(".markdown-body .geo-map") as HTMLElement).offsetHeight,
+      }
+    })
+  const close = (expected: number, actual: number, what: string) =>
+    assert.ok(Math.abs(actual - expected) <= 2, `${what}: ${actual} where ${expected}`)
+
+  const onPage = await state()
+  await map.hover()
+  await map.locator(".drawn-expand").click()
+  const opened = await state()
+  const grown = Math.min(opened.box.width / onPage.box.width, opened.box.height / onPage.box.height)
+
+  assert.equal(opened.inViewer, true)
+  assert.equal(opened.fills, true, "the map fills the viewer")
+  assert.equal(opened.figure, onPage.figure, "the page keeps its place meanwhile")
+  close(onPage.area * grown, opened.area, "what the page showed fills it")
+  await page.keyboard.press(" ")
+  close(opened.area, (await state()).area, "Space on the expand button behind it changes nothing")
+
+  await page.mouse.move(700, 400)
+  await page.mouse.wheel(0, -200)
+  await page.waitForFunction(
+    (was) =>
+      (
+        document.querySelector('.viewer path.leaflet-interactive:not([d*="a5,5"])') as Element
+      ).getBoundingClientRect().width >
+      was * 1.5,
+    opened.area,
+  )
+  await page.waitForTimeout(500)
+  const zoomed = await state()
+  await page.mouse.move(600, 300)
+  await page.mouse.down()
+  await page.mouse.move(700, 380, { steps: 8 })
+  await page.mouse.up()
+  const dragged = await state()
+  close(zoomed.offset.x + 100, dragged.offset.x, "dragging pans it")
+  close(zoomed.offset.y + 80, dragged.offset.y, "dragging pans it")
+
+  await page.locator(".viewer .geo-map-tiles").click()
+  await page.waitForSelector(".viewer .leaflet-tile-loaded")
+  await page.locator('.viewer path.leaflet-interactive[d*="a5,5"]').click()
+  await page.waitForSelector(".viewer .leaflet-popup-content")
+  assert.equal(await page.textContent(".viewer .leaflet-popup-content"), "name: Oslopeople: 709000")
+  await page.locator(".viewer .leaflet-popup-close-button").click()
+
+  await page.mouse.click(10, 400)
+  assert.equal(
+    await page.locator(".viewer.visible").count(),
+    1,
+    "a click on the backdrop leaves it",
+  )
+  const kept = await state()
+  await page.keyboard.press("Escape")
+  const back = await state()
+
+  assert.equal(await page.locator(".viewer.visible").count(), 0, "Escape closes it")
+  assert.equal(back.inViewer, false)
+  assert.deepEqual(back.box, onPage.box)
+  close(
+    kept.offset.x / grown,
+    back.offset.x,
+    "zoomed back by the same step, centred as the viewer was",
+  )
+  close(
+    kept.offset.y / grown,
+    back.offset.y,
+    "zoomed back by the same step, centred as the viewer was",
+  )
+
+  const scrolled = await page.evaluate(() => scrollY)
+  await map.hover()
+  await page.mouse.wheel(0, 120)
+  await page.waitForFunction((was) => scrollY > was, scrolled)
+  close(back.area, (await state()).area, "the wheel on the page scrolls it and leaves the map")
+
+  await map.hover()
+  await map.locator(".drawn-expand").click()
+  await page.goBack()
+  await page.waitForSelector("h1:text('To live')")
+  assert.equal(await page.locator(".viewer.visible").count(), 0, "back closes it")
+  await page.close()
+})
+
+test("3D model, Back on the page, On the page: a model opens live filling the viewer, the wheel zooms it there, and the page keeps the view it was left at", async () => {
+  models()
+  const page = await open("drawings/model.md")
+  await page.waitForSelector(".stl-model canvas")
+  const model = page.locator(".markdown-body .stl-model")
+  const picture = async () => {
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(250)
+    return (await page.locator(".stl-canvas").screenshot()).toString("base64")
+  }
+  const placed = () =>
+    page.evaluate(() => {
+      const canvas = document.querySelector(".stl-canvas") as HTMLElement
+      const port = document.querySelector(".viewer-viewport")?.getBoundingClientRect()
+      const box = canvas.getBoundingClientRect()
+      return {
+        inViewer: Boolean(canvas.closest(".viewer.visible .viewer-stage")),
+        controls: Boolean(document.querySelector(".viewer.visible .stl-controls")),
+        fills: port ? box.width === port.width && box.height === port.height : false,
+        drawn: (canvas.querySelector("canvas") as HTMLCanvasElement).height,
+      }
+    })
+
+  await page.click('.stl-controls button[title="Reset view"]')
+  const first = await picture()
+  await model.hover()
+  await page.mouse.wheel(0, -200)
+  assert.ok((await picture()) === first, "the wheel on the page leaves the model")
+
+  await model.locator(".drawn-expand").click()
+  const opened = await placed()
+  assert.equal(opened.inViewer && opened.controls && opened.fills, true, "it fills the viewer")
+
+  const full = await picture()
+  await page.mouse.move(700, 400)
+  await page.mouse.wheel(0, -300)
+  const wheeled = await picture()
+  assert.ok(wheeled !== full, "the wheel zooms it")
+  await page.mouse.move(700, 400)
+  await page.mouse.down()
+  await page.mouse.move(820, 430, { steps: 8 })
+  await page.mouse.up()
+  assert.ok((await picture()) !== wheeled, "dragging turns it")
+  await page.click('.viewer .stl-controls button[title="Zoom in"]')
+  await page.click('.viewer .stl-controls button[title="Reset view"]')
+  await page.mouse.move(700, 400)
+  await page.mouse.down()
+  await page.mouse.move(820, 430, { steps: 8 })
+  await page.mouse.up()
+
+  await page.click(".viewer-close")
+  const back = await placed()
+  assert.deepEqual(
+    { ...back, drawn: back.drawn > 0 },
+    { inViewer: false, controls: false, fills: false, drawn: true },
+  )
+  const left = await picture()
+  assert.ok(left !== first, "the page shows the view the viewer left")
+  await page.click('.stl-controls button[title="Reset view"]')
+  assert.ok((await picture()) === first, "reset returns the page's model to its first view")
+  await page.close()
 })
 
 test("Several drawings: each keeps its own shown source through a theme switch and saves that add, remove or edit one", async () => {

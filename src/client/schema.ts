@@ -32,7 +32,7 @@ const EXTRA_TAGS = [
   "data",
 ]
 const base = defaultSchema.attributes ?? {}
-/** The HTML a page may carry: GitHub's set, plus the tags and attributes folio renders beyond it. */
+/** The HTML a page may carry: GitHub's set, plus the tags and attributes Folio renders beyond it. */
 export const SCHEMA = {
   ...defaultSchema,
   tagNames: [...new Set([...(defaultSchema.tagNames ?? []), ...EXTRA_TAGS])],

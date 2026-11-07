@@ -4,7 +4,7 @@ import { visit } from "unist-util-visit"
 const ESCAPED_INCLUDE = /\\(\{include:\s*[^}\n[\]{"',]*?\s*\})/g
 
 /**
- * folio drops the backslash that keeps `\{include: path}` from expanding, code included; markdown
+ * Folio drops the backslash that keeps `\{include: path}` from expanding, code included; markdown
  * drops it only outside code, so this drops it inside.
  */
 export function unescapeIncludes() {

@@ -4,17 +4,18 @@ import type http from "node:http"
 import path from "node:path"
 import type { Duplex } from "node:stream"
 import { type WebSocket, WebSocketServer } from "ws"
-import type { Data } from "./data.ts"
+import { type Data, urgently } from "./data.ts"
 import { confine, isDocument, isInside, renderable, subfolders } from "./files.ts"
 import { healthOf } from "./health.ts"
 import { isLocal, type Log } from "./http.ts"
 import { impactOf } from "./impact.ts"
 import type { Model } from "./model.ts"
-import { needsOf } from "./needs.ts"
 import { presenceOf } from "./presence.ts"
 import type { Seen } from "./reads.ts"
+import { relatedOf } from "./related.ts"
+import { shownChanges, shownHealth, shownNeeds, shownOf } from "./shown.ts"
 import { staleOf } from "./stale.ts"
-import { changed, fileVersion, folderState, linksState, pageState, readState } from "./versions.ts"
+import { fileVersion, folderState, linksState, pageState, readState } from "./versions.ts"
 import { WatchRegistry } from "./watch.ts"
 
 type Kind =
@@ -29,6 +30,7 @@ type Kind =
   | "health"
   | "needs"
   | "stale"
+  | "related"
 
 /** What a tab shows, each item keyed by its URL path and mapped to the version the tab holds. */
 export interface Subscription {
@@ -45,6 +47,7 @@ export interface Subscription {
   needs?: Record<string, string | null>
   /** Documents that have outlived their use, under the key "". */
   stale?: Record<string, string | null>
+  related?: Record<string, string | null>
   data?: Record<string, string | null>
   /** Embeds, each keyed by the document holding it and its reference, a line break between. */
   embeds?: Record<string, string | null>
@@ -68,8 +71,6 @@ interface Tab {
   socket: WebSocket
   items: Map<string, Item>
   pending: Set<string>
-  /** Refreshes land one after another, in the order they were asked for. */
-  landing: Promise<void>
   alive: boolean
   timer?: NodeJS.Timeout
 }
@@ -84,6 +85,7 @@ const KINDS: Record<Exclude<keyof Subscription, "withData">, Kind> = {
   health: "health",
   needs: "needs",
   stale: "stale",
+  related: "related",
   data: "data",
   embeds: "embed",
 }
@@ -125,6 +127,7 @@ export class Hub {
       this.#refreshKinds(["links", "reads", "changes", "health", "needs", "stale"], true),
     )
     model.reads.listen(() => this.#refreshKinds(["reads", "changes", "needs", "stale"]))
+    relatedOf(model).listen(() => this.#refreshKinds(["related"]))
     presenceOf(model).listen((paused) => {
       for (const tab of this.#tabs) {
         this.#emit(tab, { type: "sharing", paused })
@@ -138,6 +141,11 @@ export class Hub {
 
     if (this.#model) {
       healthOf(this.#model, data).listen(() => this.#refreshKinds(["health", "needs"]))
+      shownOf(this.#model).listen((part) =>
+        this.#refreshKinds([
+          part === "health" ? "health" : part === "changes" ? "changes" : "needs",
+        ]),
+      )
     }
   }
 
@@ -161,7 +169,7 @@ export class Hub {
     server.on("upgrade", (request: http.IncomingMessage, socket: Duplex, head: Buffer) => {
       const query = new URL(request.url ?? "/", "http://localhost").searchParams
 
-      // Any web page can open a WebSocket to localhost; only folio's own pages may open this one.
+      // Any web page can open a WebSocket to localhost; only Folio's own pages may open this one.
       if (
         !query.has("events") ||
         !isLocal(request.headers.host) ||
@@ -185,7 +193,6 @@ export class Hub {
       socket,
       items: new Map(),
       pending: new Set(),
-      landing: Promise.resolve(),
       alive: true,
     }
 
@@ -427,12 +434,11 @@ export class Hub {
     tab.pending.clear()
   }
 
+  /** Each item lands on its own, so a page never waits for the folder's health to be worked out again. */
   #refresh(tab: Tab, item: Item): void {
     const refresh = ++item.refreshes
-    const state = this.#state(item)
 
-    tab.landing = tab.landing
-      .then(() => state)
+    this.#state(item)
       .then((landed) => {
         if (refresh === item.refreshes && this.#tabs.has(tab)) {
           this.#apply(tab, item, landed)
@@ -472,6 +478,13 @@ export class Hub {
     const root = this.#root
     const lexicalDir = path.dirname(path.join(root, item.urlPath))
 
+    if (item.kind === "related") {
+      return {
+        version: this.#model ? relatedOf(this.#model).version(item.urlPath) : null,
+        dirs: [],
+      }
+    }
+
     if (item.kind === "links") {
       const page = this.#model && renderable(root, item.urlPath)
       const blocks =
@@ -487,16 +500,16 @@ export class Hub {
       const model = this.#model
       const data = this.#data
 
-      if (!model) {
+      if (!model || !data) {
         return { version: null, dirs: [] }
       }
 
-      const { version } = await changed(model, data)
+      const { version } = await shownChanges(model, data)
       const files = await Promise.all(
         model.reads.embedKeys().map(async (key) => {
           const [from, reference] = key.split("\n")
           const document = renderable(root, from)
-          return data && document && isDocument(document.kind) && reference !== undefined
+          return document && isDocument(document.kind) && reference !== undefined
             ? (await data.reads(document.file, reference)).files
             : []
         }),
@@ -516,7 +529,7 @@ export class Hub {
       // The model watches every folder but pruned ones; a tab on health watches those its documents reach.
       const model = this.#model
       const health = healthOf(model, this.#data)
-      const version = await health.checkedVersion()
+      const { version } = await shownHealth(model, this.#data)
       const { dirs } = health
 
       // Worked out again only when health reaches other folders or the model watches others.
@@ -539,7 +552,7 @@ export class Hub {
         return { version: null, dirs: [] }
       }
 
-      const { version, watched } = await (item.kind === "needs" ? needsOf : staleOf)(
+      const { version, watched } = await (item.kind === "needs" ? shownNeeds : staleOf)(
         this.#model,
         this.#data,
       )
@@ -553,8 +566,9 @@ export class Hub {
         return { version: null, dirs: [] }
       }
 
-      const blocks = pageState(root, page.file, this.#model).blocks
-      const state = await readState(this.#model, item.urlPath, blocks, this.#data)
+      const model = this.#model
+      const blocks = pageState(root, page.file, model).blocks
+      const state = await urgently(() => readState(model, item.urlPath, blocks, this.#data))
       return { version: state.version, dirs: [] }
     }
 
@@ -593,10 +607,11 @@ export class Hub {
     key: string,
   ): Promise<{ version: string | null; dirs: string[]; documents?: boolean }> {
     const root = this.#root
+    const data = this.#data
     const [from, reference] = key.split("\n")
     const document = renderable(root, from)
 
-    if (!document || !isDocument(document.kind) || reference === undefined || !this.#data) {
+    if (!document || !isDocument(document.kind) || reference === undefined || !data) {
       return { version: null, dirs: [watchable(root, path.dirname(path.join(root, from)))] }
     }
 
@@ -606,7 +621,7 @@ export class Hub {
       missing,
       tables,
       dirs: matched = [],
-    } = await this.#data.reads(document.file, reference)
+    } = await urgently(() => data.reads(document.file, reference))
     const dirs = new Set([
       ...files.map((file) => watchable(root, path.dirname(file))),
       ...matched.map((dir) => watchable(root, dir)),

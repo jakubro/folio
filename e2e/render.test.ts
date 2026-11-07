@@ -1,10 +1,11 @@
-/** Headless Chromium run of folio's documented behaviour: rendering, includes, theme, faces and the toolbar. */
+/** Headless Chromium run of Folio's documented behaviour: rendering, includes, theme, faces and the toolbar. */
 
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { test } from "node:test"
+import zlib from "node:zlib"
 import type { Page } from "playwright"
 import {
   base,
@@ -14,6 +15,7 @@ import {
   FILES,
   landed,
   open,
+  openData,
   output,
   port,
   root,
@@ -26,7 +28,7 @@ import {
 test("Serve: prints its address and serves every renderable file by its relative path", async () => {
   assert.match(
     output,
-    new RegExp(`^folio serving ${escapeRegExp(root)}\n {2}at ${escapeRegExp(base)}/\n`),
+    new RegExp(`^Folio serving ${escapeRegExp(root)}\n {2}at ${escapeRegExp(base)}/\n`),
   )
 
   for (const urlPath of ["notes/guide.md", "notes/flow.mmd", "media/logo.svg", "deep/a/b/c.md"]) {
@@ -493,17 +495,27 @@ test("Theme: page, code and diagrams follow; the choice survives a reload and le
       node: getComputedStyle(document.querySelector(".mermaid .node rect") as Element).fill,
     }))
   const before = await look()
+  const redrawn = page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        document.addEventListener("folio:redraw", (event) => {
+          if ((event as CustomEvent<{ cause: string }>).detail.cause === "load") {
+            resolve()
+          }
+        }),
+      ),
+  )
 
   await page.click('button[title="Switch theme"]')
   await page.waitForFunction((t) => document.documentElement.dataset.theme !== t, before.theme)
-  await page.waitForSelector(".mermaid svg")
+  await redrawn
   const switched = await look()
 
   assert.notEqual(switched.background, before.background)
   assert.notEqual(switched.keyword, before.keyword)
-  assert.notEqual(switched.diagram, before.diagram)
+  assert.notEqual(switched.diagram, before.diagram, "the diagram did not follow the theme")
   assert.deepEqual([before.theme, before.node], ["light", "rgb(236, 236, 255)"])
-  assert.equal(switched.node, "rgb(45, 45, 48)")
+  assert.equal(switched.node, "rgb(45, 45, 48)", "the diagram's nodes kept the light theme")
   await other.waitForTimeout(300)
   assert.equal(await other.evaluate(() => document.documentElement.dataset.theme), before.theme)
   await page.reload()
@@ -925,7 +937,7 @@ test("Backtick form, Dollar inside, Dollar form, Code alone, Across lines: inlin
   assert.match(lines[5].text, /^Broken \$a b\$ here, /)
 })
 
-test("Toolbar, Source, Drawing, Copy, Diagram file, Chart, Failed diagram, Update, Themes: a drawing switches to its source and copies it", async () => {
+test("Toolbar, Source, Drawing, Copy, Diagram file, Chart, Failed diagram, Update, Themes, Source showing: a drawing switches to its source and copies it, and hides its expand button meanwhile", async () => {
   const flow = "graph LR\n  Start --> Stop"
   const chart = [
     "data:",
@@ -969,6 +981,7 @@ test("Toolbar, Source, Drawing, Copy, Diagram file, Chart, Failed diagram, Updat
       const [box, corner] = [element, bar].map((part) => part.getBoundingClientRect())
       return {
         buttons: [...bar.querySelectorAll("button")].map((control) => control.title),
+        expand: bar.querySelector(".drawn-expand")?.checkVisibility() ?? null,
         pressed: bar.querySelector(".source-switch")?.getAttribute("aria-pressed"),
         corner: Math.round(box.right - corner.right) <= 6 && Math.round(corner.top - box.top) <= 6,
         shown: getComputedStyle(bar).opacity,
@@ -1001,6 +1014,7 @@ test("Toolbar, Source, Drawing, Copy, Diagram file, Chart, Failed diagram, Updat
   await diagram.hover()
   assert.deepEqual(await toolbar(diagram), {
     buttons: ["Expand diagram", "Show source", "Copy source"],
+    expand: true,
     pressed: "false",
     corner: true,
     shown: "1",
@@ -1014,6 +1028,7 @@ test("Toolbar, Source, Drawing, Copy, Diagram file, Chart, Failed diagram, Updat
   await diagram.locator('.source-switch[aria-pressed="true"]').waitFor()
   assert.deepEqual(await toolbar(diagram), {
     buttons: ["Expand diagram", "Show the drawing", "Copy source"],
+    expand: false,
     pressed: "true",
     corner: true,
     shown: "1",
@@ -1035,14 +1050,16 @@ test("Toolbar, Source, Drawing, Copy, Diagram file, Chart, Failed diagram, Updat
 
   await graph.hover()
   const before = await toolbar(graph)
-  assert.deepEqual(before.buttons, ["Show source", "Copy source"])
+  assert.deepEqual(before.buttons, ["Expand chart", "Show source", "Copy source"])
+  assert.equal(before.expand, true)
   assert.equal(before.drawn, true)
   await graph.locator(".source-switch").click()
   await graph.locator('.source-switch[aria-pressed="true"]').waitFor()
   assert.deepEqual(
     { ...(await toolbar(graph)), shown: undefined },
     {
-      buttons: ["Show the drawing", "Copy source"],
+      buttons: ["Expand chart", "Show the drawing", "Copy source"],
+      expand: false,
       pressed: "true",
       corner: true,
       shown: undefined,
@@ -1204,9 +1221,9 @@ test("Dark theme: text is calmer, and every diagram label reads on its fill in e
   assert.deepEqual(await look(".markdown-body .mermaid"), dark)
   assert.deepEqual(await shaded(), [])
   await page.hover(".mermaid")
-  await page.click(".mermaid-expand")
-  await page.waitForSelector(".mermaid-zoom.visible svg")
-  assert.deepEqual(await look(".mermaid-zoom-inner"), dark)
+  await page.click(".mermaid .drawn-expand")
+  await page.waitForSelector(".viewer.visible svg")
+  assert.deepEqual(await look(".viewer-inner"), dark)
   await page.keyboard.press("Escape")
   await page.goto(`${base}/notes/flow.mmd`)
   await page.waitForSelector('.markdown-body[data-theme="dark"] .mermaid svg')
@@ -1333,10 +1350,10 @@ test("Labels on fills: rows, notes, text labels, faint, sketched and brace fills
     Sketched: "rgb(51, 51, 51)",
   })
   await page.hover(".mermaid >> nth=4")
-  await page.click(".mermaid >> nth=4 >> .mermaid-expand")
-  await page.waitForSelector(".mermaid-zoom.visible svg")
+  await page.click(".mermaid >> nth=4 >> .drawn-expand")
+  await page.waitForSelector(".viewer.visible svg")
   assert.deepEqual(
-    await page.$eval(".mermaid-zoom-inner code", (code) => [
+    await page.$eval(".viewer-inner code", (code) => [
       getComputedStyle(code).color,
       getComputedStyle(code).backgroundColor,
     ]),
@@ -1347,21 +1364,22 @@ test("Labels on fills: rows, notes, text labels, faint, sketched and brace fills
   await page.close()
 })
 
-test("Mermaid: a diagram expands to the window, zooms at the pointer and pans by drag", async () => {
+test("Mermaid, Small diagram: a diagram expands filling the window, zooms at the pointer and pans by drag", async () => {
   const page = await open("notes/guide.md")
-  const transform = () =>
-    page.$eval(".mermaid-zoom-inner", (e) => (e as HTMLElement).style.transform)
+  const transform = () => page.$eval(".viewer-inner", (e) => (e as HTMLElement).style.transform)
+  const scaleOf = (shown: string) => Number(/scale\(([\d.]+)\)/.exec(shown)?.[1])
 
   await page.click(".mermaid svg[aria-roledescription]")
-  assert.equal(await page.locator(".mermaid-zoom.visible").count(), 0)
+  assert.equal(await page.locator(".viewer.visible").count(), 0)
   await page.hover(".mermaid")
-  await page.click(".mermaid-expand")
-  await page.waitForSelector(".mermaid-zoom.visible svg")
+  await page.click(".mermaid .drawn-expand")
+  await page.waitForSelector(".viewer.visible svg")
   const fitted = await transform()
+  const fill = await shownIn(page)
   await page.mouse.move(700, 400)
   await page.mouse.wheel(0, -100)
   await page.waitForFunction(
-    (t) => (document.querySelector(".mermaid-zoom-inner") as HTMLElement).style.transform !== t,
+    (t) => (document.querySelector(".viewer-inner") as HTMLElement).style.transform !== t,
     fitted,
   )
   const zoomed = await transform()
@@ -1370,16 +1388,295 @@ test("Mermaid: a diagram expands to the window, zooms at the pointer and pans by
   await page.mouse.up()
   const panned = await transform()
 
-  assert.match(zoomed, /scale\(1\.25\)/)
+  assert.ok(
+    fill.own.width < fill.port.width && fill.own.height < fill.port.height,
+    "a small diagram",
+  )
+  assert.ok(scaleOf(fitted) > 1, "it grows past its own size")
+  assert.ok(fill.filled, "it fills the window")
+  assert.ok(Math.abs(scaleOf(zoomed) / scaleOf(fitted) - 1.25) < 1e-4, `${fitted} then ${zoomed}`)
   assert.notEqual(panned, zoomed)
   await page.keyboard.press("Escape")
-  assert.equal(await page.locator(".mermaid-zoom.visible").count(), 0)
+  assert.equal(await page.locator(".viewer.visible").count(), 0)
   await page.goto(`${base}/notes/flow.mmd`)
   await page.waitForSelector(".mermaid svg[aria-roledescription]")
   await page.close()
 })
 
-test("Text face, Code face, No merged operators, Offline, Diagram face: folio draws in the faces it carries", async () => {
+test("Backdrop, Empty space, Drag, X, Escape, Leaving: only the X, Escape and leaving the page close the diagram viewer", async () => {
+  write({
+    "notes/parts/viewer-a.md": "# A\n\n[The flow](viewer-b.md)\n",
+    "notes/parts/viewer-b.md": "# B\n\n```mermaid\ngraph TD\n  Start --> Stop\n```\n",
+  })
+  const page = await open("notes/parts/viewer-a.md")
+  const shown = () => page.locator(".viewer.visible").count()
+  const expand = async () => {
+    await page.hover(".mermaid")
+    await page.click(".mermaid .drawn-expand")
+    await page.waitForSelector(".viewer.visible svg")
+  }
+  const hit = (x: number, y: number) =>
+    page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.className, [x, y])
+
+  await page.click("text=The flow")
+  await page.waitForSelector(".mermaid svg[aria-roledescription]")
+  await expand()
+  const viewport = await page.$eval(".viewer-viewport", (element) => {
+    const { left, top } = element.getBoundingClientRect()
+    return { left, top }
+  })
+
+  assert.equal(await hit(10, 400), "viewer visible")
+  await page.mouse.click(10, 400)
+  assert.equal(await shown(), 1, "backdrop")
+
+  assert.equal(await hit(viewport.left + 10, viewport.top + 10), "viewer-viewport")
+  await page.mouse.click(viewport.left + 10, viewport.top + 10)
+  assert.equal(await shown(), 1, "empty space")
+
+  const before = await page.$eval(".viewer-inner", (e) => (e as HTMLElement).style.transform)
+  await page.mouse.move(700, 400)
+  await page.mouse.down()
+  await page.mouse.move(800, 450, { steps: 5 })
+  await page.mouse.up()
+  assert.notEqual(
+    await page.$eval(".viewer-inner", (e) => (e as HTMLElement).style.transform),
+    before,
+  )
+  assert.equal(await shown(), 1, "drag")
+
+  await page.click(".viewer-close")
+  assert.equal(await shown(), 0, "X")
+
+  await expand()
+  await page.keyboard.press("Escape")
+  assert.equal(await shown(), 0, "Escape")
+
+  await expand()
+  await page.goBack()
+  await page.waitForSelector("text=The flow")
+  assert.equal(await shown(), 0, "leaving")
+  await page.close()
+})
+
+test("Screenshot, Small picture, SVG image, Written as HTML, Inside a link, Closing: an image opens in the viewer, fitted, an SVG filling it and any other no larger than its own size", async () => {
+  const shots = [
+    "# Shots",
+    "",
+    "![wide](wide.png)",
+    "",
+    "Inline ![small](small.png) in a sentence.",
+    "",
+    "![shape](shape.svg)",
+    "",
+    '<img src="small.png" alt="html" width="50%">',
+    "",
+    '<img src="https://example.com/remote.png" alt="remote">',
+    "",
+    '<picture><source srcset="wide.png"><img src="small.png" alt="pictured"></picture>',
+    "",
+    "[![badge](small.png)](badged.md)",
+  ].join("\n")
+  write({
+    "notes/parts/shots/wide.png": png(2400, 1200),
+    "notes/parts/shots/small.png": png(200, 100),
+    "notes/parts/shots/shape.svg":
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><rect width="100" height="50" fill="teal"/></svg>',
+    "notes/parts/shots/shots.md": shots,
+    "notes/parts/shots/badged.md": "# Badged\n\n[Shots](shots.md)",
+  })
+  const page = await context.newPage()
+  await page.route("https://example.com/remote.png", (route) =>
+    route.fulfill({ body: png(200, 100), contentType: "image/png" }),
+  )
+  await page.goto(`${base}/notes/parts/shots/shots.md`)
+  await page.waitForSelector(".markdown-body > *")
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".markdown-body img")].every(
+      (image) => (image as HTMLImageElement).naturalWidth > 0,
+    ),
+  )
+  const image = (alt: string) => page.locator(`.markdown-body img[alt="${alt}"]`)
+  const corner = (alt: string) =>
+    image(alt).evaluate((found) => {
+      const toolbar = (found.closest("picture") ?? found).nextElementSibling
+      const [box, bar] = [found, toolbar].map((part) => part?.getBoundingClientRect())
+      return toolbar?.matches(".image-toolbar") && box && bar
+        ? {
+            buttons: [...toolbar.querySelectorAll("button")].map((control) => control.title),
+            corner: Math.round(box.right - bar.right) === 4 && Math.round(bar.top - box.top) === 4,
+            shown: getComputedStyle(toolbar).opacity,
+          }
+        : null
+    })
+  const expand = async (alt: string) => {
+    await image(alt).scrollIntoViewIfNeeded()
+    await image(alt).hover()
+    const found = await corner(alt)
+    await page
+      .locator(
+        `.markdown-body :is(img[alt="${alt}"], picture:has(img[alt="${alt}"])) + .image-toolbar .drawn-expand`,
+      )
+      .click()
+    await page.waitForFunction(() => {
+      const inner = document.querySelector(".viewer.visible .viewer-inner") as HTMLElement | null
+      const shown = inner?.querySelector("img")
+      return inner?.style.visibility === "" && shown?.complete
+    })
+    return found
+  }
+  const close = () => page.keyboard.press("Escape")
+
+  assert.equal((await corner("wide"))?.shown, "0", "the corner shows only under the pointer")
+  await image("wide").click()
+  assert.equal(
+    await page.locator(".viewer.visible").count(),
+    0,
+    "a click on the image opens nothing",
+  )
+
+  assert.deepEqual(await expand("wide"), { buttons: ["Expand image"], corner: true, shown: "1" })
+  const wide = await shownIn(page)
+  assert.deepEqual(wide.own, { width: 2400, height: 1200 })
+  assert.ok(wide.filled && wide.box.width <= 2400, "a screenshot is fitted to the window")
+  const fitted = await page.$eval(
+    ".viewer-inner",
+    (inner) => (inner as HTMLElement).style.transform,
+  )
+  await page.mouse.move(700, 400)
+  await page.mouse.wheel(0, -100)
+  await page.waitForFunction(
+    (was) => (document.querySelector(".viewer-inner") as HTMLElement).style.transform !== was,
+    fitted,
+  )
+  const zoomed = await page.$eval(
+    ".viewer-inner",
+    (inner) => (inner as HTMLElement).style.transform,
+  )
+  await page.mouse.down()
+  await page.mouse.move(800, 450, { steps: 5 })
+  await page.mouse.up()
+  const dragged = await page.$eval(
+    ".viewer-inner",
+    (inner) => (inner as HTMLElement).style.transform,
+  )
+  assert.deepEqual(
+    [0, 1].map((axis) => Math.round(translationOf(dragged)[axis] - translationOf(zoomed)[axis])),
+    [100, 50],
+    "dragging pans it as far as the pointer moves",
+  )
+  await page.keyboard.press("-")
+  await page.keyboard.press("ArrowLeft")
+  await page.click('.viewer-controls button[title="Fit to view"]')
+  assert.equal(
+    await page.$eval(".viewer-inner", (inner) => (inner as HTMLElement).style.transform),
+    fitted,
+  )
+
+  await page.mouse.click(10, 400)
+  assert.equal(
+    await page.locator(".viewer.visible").count(),
+    1,
+    "a click on the backdrop leaves it",
+  )
+  await page.click(".viewer-close")
+  assert.equal(await page.locator(".viewer.visible").count(), 0, "the X closes it")
+
+  assert.deepEqual(await expand("small"), { buttons: ["Expand image"], corner: true, shown: "1" })
+  assert.deepEqual((await shownIn(page)).box, { width: 200, height: 100 })
+  await page.click('.viewer-controls button[title="Zoom in"]')
+  assert.deepEqual((await shownIn(page)).box, { width: 250, height: 125 }, "zooming in enlarges it")
+  await close()
+  assert.equal(await page.locator(".viewer.visible").count(), 0, "Escape closes it")
+
+  await expand("shape")
+  const shape = await shownIn(page)
+  assert.ok(shape.filled && shape.box.width > 600, "an SVG image fills the window")
+  assert.equal(shape.box.width / shape.box.height, 2)
+  await close()
+
+  for (const alt of ["html", "remote"]) {
+    assert.deepEqual(await expand(alt), { buttons: ["Expand image"], corner: true, shown: "1" })
+    assert.deepEqual((await shownIn(page)).box, { width: 200, height: 100 }, alt)
+    await close()
+  }
+
+  await expand("pictured")
+  assert.deepEqual((await shownIn(page)).own, { width: 2400, height: 1200 }, "the source it shows")
+  await close()
+
+  await image("badge").scrollIntoViewIfNeeded()
+  await image("badge").hover()
+  assert.equal(await corner("badge"), null, "a linked image has no expand button")
+  await image("badge").click()
+  await page.waitForSelector("h1:text('Badged')")
+
+  await page.click('.markdown-body a[href="shots.md"]')
+  await page.waitForSelector(".markdown-body img[alt='wide']")
+  await expand("wide")
+  await page.goBack()
+  await page.waitForSelector("h1:text('Badged')")
+  assert.equal(await page.locator(".viewer.visible").count(), 0, "back closes it")
+
+  await page.goForward()
+  await page.waitForSelector(".markdown-body img[alt='html']")
+  write({ "notes/parts/shots/shots.md": `${shots}\n\nAppended.` })
+  await page.waitForSelector("text=Appended.")
+  const kept = await corner("html")
+  assert.deepEqual(
+    kept && { buttons: kept.buttons, corner: kept.corner },
+    { buttons: ["Expand image"], corner: true },
+    "an image on a line of its own keeps its corner through a save",
+  )
+  await page.close()
+})
+
+test("Chart: a chart opens in the viewer filling the window, and zooms and pans as a diagram does", async () => {
+  write({
+    "notes/parts/charted.csv": "city,visits\nOslo,3\nLima,5\n",
+    "notes/parts/charted.md": [
+      "# Charted",
+      "",
+      "```vega-lite",
+      "data: {url: charted.csv}",
+      "mark: bar",
+      "width: 120",
+      "height: 80",
+      "encoding:",
+      "  x: {field: city, type: nominal}",
+      "  y: {field: visits, type: quantitative}",
+      "```",
+    ].join("\n"),
+  })
+  const page = await open("notes/parts/charted.md")
+  const transform = () =>
+    page.$eval(".viewer-inner", (inner) => (inner as HTMLElement).style.transform)
+  await page.waitForSelector(".embed-chart .chart svg")
+  await page.hover(".embed-chart")
+  await page.click(".embed-chart .drawn-expand")
+  await page.waitForSelector(".viewer.visible svg")
+  const chart = await shownIn(page)
+
+  assert.ok(chart.own.width < 400, "a small chart")
+  assert.ok(chart.filled, "it fills the window")
+  const fitted = await transform()
+  await page.mouse.move(700, 400)
+  await page.mouse.wheel(0, -100)
+  await page.waitForFunction(
+    (was) => (document.querySelector(".viewer-inner") as HTMLElement).style.transform !== was,
+    fitted,
+  )
+  const zoomed = await transform()
+  await page.mouse.down()
+  await page.mouse.move(800, 450, { steps: 5 })
+  await page.mouse.up()
+  assert.notEqual(await transform(), zoomed)
+  assert.equal(await page.locator(".viewer-inner svg text").first().isVisible(), true)
+  await page.keyboard.press("Escape")
+  await page.close()
+})
+
+test("Text face, Code face, No merged operators, Offline, Diagram face: Folio draws in the faces it carries", async () => {
   const outside: string[] = []
   const page = await context.newPage()
   page.on("request", (request) => {
@@ -1432,6 +1729,89 @@ test("Outline: lists the headings and highlights the section being read", async 
   await page.waitForFunction(
     () => document.querySelector(".outline a.current")?.textContent === "Part 5",
   )
+  await page.close()
+})
+
+test("Following, Your scroll, Reading on, An entry, Another page: the outline stays where you scroll it", async () => {
+  const sections = Array.from(
+    { length: 80 },
+    (_, i) => `## Section ${i + 1}\n\n${"Words fill the section. ".repeat(40)}`,
+  ).join("\n\n")
+  write({
+    "notes/parts/outline-many.md": `# Many\n\n[Other](outline-other.md)\n\n${sections}`,
+    "notes/parts/outline-other.md": `# Other\n\n[Many](outline-many.md)\n\n${sections}`,
+  })
+  const page = await open("notes/parts/outline-many.md")
+  const outline = () =>
+    page.$eval(".outline", (panel) => {
+      const box = panel.getBoundingClientRect()
+      const current = panel.querySelector(".current")?.getBoundingClientRect()
+      return {
+        top: panel.scrollTop,
+        current: panel.querySelector(".current")?.textContent,
+        shown:
+          current !== undefined && current.top >= box.top - 1 && current.bottom <= box.bottom + 1,
+      }
+    })
+  const read = async (heading: string) => {
+    await page.evaluate((id) => document.getElementById(id)?.scrollIntoView(), heading)
+    await page.waitForTimeout(300)
+    return outline()
+  }
+  const yours = async () => {
+    const box = await page.$eval(".outline", (panel) => {
+      const { x, y, width, height } = panel.getBoundingClientRect()
+      return { x, y, width, height }
+    })
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.wheel(0, 10_000)
+    await page.waitForTimeout(300)
+    return (await outline()).top
+  }
+
+  const following = await read("section-60")
+  assert.equal(following.current, "Section 60")
+  assert.ok(following.top > 0 && following.shown, JSON.stringify(following))
+
+  await page.evaluate(() => scrollTo(0, 0))
+  await page.waitForTimeout(300)
+  const left = await yours()
+  assert.ok(left > 0, "the wheel did not scroll the outline")
+  assert.deepEqual(await read("section-10"), { top: left, current: "Section 10", shown: false })
+  assert.deepEqual(await read("section-25"), { top: left, current: "Section 25", shown: false })
+  await page.evaluate(() => scrollBy(0, 300))
+  await page.waitForTimeout(300)
+  assert.equal((await outline()).top, left, "reading on")
+
+  await page.click(".outline a:text-is('Section 5')")
+  await page.waitForTimeout(300)
+  assert.equal((await outline()).current, "Section 5")
+  const entry = await read("section-70")
+  assert.ok(entry.shown && entry.top !== left, JSON.stringify(entry))
+
+  await page.click(".outline-backlinks .backlinks-title")
+  const pressed = await read("section-20")
+  assert.ok(pressed.shown, `a press that scrolls nothing stopped it: ${JSON.stringify(pressed)}`)
+
+  const held = await yours()
+  const [tab] = await Promise.all([
+    context.waitForEvent("page"),
+    page.click(".outline-backlinks a", { modifiers: ["ControlOrMeta"] }),
+  ])
+  await tab.close()
+  assert.equal((await read("section-25")).top, held, "a click for a new tab made it follow")
+
+  await read("section-1")
+  await yours()
+  await page.evaluate(() => scrollTo(0, 0))
+  await page.$eval(".markdown-body a[href='outline-other.md']", (link) =>
+    (link as HTMLElement).click(),
+  )
+  await page.waitForFunction(
+    () => document.querySelector(".markdown-body h1")?.textContent === "Other",
+  )
+  const other = await read("section-10")
+  assert.ok(other.current === "Section 10" && other.shown, JSON.stringify(other))
   await page.close()
 })
 
@@ -1814,3 +2194,312 @@ test("File tree and Tree content: loads folders as expanded, never showing dot-f
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
+
+function translationOf(transform: string): number[] {
+  return (/translate\(([-\d.]+)px, ([-\d.]+)px\)/.exec(transform) ?? []).slice(1, 3).map(Number)
+}
+
+function shownIn(page: Page) {
+  return page.evaluate(() => {
+    const port = (document.querySelector(".viewer-viewport") as Element).getBoundingClientRect()
+    const shown = document.querySelector(".viewer-inner > *") as HTMLImageElement | SVGSVGElement
+    const box = shown.getBoundingClientRect()
+
+    return {
+      own:
+        shown instanceof HTMLImageElement
+          ? { width: shown.naturalWidth, height: shown.naturalHeight }
+          : { width: shown.viewBox.baseVal.width, height: shown.viewBox.baseVal.height },
+      port: { width: port.width, height: port.height },
+      box: { width: Math.round(box.width), height: Math.round(box.height) },
+      filled: Math.abs(box.width - port.width) < 1 || Math.abs(box.height - port.height) < 1,
+    }
+  })
+}
+
+function png(width: number, height: number): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data])
+    const framing = Buffer.alloc(8)
+    framing.writeUInt32BE(data.length, 0)
+    framing.writeUInt32BE(zlib.crc32(body), 4)
+    return Buffer.concat([framing.subarray(0, 4), body, framing.subarray(4)])
+  }
+  const header = Buffer.alloc(13)
+  const row = Buffer.alloc(1 + width * 3, 0x80)
+
+  header.writeUInt32BE(width, 0)
+  header.writeUInt32BE(height, 4)
+  header.set([8, 2, 0, 0, 0], 8)
+  row[0] = 0
+  return Buffer.concat([
+    Buffer.from("\x89PNG\r\n\x1a\n", "latin1"),
+    chunk("IHDR", header),
+    chunk("IDAT", zlib.deflateSync(Buffer.concat(Array(height).fill(row)))),
+    chunk("IEND", Buffer.alloc(0)),
+  ])
+}
+
+test("Hyphens and dashes, A word too wide, Every page, Copy and find: a line breaks at a space, and a word at its hyphen only when it cannot fit whole", async () => {
+  const sentence =
+    "The well-known e-mail from 2026-11-05 cites PO-4471 and ISO-8601 times over 2020\u20132026, re-read by a co-worker in a follow-up note to the long-standing list"
+  write({
+    "hyphens/text.md": [
+      "# Well-known e-mail rules for PO-4471 and ISO-8601",
+      "",
+      "## The cross-district-boundary-checks list",
+      "",
+      `${sentence} ${sentence}`,
+      "",
+      `- ${sentence}`,
+      "",
+      "| Ticket | Date | Why |",
+      "|---|---|---|",
+      `| PO-4471 | 2026-11-05 | ${sentence} |`,
+      "",
+      "| Narrow |",
+      "|---|",
+      `| ${"a-long-word-wider-than-any-column-could-be-".repeat(4)}end |`,
+      "",
+      "{table: rows.csv}",
+      "",
+      "{table: links.csv}",
+      "",
+      "The note **PO-4471**, then ([PO-4471](rows.csv)) and `2026-11-05`, an e-mail[^1] and (*re-read*) by a co-worker in a follow-up to the long-standing list, then the well-known `2020\u20132026` range.",
+      "",
+      `The path ${"docs/notes_on_the_long_standing_list_of_co_workers_and_their_follow_ups".repeat(2)}-end.md stays on the page.`,
+      "",
+      "[^1]: A footnote.",
+    ].join("\n"),
+    "hyphens/rows.csv": `id,date,text,link\nPO-4471,2026-11-05,"${sentence}",https://example.com/items/0f8e2c1a-5b7d-4c3e-9a1f-2d6b8e4c7a90-with-every-revision-joined-on\n`,
+    "hyphens/PO-4471 notes.md": "# Notes\n",
+    "hyphens/links.csv":
+      "link\nhttps://example.com/items/0f8e2c1a-5b7d-4c3e-9a1f-2d6b8e4c7a90-with-every-revision-joined-on\n",
+    "hyphens/front.md": `---\nnote: ${sentence}\n---\n# Front\n\nBelow the frontmatter.\n`,
+    "hyphens/record.json": JSON.stringify({ note: sentence, detail: { why: sentence } }),
+  })
+  const page = await open("hyphens/text.md")
+  await page.waitForSelector(".markdown-body .embed table")
+  const hyphenEnds = (selector: string, on = page) =>
+    on.evaluate((within) => {
+      const found: { word: string; fits: boolean }[] = []
+      const range = document.createRange()
+      const dash = /[-\u2010-\u2015]/
+      const fits = (whole: Element | null) => {
+        let block = whole?.parentElement ?? null
+
+        while (block && ["inline", "contents"].includes(getComputedStyle(block).display)) {
+          block = block.parentElement
+        }
+
+        if (!whole || !block) {
+          return true
+        }
+
+        const copy = whole.cloneNode(true) as HTMLElement
+        copy.style.cssText = "position: absolute; visibility: hidden; white-space: nowrap"
+        whole.parentElement?.append(copy)
+        const width = copy.getBoundingClientRect().width
+        copy.remove()
+        const style = getComputedStyle(block)
+        return (
+          width <=
+          block.clientWidth -
+            Number.parseFloat(style.paddingLeft) -
+            Number.parseFloat(style.paddingRight)
+        )
+      }
+
+      for (const root of document.querySelectorAll(within)) {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+        const boxes: { character: string; top: number; whole: Element | null }[] = []
+
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const text = node as Text
+
+          for (let at = 0; at < text.data.length; at++) {
+            range.setStart(text, at)
+            range.setEnd(text, at + 1)
+            const box = range.getClientRects()[0]
+
+            if (box && box.width > 0) {
+              const whole = text.parentElement?.closest(".whole") ?? null
+              boxes.push({ character: text.data[at], top: box.top, whole })
+            }
+          }
+        }
+
+        for (const [at, box] of boxes.entries()) {
+          const next = boxes[at + 1]
+
+          if (
+            next &&
+            dash.test(box.character) &&
+            /\S/.test(next.character) &&
+            next.top > box.top + 2
+          ) {
+            found.push({ word: box.whole?.textContent ?? box.character, fits: fits(box.whole) })
+          }
+        }
+      }
+
+      return found
+    }, selector)
+  const edgeBreaks = () =>
+    page.evaluate(() => {
+      const found: string[] = []
+      const range = document.createRange()
+      const top = (node: Node, at: number) => {
+        range.setStart(node, at)
+        range.setEnd(node, at + 1)
+        return range.getClientRects()[0]?.top
+      }
+
+      for (const whole of document.querySelectorAll(".markdown-body p .whole:not(.split)")) {
+        const text = whole.firstChild as Text
+        const walker = document.createTreeWalker(
+          whole.closest("p") as Element,
+          NodeFilter.SHOW_TEXT,
+        )
+        const texts: Text[] = []
+
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          texts.push(node as Text)
+        }
+
+        const at = texts.indexOf(text)
+        const before = texts[at - 1]
+        const after = texts[at + 1]
+
+        if (before?.data && /\S$/.test(before.data)) {
+          if (Math.abs((top(before, before.data.length - 1) ?? 0) - (top(text, 0) ?? 0)) > 10) {
+            found.push(`before ${text.data}`)
+          }
+        }
+
+        if (after?.data && /^\S/.test(after.data)) {
+          if (Math.abs((top(after, 0) ?? 0) - (top(text, text.data.length - 1) ?? 0)) > 10) {
+            found.push(`after ${text.data}`)
+          }
+        }
+      }
+
+      return found
+    })
+  const scrollingForWords = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll(".markdown-body table")].map(
+        (table) => table.scrollWidth > table.clientWidth + 1 && !table.classList.contains("loose"),
+      ),
+    )
+
+  try {
+    for (const width of [700, 900, 1100, 1280, 1920]) {
+      await page.setViewportSize({ width, height: 900 })
+      await page.waitForTimeout(150)
+      const broken = await hyphenEnds(".markdown-body, .outline")
+      assert.deepEqual(
+        broken.filter(({ fits }) => fits),
+        [],
+        `${width} px`,
+      )
+      assert.deepEqual(await scrollingForWords(), [false, false, false, false], `${width} px`)
+      assert.deepEqual(await edgeBreaks(), [], `${width} px`)
+      assert.ok(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+        ),
+        `${width} px: the page scrolls sideways`,
+      )
+      assert.deepEqual(
+        await page.evaluate(() =>
+          [...document.querySelectorAll("aside, .markdown-body .data-cell")]
+            .filter((box) => box.scrollWidth > box.clientWidth + 1)
+            .map((box) => box.className),
+        ),
+        [],
+        `${width} px: a panel or a cell holds a word it cannot show`,
+      )
+    }
+
+    assert.ok(
+      (await hyphenEnds(".markdown-body table:nth-of-type(2)")).length > 0,
+      "the word too wide breaks",
+    )
+
+    const shown = await page.evaluate(() => {
+      const paragraph = document.querySelector(".markdown-body p") as HTMLElement
+      getSelection()?.selectAllChildren(paragraph)
+      const copied = getSelection()?.toString() ?? ""
+      getSelection()?.removeAllRanges()
+      const find = (window as { find?: (text: string) => boolean }).find
+      return {
+        copied,
+        found: find?.("PO-4471"),
+        phrase: find?.("from 2026-11-05 cites PO-4471 and"),
+      }
+    })
+    assert.ok(
+      shown.copied.includes("cites PO-4471 and ISO-8601 times over 2020\u20132026,"),
+      shown.copied,
+    )
+    assert.ok(shown.copied.includes("from 2026-11-05 cites"), shown.copied)
+    assert.equal(shown.found, true)
+    assert.equal(shown.phrase, true, "a phrase across words kept whole")
+    assert.deepEqual(
+      await page.evaluate(async () => {
+        const added = document.createElement("div")
+        added.innerHTML = `<pre class="history-text">A re-read line.</pre><pre>a re-read line</pre>`
+        document.querySelector(".markdown-body")?.append(added)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        const held = [...added.querySelectorAll("pre")].map(
+          (pre) => pre.querySelectorAll(".whole").length,
+        )
+        added.remove()
+        return held
+      }),
+      [1, 0],
+      "a pre of prose holds its words, code does not",
+    )
+
+    const listing = await context.newPage()
+
+    try {
+      await listing.goto(`${base}/hyphens/`)
+      await listing.waitForSelector(".listing li")
+      assert.deepEqual(
+        await listing.evaluate(() => ({
+          items: document.querySelectorAll(".listing a > .whole").length,
+          found: (window as { find?: (text: string) => boolean }).find?.("PO-4471 notes.md"),
+        })),
+        { items: 0, found: true },
+        "a name in a listing stays one item",
+      )
+    } finally {
+      await listing.close()
+    }
+
+    for (const [urlPath, opening] of [
+      ["hyphens/front.md", open],
+      ["hyphens/record.json", openData],
+    ] as const) {
+      const other = await opening(urlPath)
+
+      try {
+        for (const width of [700, 1100]) {
+          await other.setViewportSize({ width, height: 900 })
+          await other.waitForTimeout(150)
+          assert.deepEqual(
+            (await hyphenEnds(".markdown-body", other)).filter(({ fits }) => fits),
+            [],
+            `${urlPath} at ${width} px`,
+          )
+        }
+      } finally {
+        await other.close()
+      }
+    }
+  } finally {
+    await page.close()
+  }
+})

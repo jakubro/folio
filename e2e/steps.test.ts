@@ -1,4 +1,4 @@
-/** Headless Chromium run of folio's documented behaviour: stepping through pages in tree order. */
+/** Headless Chromium run of Folio's documented behaviour: stepping through pages in tree order. */
 
 import assert from "node:assert/strict"
 import { type ChildProcess, spawn } from "node:child_process"
@@ -25,7 +25,8 @@ const stepRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2
 const STEP_FILES: Record<string, string> = {
   "guide/extra/more.md": "# More",
   "guide/intro.md": "# Intro",
-  "guide/setup.md": "# Setup",
+  "guide/setup.md": "# Setup\n\n| station | rain |\n|---|---|\n| north | 1 |\n| south | 2 |",
+  "guide/rows.csv": "station,rain\nnorth,1\nsouth,2\n",
   "guide/shot.svg": '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>',
   "notes/todo.md": `# Todo\n\n${"Words fill the page. ".repeat(900)}`,
   "pics/only.svg": '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>',
@@ -143,12 +144,11 @@ test("Scrollable block: after a click into a wide code block or formula the arro
 
 test("Expanded diagram: the arrows pan it and never step", async () => {
   const page = await openStep("index.md")
-  const transform = () =>
-    page.$eval(".mermaid-zoom-inner", (e) => (e as HTMLElement).style.transform)
+  const transform = () => page.$eval(".viewer-inner", (e) => (e as HTMLElement).style.transform)
 
   await page.hover(".mermaid")
-  await page.click(".mermaid-expand")
-  await page.waitForSelector(".mermaid-zoom.visible svg")
+  await page.click(".mermaid .drawn-expand")
+  await page.waitForSelector(".viewer.visible svg")
   const fitted = await transform()
   await page.keyboard.press("ArrowRight")
   await page.keyboard.press("ArrowLeft")
@@ -218,10 +218,9 @@ test("Tree, Outline, Same as the buttons, No browser history step, Expanded diag
   })
 
   await page.hover(".mermaid")
-  await page.click(".mermaid-expand")
-  await page.waitForSelector(".mermaid-zoom.visible svg")
-  const transform = () =>
-    page.$eval(".mermaid-zoom-inner", (e) => (e as HTMLElement).style.transform)
+  await page.click(".mermaid .drawn-expand")
+  await page.waitForSelector(".viewer.visible svg")
+  const transform = () => page.$eval(".viewer-inner", (e) => (e as HTMLElement).style.transform)
   const fitted = await transform()
   await page.keyboard.press("Alt+ArrowLeft")
   await page.keyboard.press("Alt+ArrowRight")
@@ -278,6 +277,95 @@ test("Live tree: a page added or removed while one is open counts at the next st
   fs.rmSync(path.join(stepRoot, "zz.md"))
   writeIn(stepRoot, { "readme.md": STEP_FILES["readme.md"] })
   await page.close()
+})
+
+test("Filter text, Filter rows, End of the text, Panels, After the panel, Records view, Date picker: the arrow keys in a field move its caret, never the page", async () => {
+  const page = await openStep("guide/setup.md")
+  const station = '.table-panel input[aria-label="Filter station"]'
+  const rows = '.table-panel input[aria-label="Filter rows"]'
+  const caret = (selector: string) =>
+    page.$eval(selector, (field) => (field as HTMLInputElement).selectionStart)
+  const seen: Record<string, unknown> = {}
+
+  await page.hover(".markdown-body table th >> nth=0")
+  await page.click(".table-control")
+  await page.click(station)
+  await page.keyboard.type("north")
+  await page.keyboard.press("ArrowLeft")
+  await page.keyboard.press("ArrowLeft")
+  await page.keyboard.type("x")
+  await page.waitForTimeout(300)
+  seen.filterText = [await page.inputValue(station), await pathOf(page)]
+  await page.fill(station, "")
+  await page.click(rows)
+  await page.keyboard.type("abc")
+  await page.keyboard.press("ArrowLeft")
+  const back = await caret(rows)
+  await page.keyboard.press("ArrowRight")
+  await page.waitForTimeout(300)
+  seen.filterRows = [back, await caret(rows), await pathOf(page)]
+  await page.keyboard.press("ArrowRight")
+  await page.waitForTimeout(300)
+  seen.endOfText = [await caret(rows), await pathOf(page)]
+  await page.keyboard.press("Alt+ArrowLeft")
+  await page.waitForTimeout(300)
+  seen.panels = await page.$eval('button[title="Show or hide the file tree"]', (toggle) =>
+    toggle.getAttribute("aria-pressed"),
+  )
+  await page.keyboard.press("Alt+ArrowLeft")
+  await page.fill(rows, "")
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("Escape")
+  await page.waitForSelector(".table-panel", { state: "hidden" })
+  await page.keyboard.press("ArrowRight")
+  await arrived(page, "notes/todo.md")
+  seen.afterPanel = await pathOf(page)
+
+  await page.goto(`${stepBase}/guide/rows.csv`)
+  await page.waitForSelector(".data-page table")
+  await page.click('.data-switch:has-text("Records")')
+  await page.hover(".data-page table.data-list")
+  await page.click(".table-control")
+  await page.click(rows)
+  await page.keyboard.type("south")
+  await page.keyboard.press("ArrowLeft")
+  seen.records = await caret(rows)
+
+  await page.goto(`${stepBase}/?digest`)
+  await page.waitForSelector(".digest-periods input[type=date]")
+  const date = ".digest-periods input[type=date] >> nth=0"
+  const written = await page.inputValue(date)
+  const moved = async (keys: string[]) => {
+    await page.$eval(
+      date,
+      (field, value) => {
+        ;(field as HTMLInputElement).value = value
+      },
+      written,
+    )
+    await page.focus(date)
+
+    for (const key of keys) {
+      await page.keyboard.press(key)
+    }
+
+    const parts = (await page.inputValue(date)).split("-")
+    return parts.findIndex((part, at) => part !== written.split("-")[at])
+  }
+  const first = await moved(["ArrowUp"])
+  const second = await moved(["ArrowRight", "ArrowUp"])
+  seen.datePicker = first !== second && second >= 0
+  await page.close()
+
+  assert.deepEqual(seen, {
+    filterText: ["norxth", "guide/setup.md"],
+    filterRows: [2, 3, "guide/setup.md"],
+    endOfText: [3, "guide/setup.md"],
+    panels: "false",
+    afterPanel: "notes/todo.md",
+    records: 4,
+    datePicker: true,
+  })
 })
 
 const STEP_ORDER = [

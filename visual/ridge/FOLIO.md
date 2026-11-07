@@ -1,6 +1,6 @@
 # Ridge conventions
 
-What the ridge folder's documents are, and the rules they keep. Each fenced block is a declaration folio reads for this folder and everything below it.
+What the ridge folder's documents are, and the rules they keep. Each fenced block is a declaration Folio reads for this folder and everything below it.
 
 ## Stations
 

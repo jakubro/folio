@@ -374,3 +374,75 @@ test("a document's title is its one h1, as the page shows it, and its filename i
     await data.close()
   }
 })
+
+test("an h1 inside details plays no part in a document's title, and stays a heading", async () => {
+  const { root, model, data } = await served({
+    "folded.md":
+      "# Smart plan\n\n<details><summary>Day 1</summary>\n\n# Day one\n\n</details>\n\n<details>\n\n# Day two\n\n</details>\n",
+    "only.md": "<details><summary>All</summary>\n\n# Hidden top\n\n</details>\n",
+    "nested.md": "# Outer top\n\n<details>\n<details>\n\n- > # Deep\n\n</details>\n</details>\n",
+    "open.md": "# Open top\n\n<details open>\n\n<h1>Raw folded</h1>\n\n</details>\n",
+    "summary.md": "# Summary top\n\n<details><summary><h1>In summary</h1></summary>x</details>\n",
+    "loose.md": "# First\n\nText.\n\n# Second\n",
+  })
+
+  try {
+    assert.deepEqual(
+      (await data.query("select path, title from folio.documents order by path", root)).grid.rows,
+      [
+        ["folded.md", "Smart plan"],
+        ["loose.md", null],
+        ["nested.md", "Outer top"],
+        ["only.md", null],
+        ["open.md", "Open top"],
+        ["summary.md", "Summary top"],
+      ],
+    )
+    assert.deepEqual(
+      (
+        await data.query(
+          "select path, text from folio.headings where level = 1 order by path, line",
+          root,
+        )
+      ).grid.rows,
+      [
+        ["folded.md", "Smart plan"],
+        ["folded.md", "Day one"],
+        ["folded.md", "Day two"],
+        ["loose.md", "First"],
+        ["loose.md", "Second"],
+        ["nested.md", "Outer top"],
+        ["nested.md", "Deep"],
+        ["only.md", "Hidden top"],
+        ["open.md", "Open top"],
+        ["open.md", "Raw folded"],
+        ["summary.md", "Summary top"],
+        ["summary.md", "In summary"],
+      ],
+    )
+  } finally {
+    model.close()
+    await data.close()
+  }
+})
+
+test("a link in frontmatter is a row of the links table, at its own line", async () => {
+  const { root, model, data } = await served({
+    "notes/a.md": '---\ntitle: A\ndependencies: ["[B](./b.md)"]\n---\n# A\n\nSee [b](b.md).\n',
+    "notes/b.md": "# B\n",
+  })
+
+  try {
+    assert.deepEqual(
+      (await data.query("select line, url, target, context from folio.links order by line", root))
+        .grid.rows,
+      [
+        [3, "./b.md", "notes/b.md", "dependencies: B"],
+        [7, "b.md", "notes/b.md", "See b."],
+      ],
+    )
+  } finally {
+    model.close()
+    await data.close()
+  }
+})

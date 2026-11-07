@@ -524,7 +524,7 @@ test("a code span stays within one paragraph, heading or table cell, at any dept
   }
 })
 
-test("a link counts where the page reads one, past deep lists, quoted fences and lone pipe lines, never in code, HTML, math or frontmatter", async () => {
+test("a link counts where the page reads one, past deep lists, quoted fences and lone pipe lines, never in code - a frontmatter value's included - HTML or math", async () => {
   const files: Record<string, string> = {
     "t.md": "# T\n\n## Pump\n",
     "indent.md": "# I\n\nRun `foo\n    - [i](t.md#pump) bar` here.\n\nAlso [real](t.md).\n",

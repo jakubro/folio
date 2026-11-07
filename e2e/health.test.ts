@@ -1,10 +1,11 @@
-/** Headless Chromium run of folio's documented behaviour: conventions, kinds, document queries and health. */
+/** Headless Chromium run of Folio's documented behaviour: conventions, kinds, document queries and health. */
 
 import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
+import type { Page } from "playwright"
 import { context, serveFolder, writeIn } from "./harness.ts"
 
 test("Found, Layering, Live, Broken, Inspect: a folder declares its conventions in FOLIO.md files", async () => {
@@ -443,6 +444,7 @@ test("Open health, Kinds, Open from it, Live, Unopened pages, Tree: one view of 
       true,
       "a kind the change did not touch is not drawn again",
     )
+    await page.waitForTimeout(500)
     assert.deepEqual(
       answers.map((answer) => {
         const { url, body } = answer as { url: string; body: Record<string, unknown> }
@@ -496,7 +498,7 @@ test("Open health, Kinds, Open from it, Live, Unopened pages, Tree: one view of 
   }
 })
 
-test("Landing, Contents, Declared attention, Listing, Live: opening folio shows what needs you", async () => {
+test("Landing, Contents, Declared attention, Listing, Live: opening Folio shows what needs you", async () => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-needs-")))
   const fence = (body: string) => `\`\`\`yaml folio\n${body}\n\`\`\``
   writeIn(folder, {
@@ -548,6 +550,185 @@ test("Landing, Contents, Declared attention, Listing, Live: opening folio shows 
     await page.click(".needs-files")
     await page.waitForSelector(".markdown-body.listing")
     assert.match((await page.textContent(".markdown-body")) ?? "", /spec\.md/)
+    await page.close()
+  } finally {
+    served.stop()
+    fs.rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("Home page, Health, Jump, Reading, Live, Nothing to list: Folio's own pages list their sections in the outline", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-sections-")))
+  const fence = (body: string) => `\`\`\`yaml folio\n${body}\n\`\`\``
+  writeIn(folder, {
+    "FOLIO.md": `# Sections\n\n${fence(
+      [
+        "rules:",
+        "  no-draft:",
+        "    message: '{path} is a draft'",
+        "    query: select path from folio.documents where path like '%draft%'",
+        "attention:",
+        "  on-order:",
+        "    message: '{path} is on order'",
+        "    query: select path from 'orders.csv'",
+      ].join("\n"),
+    )}\n`,
+    "draft.md": "# Draft\n",
+    "spec.md": "# Spec\n\nSee [nowhere](nowhere.md).\n",
+    "orders.csv": "path\nspec.md\n",
+  })
+  const served = await serveFolder(folder)
+  const outlined = (page: Page) =>
+    page.$$eval(".outline a", (links) => links.map((link) => link.textContent))
+
+  try {
+    const page = await context.newPage()
+    await page.goto(`${served.base}/`)
+    await page.waitForSelector(".needs-attention li")
+    assert.deepEqual(await outlined(page), ["Errors", "Needing attention"])
+
+    await page.goto(`${served.base}/?health`)
+    await page.waitForSelector(".health-link li")
+    assert.deepEqual(await outlined(page), ["Broken links - 1", "Rule errors - 1"])
+    // The page ends in view, so the last section is the one being read.
+    assert.equal(await page.textContent(".outline a.current"), "Rule errors - 1")
+    assert.equal(await page.locator(".health-kind .fold-toggle").count(), 0)
+
+    await page.$eval("details.health-link", (section) => {
+      ;(section as HTMLDetailsElement).open = false
+    })
+    await page.click('.outline a[href="#kind-link"]')
+    await page.waitForURL(`${served.base}/?health#kind-link`)
+    assert.equal(
+      await page.$eval("details.health-link", (section) => (section as HTMLDetailsElement).open),
+      true,
+    )
+    assert.equal(
+      await page.$eval("#kind-link", (summary) => {
+        const bar = document.querySelector(".bar")?.getBoundingClientRect().height ?? 0
+        return Number.parseFloat(getComputedStyle(summary).scrollMarginTop) - bar
+      }),
+      12,
+      "a section the outline lands on stops below the toolbar, as a heading does",
+    )
+
+    writeIn(folder, { "spec.md": "# Spec\n\nSee [the draft](draft.md).\n" })
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll(".outline a")].every(
+        (link) => link.textContent !== "Broken links - 1",
+      ),
+    )
+    assert.deepEqual(await outlined(page), ["Rule errors - 1"])
+
+    fs.rmSync(path.join(folder, "draft.md"))
+    writeIn(folder, { "spec.md": "# Spec\n" })
+    await page.waitForSelector(".outline .panel-empty")
+    assert.equal(await page.textContent(".outline .panel-empty"), "No headings")
+    await page.close()
+  } finally {
+    served.stop()
+    fs.rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("Jump: a problem another page draws opens that page at its mark, as health does", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-loop-")))
+  writeIn(folder, {
+    "loop/a.md": "# A\n\nBefore the loop.\n\n{include: b.md}\n",
+    "loop/b.md": "# B\n\nAround the loop.\n\n{include: a.md}\n",
+  })
+  const served = await serveFolder(folder)
+
+  try {
+    const page = await context.newPage()
+    await page.goto(`${served.base}/loop/b.md`)
+    await page.waitForSelector(".outline-problems:not([hidden]) .outline-problem")
+    await page.click(".outline-problem")
+    await page.waitForFunction(() => location.pathname.endsWith("/loop/a.md"))
+    await page.waitForFunction(
+      () => document.querySelector(".markdown-body .landed, .markdown-body :target") !== null,
+    )
+    await page.close()
+  } finally {
+    served.stop()
+    fs.rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("Tree, Folders, Count, Outline, Jump, Many, Included, Fixed, No problem: the tree and the outline show a document's problems", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-problems-")))
+  writeIn(folder, {
+    "notes/a.md": "# A\n\nIntro.\n\nSee [nowhere](nowhere.md).\n",
+    "notes/inc.md": "# Inc\n\n{include: ../parts/p.md}\n",
+    "parts/p.md": "See [lost](lost.md).\n",
+    "deep/x/many.md": `# Many\n\nSee [missing 0](missing-0.md).\n\nSee [missing 1](missing-1.md).\n\nSee [missing 2](missing-2.md).\n\nSee [missing 3](missing-3.md).\n\nSee [missing 4](missing-4.md).\n\nSee [missing 5](missing-5.md).\n\nSee [missing 6](missing-6.md).\n\nSee [missing 7](missing-7.md).\n\nSee [missing 8](missing-8.md).\n\nSee [missing 9](missing-9.md).\n\nSee [missing 10](missing-10.md).\n\nSee [missing 11](missing-11.md).\n\nSee [missing 12](missing-12.md).\n\nSee [missing 13](missing-13.md).\n\nSee [missing 14](missing-14.md).\n\nSee [missing 15](missing-15.md).\n\nSee [missing 16](missing-16.md).\n\nSee [missing 17](missing-17.md).\n\nSee [missing 18](missing-18.md).\n\nSee [missing 19](missing-19.md).\n\nSee [missing 20](missing-20.md).\n\nSee [missing 21](missing-21.md).\n\nSee [missing 22](missing-22.md).\n\nSee [missing 23](missing-23.md).\n\nSee [missing 24](missing-24.md).\n\nSee [missing 25](missing-25.md).\n\nSee [missing 26](missing-26.md).\n\nSee [missing 27](missing-27.md).\n\nSee [missing 28](missing-28.md).\n\nSee [missing 29](missing-29.md).\n`,
+    "clean.md": "# Clean\n",
+  })
+  const served = await serveFolder(folder)
+  const marks = (page: Page) =>
+    page.$$eval(".tree li[data-path]", (items) =>
+      items
+        .filter((item) => item.querySelector(":scope > .tree-row > .problem-mark"))
+        .map((item) => (item as HTMLElement).dataset.path),
+    )
+  const listed = (page: Page) =>
+    page.$$eval(".outline-problems:not([hidden]) .outline-problem", (links) =>
+      links.map((link) => link.textContent),
+    )
+
+  try {
+    const page = await context.newPage()
+    await page.goto(`${served.base}/notes/a.md`)
+    await page.waitForSelector(".outline-problems:not([hidden]) .outline-problem")
+    assert.deepEqual(await listed(page), ["5 Links to notes/nowhere.md, which is not there"])
+    assert.deepEqual(await marks(page), ["deep", "notes", "notes/a.md", "parts"])
+    assert.equal(
+      await page.getAttribute('.tree li[data-path="notes/a.md"] > .tree-row', "title"),
+      "a.md - 1 problem",
+    )
+    assert.equal(
+      await page.evaluate(() => {
+        const outline = [...(document.querySelector(".outline")?.children ?? [])]
+        return (
+          outline.indexOf(document.querySelector(".outline-problems") as Element) <
+          outline.indexOf(document.querySelector(".outline-backlinks") as Element)
+        )
+      }),
+      true,
+    )
+
+    await page.click(".outline-problem")
+    await page.waitForURL(/\/notes\/a\.md#\^[0-9a-f]{8}$/)
+    await page.waitForFunction(() =>
+      document.querySelector(".markdown-body .landed")?.textContent?.startsWith("See nowhere"),
+    )
+
+    await page.goto(`${served.base}/deep/x/many.md`)
+    await page.waitForSelector(".outline-problems-more")
+    assert.equal((await listed(page)).length, 5)
+    assert.equal(await page.textContent(".outline-problems-more"), "25 more")
+    await page.click(".outline-problems-more")
+    assert.equal((await listed(page)).length, 30)
+
+    await page.goto(`${served.base}/notes/inc.md`)
+    await page.waitForSelector(".markdown-body p")
+    await page.waitForTimeout(500)
+    assert.deepEqual(await listed(page), [])
+    assert.ok((await marks(page)).includes("parts"))
+
+    await page.goto(`${served.base}/clean.md`)
+    await page.waitForSelector(".markdown-body h1")
+    await page.waitForTimeout(500)
+    assert.equal(await page.locator(".outline-problems:not([hidden])").count(), 0)
+
+    await page.goto(`${served.base}/notes/a.md`)
+    await page.waitForSelector(".outline-problems:not([hidden]) .outline-problem")
+    writeIn(folder, { "notes/a.md": "# A\n\nIntro.\n\nSee [clean](../clean.md).\n" })
+    await page.waitForSelector(".outline-problems[hidden]", { state: "attached" })
+    await page.waitForFunction(
+      () => !document.querySelector('.tree li[data-path="notes"] > .tree-row > .problem-mark'),
+    )
+    assert.deepEqual(await marks(page), ["deep", "deep/x", "deep/x/many.md", "parts"])
     await page.close()
   } finally {
     served.stop()

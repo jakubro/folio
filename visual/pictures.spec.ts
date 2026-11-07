@@ -4,7 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, type Page, test } from "@playwright/test"
 import { BROWSER_NOW, type Ridge, ridge } from "./ridge.ts"
-import { show } from "./show.ts"
+import { healthKnown, show } from "./show.ts"
 
 test("README: a rendered page with its tree and outline", async ({ page }) => {
   await show(page, "README.md")
@@ -23,16 +23,18 @@ test("Sections: one folded, another under the pointer", async ({ page }) => {
 test("Diagrams: the full-window viewer", async ({ page }) => {
   await show(page, "README.md")
   await page.hover(".mermaid")
-  await page.click(".mermaid-expand")
-  await page.waitForSelector(".mermaid-zoom.visible svg")
+  await page.click(".mermaid .drawn-expand")
+  await page.waitForSelector(".viewer.visible svg")
   await page.mouse.move(0, 0)
   await expect(page).toHaveScreenshot(["images", "diagram-viewer.png"])
 })
 
-test("Frontmatter: a table above the page", async ({ page }) => {
+test("Frontmatter: a table at the page's end, under Metadata", async ({ page }) => {
   await show(page, "calibration.md")
+  await page.evaluate(() => document.querySelector(".metadata-title")?.scrollIntoView())
+  const top = await page.$eval(".metadata-title", (title) => title.getBoundingClientRect().top)
   await expect(page).toHaveScreenshot(["images", "frontmatter.png"], {
-    clip: { x: 280, y: 44, width: 880, height: 300 },
+    clip: { x: 280, y: Math.round(top) - 16, width: 880, height: 300 },
   })
 })
 
@@ -60,7 +62,7 @@ test.describe("the ridge folder", () => {
     await open(page, folder, "report.md", ".chart svg")
     await page.hover("[data-ref='queries/wettest.sql']")
     await page.click(".block-provenance")
-    await page.waitForSelector(".provenance-panel:not([hidden])")
+    await page.waitForSelector(".provenance-panel:not([hidden]) .provenance-line")
     await expect(page).toHaveScreenshot(["images", "provenance.png"])
   })
 
@@ -77,6 +79,9 @@ test.describe("the ridge folder", () => {
     await page.click(".table-control")
     await page.fill("input[aria-label='Filter station']", "north")
     await page.waitForSelector(".table-status:has-text('14 of 42 rows')")
+    await page.waitForSelector(".table-values:not([hidden])")
+    await page.keyboard.press("Escape")
+    await page.waitForSelector(".table-values", { state: "hidden" })
     await page.mouse.move(1390, 790)
     await page.evaluate(
       () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
@@ -127,6 +132,14 @@ test.describe("the ridge folder", () => {
       ".history-compare-table",
     )
     await expect(page).toHaveScreenshot(["images", "history-compare.png"])
+  })
+
+  test("History: a block's latest versions, beside its clock", async ({ page }) => {
+    await open(page, folder, "report.md", ".chart svg")
+    await page.hover(".markdown-body > p[data-folio-id] >> nth=0")
+    await page.click(".block-history")
+    await page.waitForSelector(".provenance-panel:not([hidden]) a[href*='history&block=']")
+    await expect(page).toHaveScreenshot(["images", "block-history.png"], { clip: top(500) })
   })
 
   test("Digests: what changed in a week", async ({ page }) => {
@@ -236,6 +249,7 @@ const README_EDITED = [
 ].join("\n")
 
 async function open(page: Page, folder: Ridge, address: string, ready = ".markdown-body > *") {
+  await healthKnown(page, folder.base)
   await page.goto(`${folder.base}/${address}`)
   await page.waitForSelector(ready)
   await page.waitForLoadState("networkidle")

@@ -49,7 +49,7 @@ export async function digestPage(query: URLSearchParams): Promise<HTMLElement> {
     ),
   )
 
-  for (const [folder, documents] of grouped(digest.documents)) {
+  for (const [index, [folder, documents]] of [...grouped(digest.documents)].entries()) {
     const section = Object.assign(document.createElement("details"), {
       className: "digest-folder",
       open: !busy,
@@ -57,6 +57,8 @@ export async function digestPage(query: URLSearchParams): Promise<HTMLElement> {
     const summary = document.createElement("summary")
 
     summary.textContent = `${folder || "/"} - ${count(documents.length, "document")}`
+    summary.id = `folder-${index + 1}`
+    summary.dataset.outline = "2"
     const entries = documents.map((found) => entry(found, busy))
     shown.push(...entries.map(({ shown: drawn }) => drawn))
     section.append(summary, ...entries.map(({ item }) => item))
@@ -188,7 +190,9 @@ function picker(query: URLSearchParams, now: number): HTMLElement {
   })
 
   nav.className = "digest-periods"
-  go.addEventListener("click", () => location.assign(`/?digest&from=${from.value}&to=${to.value}`))
+  go.addEventListener("click", () =>
+    location.assign(`/?digest&from=${picked(from)}&to=${picked(to)}`),
+  )
   nav.append(
     link("/?digest", "Today"),
     " - ",
@@ -226,6 +230,13 @@ function periodOf(query: URLSearchParams, now: number): Period {
 
 function endOfDay(date: string): number {
   return new Date(`${date}T23:59:59.999`).getTime()
+}
+
+/** From the input's number, never its text, so no page text reaches the address; UTC midnight. */
+function picked(input: HTMLInputElement): string {
+  return Number.isNaN(input.valueAsNumber)
+    ? ""
+    : new Date(input.valueAsNumber).toISOString().slice(0, 10)
 }
 
 function day(at: number): string {

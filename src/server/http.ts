@@ -5,30 +5,25 @@ import type http from "node:http"
 import path from "node:path"
 import { unmarked } from "../client/unresolved.ts"
 import { api, PAUSED, Refusal } from "./api.ts"
+import { titleOf } from "./blocks.ts"
 import { ask } from "./check.ts"
 import { conventionsOf } from "./conventions.ts"
-import type { Compared, Data, Filter, Order, Search } from "./data.ts"
+import { type Compared, type Data, type Filter, type Order, type Search, urgently } from "./data.ts"
 import { digest } from "./digest.ts"
+import { failure, type Part, within } from "./failures.ts"
 import { isDocument, isInside, isPruned, neighbours, renderable } from "./files.ts"
 import { healthOf } from "./health.ts"
 import { impactOf } from "./impact.ts"
 import type { Model } from "./model.ts"
-import { needsOf } from "./needs.ts"
 import { presenceOf } from "./presence.ts"
 import { provenance } from "./provenance.ts"
-import { shell } from "./shell.ts"
+import { shell, TAB_ICON_SVG } from "./shell.ts"
+import { shownChanges, shownHealth, shownNeeds } from "./shown.ts"
 import { staleOf } from "./stale.ts"
-import {
-  changesState,
-  fileVersion,
-  folderState,
-  linksState,
-  pageState,
-  readState,
-} from "./versions.ts"
+import { fileVersion, folderState, linksState, pageState, readState } from "./versions.ts"
 
 export type Level = "request" | "update" | "opened" | "info" | "warning" | "error"
-/** A line for whoever watches folio, an error unless it says otherwise. */
+/** A line for whoever watches Folio, an error unless it says otherwise. */
 export type Log = (line: string, level?: Level) => void
 
 const WEEK_MS = 7 * 86_400_000
@@ -72,21 +67,20 @@ export function createHandler(
   log: Log,
 ): http.RequestListener {
   const route: http.RequestListener = (request, response) => {
-    // The page's own lookups, a browser's /favicon.ico and /.well-known/ ask whether something is there.
+    // The page's own lookups and /.well-known/ ask whether something is there.
     const asked = () =>
       response.statusCode === 404 &&
       ((request.method === "HEAD" &&
         IMAGE_TYPES[path.extname(request.url?.split("?")[0] ?? "").toLowerCase()] !== undefined) ||
-        request.url === "/favicon.ico" ||
         request.url?.startsWith("/.well-known/") ||
         LOOKUPS.test(request.url?.slice(request.url.indexOf("?")) ?? ""))
 
     response.once("close", () => {
-      const failure = FAILURES.get(response)
+      const reason = FAILURES.get(response)
 
       log(
-        `${request.method} ${request.url} ${response.statusCode}${failure ? `: ${failure}` : ""}`,
-        failure || response.statusCode >= 500
+        `${request.method} ${request.url} ${response.statusCode}${reason ? `: ${reason}` : ""}`,
+        reason || response.statusCode >= 500
           ? "error"
           : response.statusCode >= 400 && !asked()
             ? "warning"
@@ -95,7 +89,7 @@ export function createHandler(
     })
 
     if (!isLocal(request.headers.host)) {
-      return send(response, 403, "Forbidden: folio answers localhost only.\n")
+      return send(response, 403, "Forbidden: Folio answers localhost only.\n")
     }
 
     const url = new URL(request.url ?? "/", "http://localhost")
@@ -115,10 +109,10 @@ export function createHandler(
     if (url.searchParams.has("api")) {
       return foreign(request)
         ? send(response, 403, "Forbidden: the API answers localhost only.\n")
-        : answer(response, api(root, model, data, urlPath, url.searchParams))
+        : answer(response, "server", () => api(root, model, data, urlPath, url.searchParams))
     }
 
-    // A page's script cannot set the header, so while sharing is paused only folio's own pages are told.
+    // A page's script cannot set the header, so while sharing is paused only Folio's own pages are told.
     if (
       presenceOf(model).paused &&
       request.headers["sec-fetch-site"] !== "same-origin" &&
@@ -139,8 +133,7 @@ export function createHandler(
       const asked = Number(url.searchParams.get("from"))
 
       return Number.isFinite(to) && (since || Number.isFinite(asked))
-        ? answer(
-            response,
+        ? answer(response, "digest", () =>
             model.history
               .lastDigest()
               .then((last) => digest(root, model, since ? (last ?? to - WEEK_MS) : asked, to)),
@@ -148,31 +141,33 @@ export function createHandler(
         : send(response, 400, "A digest needs a from and a to, in milliseconds.\n")
     }
 
+    // Until the folder is read, a tab asking what changed since its version gets the kept state whole.
     if (url.searchParams.has("health-data")) {
       const since = url.searchParams.get("since")
-      const health = healthOf(model, data)
-      return answer(response, since ? health.since(since) : health.state())
+      return answer(response, "health", () =>
+        since && model.ready ? healthOf(model, data).since(since) : shownHealth(model, data),
+      )
     }
 
     if (url.searchParams.has("stale-data")) {
-      return answer(response, staleOf(model, data))
+      return answer(response, "stale", () => staleOf(model, data))
     }
 
     if (url.searchParams.has("needs-data")) {
-      return answer(response, needsOf(model, data))
+      return answer(response, "needs", () => shownNeeds(model, data))
     }
 
     if (url.searchParams.has("changed")) {
-      return answer(response, changesState(root, model, data))
+      return answer(response, "read record", () => shownChanges(model, data))
     }
 
     if (url.searchParams.has("tree")) {
-      const state = folderState(root, urlPath, url.searchParams.has("data"))
+      const state = within("model", () => folderState(root, urlPath, url.searchParams.has("data")))
       return state ? sendJson(response, state) : notFound(response)
     }
 
     if (url.searchParams.has("step")) {
-      const around = neighbours(root, urlPath)
+      const around = within("model", () => neighbours(root, urlPath))
       return around ? sendJson(response, around) : notFound(response)
     }
 
@@ -180,8 +175,7 @@ export function createHandler(
       const past = pastDocument(root, urlPath)
       const name = path.posix.basename(urlPath)
 
-      return answer(
-        response,
+      return answer(response, "history", () =>
         (past ? model.history.versions(past) : Promise.resolve([])).then(async (versions) => {
           const saved = versions.some(({ seen }) => seen.includes("saved"))
           const moved = past && !saved ? await model.history.movedTo(past) : undefined
@@ -209,9 +203,16 @@ export function createHandler(
 
       const table = url.searchParams.get("table") ?? undefined
       const version = fileVersion(target.file) ?? ""
-      const order = parsed<Order>(
+      const order = parsed<Order[]>(
         url.searchParams.get("sort"),
-        (value) => Number.isInteger(value.column) && typeof value.descending === "boolean",
+        (value) =>
+          Array.isArray(value) &&
+          value.every(
+            (level) =>
+              level !== null &&
+              Number.isInteger(level.column) &&
+              typeof level.descending === "boolean",
+          ),
       )
       const filtering = (value: Record<string, unknown>) =>
         typeof value.field === "string" &&
@@ -232,41 +233,58 @@ export function createHandler(
       const search = parsed<Search>(
         url.searchParams.get("search"),
         (value) =>
-          typeof value.text === "string" &&
-          Array.isArray(value.columns) &&
-          value.columns.every(
+          Array.isArray(value.terms) &&
+          value.terms.every(
             (pair) =>
               Array.isArray(pair) && Number.isInteger(pair[0]) && typeof pair[1] === "string",
           ) &&
+          Array.isArray(value.joins) &&
+          value.joins.every((join) => join === "and" || join === "or") &&
           Array.isArray(value.hidden) &&
-          value.hidden.every(Number.isInteger),
+          value.hidden.every(Number.isInteger) &&
+          (value.literal === undefined || typeof value.literal === "boolean"),
       )
 
       if (order === null || filter === null || search === null || compared === null) {
         return send(
           response,
           400,
-          "A sort names a column by its place and a direction, a filter a field and a value or a range, a search its text and columns by place, a comparison a filter or a field.\n",
+          "A sort names its columns by their place, each with a direction, a filter a field and a value or a range, a search its terms by column place joined by and or or, a comparison a filter or a field.\n",
         )
       }
 
       if (compared) {
-        return answer(response, data.compare(target.file, version, table, compared))
+        return answer(response, "data engine", () =>
+          urgently(() => data.compare(target.file, version, table, compared)),
+        )
       }
 
       if (url.searchParams.has("stats")) {
-        return answer(response, data.stats(target.file, version, table, filter))
+        return answer(response, "data engine", () =>
+          urgently(() => data.stats(target.file, version, table, filter)),
+        )
       }
 
-      return answer(
-        response,
-        data.page(target.file, version, table, {
-          order,
-          filter,
-          search,
-          rows: Number(url.searchParams.get("rows") ?? Number.NaN),
-          offset: Number(url.searchParams.get("offset") ?? Number.NaN),
-        }),
+      if (url.searchParams.has("values")) {
+        const column = Number(url.searchParams.get("values"))
+
+        return Number.isInteger(column) && column >= 0
+          ? answer(response, "data engine", () =>
+              urgently(() => data.values(target.file, table, { filter, search }, column)),
+            )
+          : send(response, 400, "Values are counted for a column named by its place.\n")
+      }
+
+      return answer(response, "data engine", () =>
+        urgently(() =>
+          data.page(target.file, version, table, {
+            order,
+            filter,
+            search,
+            rows: Number(url.searchParams.get("rows") ?? Number.NaN),
+            offset: Number(url.searchParams.get("offset") ?? Number.NaN),
+          }),
+        ),
       )
     }
 
@@ -281,9 +299,8 @@ export function createHandler(
 
     if (embed !== null) {
       return textual
-        ? answer(
-            response,
-            data.embedReference(textual.file, embed).then((embedded) => {
+        ? answer(response, "data engine", () =>
+            urgently(() => data.embedReference(textual.file, embed)).then((embedded) => {
               void model.history.value(urlPath, embed, embedded)
               return embedded
             }),
@@ -295,8 +312,7 @@ export function createHandler(
 
     if (url.searchParams.has("versions")) {
       return past
-        ? answer(
-            response,
+        ? answer(response, "history", () =>
             Promise.all([history.versions(past), history.references(past)]).then(
               ([versions, values]) => ({ path: past, versions, values }),
             ),
@@ -308,8 +324,7 @@ export function createHandler(
 
     if (shown !== null) {
       return past
-        ? answer(
-            response,
+        ? answer(response, "history", () =>
             history.text(past, shown).then((text) => (text === undefined ? {} : { text })),
           )
         : notFound(response)
@@ -319,8 +334,7 @@ export function createHandler(
 
     if (compared) {
       return past && compared.length === 2
-        ? answer(
-            response,
+        ? answer(response, "history", () =>
             history.compare(past, compared[0], compared[1]).then((pairs) => ({ pairs })),
           )
         : notFound(response)
@@ -330,8 +344,7 @@ export function createHandler(
 
     if (block !== null) {
       return past
-        ? answer(
-            response,
+        ? answer(response, "history", () =>
             history.block(past, block, model.held(past) ?? []).then((versions) => ({ versions })),
           )
         : notFound(response)
@@ -341,8 +354,7 @@ export function createHandler(
 
     if (reference !== null) {
       return past
-        ? answer(
-            response,
+        ? answer(response, "history", () =>
             history.values(past, reference).then((results) => ({ reference, results })),
           )
         : notFound(response)
@@ -353,8 +365,7 @@ export function createHandler(
     if (traced !== null) {
       const source = url.searchParams.get("source") ?? urlPath
       return textual
-        ? answer(
-            response,
+        ? answer(response, "provenance", () =>
             provenance(
               root,
               model,
@@ -371,34 +382,41 @@ export function createHandler(
 
     if (url.searchParams.has("conventions")) {
       return textual
-        ? sendJson(response, conventionsOf(model).describe(urlPath))
+        ? sendJson(
+            response,
+            within("declarations", () => conventionsOf(model).describe(urlPath)),
+          )
         : notFound(response)
     }
 
     if (url.searchParams.has("model")) {
-      const view = textual ? model.inspect(urlPath) : undefined
+      const view = textual ? within("model", () => model.inspect(urlPath)) : undefined
 
       if (textual) {
         if (!view) {
           return notFound(response)
         }
 
-        const page = pageState(root, textual.file, model).blocks
-        return answer(
-          response,
+        const page = within("model", () => pageState(root, textual.file, model).blocks)
+        return answer(response, "model", () =>
           data.dependencies(textual.file).then((files) => ({ ...view, page, data: files })),
         )
       }
 
-      const status = (urlPath === "" || urlPath.endsWith("/")) && folderState(root, urlPath)
-      return status ? sendJson(response, model.status(urlPath)) : notFound(response)
+      const status = within(
+        "model",
+        () =>
+          (urlPath === "" || urlPath.endsWith("/")) &&
+          folderState(root, urlPath) &&
+          model.status(urlPath),
+      )
+      return status ? sendJson(response, status) : notFound(response)
     }
 
     if (url.searchParams.has("used-by")) {
       return target
         ? model.ready
-          ? answer(
-              response,
+          ? answer(response, "used-by", () =>
               impactOf(model, data)
                 .dependents(urlPath)
                 .then((documents) => ({ ready: true, documents })),
@@ -411,16 +429,19 @@ export function createHandler(
       return textual
         ? sendJson(
             response,
-            linksState(model, urlPath, pageState(root, textual.file, model).blocks),
+            within("model", () =>
+              linksState(model, urlPath, pageState(root, textual.file, model).blocks),
+            ),
           )
         : notFound(response)
     }
 
     if (url.searchParams.has("read")) {
       return textual
-        ? answer(
-            response,
-            readState(model, urlPath, pageState(root, textual.file, model).blocks, data),
+        ? answer(response, "read record", () =>
+            urgently(() =>
+              readState(model, urlPath, pageState(root, textual.file, model).blocks, data),
+            ),
           )
         : notFound(response)
     }
@@ -430,12 +451,30 @@ export function createHandler(
         return notFound(response)
       }
 
-      const { text, version, blocks, layout } = pageState(root, textual.file, model)
-      return answer(
-        response,
-        readState(model, urlPath, blocks, data).then((read) => ({
+      const { text, version, blocks, layout } = within("model", () =>
+        pageState(root, textual.file, model),
+      )
+
+      if (!url.searchParams.has("ahead")) {
+        for (const source of new Set([urlPath, ...blocks.map((block) => block.source)])) {
+          const held = model.held(source)
+
+          if (held) {
+            void model.history.prepare(source, held)
+          }
+        }
+      }
+
+      return answer(response, "model", () =>
+        urgently(() => readState(model, urlPath, blocks, data)).then((read) => ({
           text,
           version,
+          title:
+            titleOf(
+              model.held(urlPath) ??
+                model.blocksReady(textual.file, fs.readFileSync(textual.file, "utf8")) ??
+                [],
+            ) ?? null,
           blocks,
           layout,
           links: linksState(model, urlPath, blocks),
@@ -449,7 +488,7 @@ export function createHandler(
         return notFound(response)
       }
 
-      const { text, version } = pageState(root, textual.file, model)
+      const { text, version } = within("model", () => pageState(root, textual.file, model))
       response.setHeader("X-Folio-Version", version)
       return send(response, 200, unmarked(text), "text/plain; charset=utf-8")
     }
@@ -472,6 +511,10 @@ export function createHandler(
       return send(response, 301, "")
     }
 
+    if (urlPath === "favicon.ico" && !url.search) {
+      return send(response, 200, TAB_ICON_SVG, "image/svg+xml")
+    }
+
     // Scripts read a query's 404 as plain text; only an address a browser opens gets the window.
     if (url.search) {
       return notFound(response)
@@ -489,7 +532,7 @@ export function createHandler(
       if (response.headersSent) {
         response.destroy()
       } else {
-        send(response, 500, "folio could not answer this request.\n")
+        send(response, 500, failure(error))
       }
     }
   }
@@ -512,7 +555,7 @@ export function listen(server: http.Server, port: number): Promise<number> {
   })
 }
 
-/** Listen on the first free port from `port` up, unless a folio already serves `root` on one taken. */
+/** Listen on the first free port from `port` up, unless a Folio already serves `root` on one taken. */
 export async function listenFree(server: http.Server, port: number, root: string): Promise<number> {
   for (let next = port; next <= 65535; next++) {
     try {
@@ -581,12 +624,7 @@ function sendShell(
   send(
     response,
     status,
-    shell(
-      path.posix.basename(urlPath) || path.basename(root),
-      path.basename(root),
-      build,
-      status === 404,
-    ),
+    shell(path.posix.basename(urlPath) || path.basename(root), root, build, status === 404),
     "text/html; charset=utf-8",
   )
 }
@@ -622,9 +660,9 @@ function sendJson(response: http.ServerResponse, value: unknown): void {
   send(response, 200, JSON.stringify(value), "application/json")
 }
 
-/** Whatever an answer's work throws, or its value fails to become JSON, the request ends with a 500. */
-function answer(response: http.ServerResponse, work: Promise<unknown>): void {
-  work
+/** A refusal answers with its status and reason; any other failure is a 500, its reason logged. */
+function answer(response: http.ServerResponse, part: Part, work: () => unknown): void {
+  new Promise((resolve) => resolve(within(part, work)))
     .then((value) => sendJson(response, value))
     .catch((error: Error) => {
       if (!(error instanceof Refusal)) {
@@ -633,8 +671,10 @@ function answer(response: http.ServerResponse, work: Promise<unknown>): void {
 
       if (response.headersSent) {
         response.destroy()
+      } else if (error instanceof Refusal) {
+        send(response, error.status, `${error.message}\n`)
       } else {
-        send(response, error instanceof Refusal ? error.status : 500, `${error.message}\n`)
+        send(response, 500, failure(error))
       }
     })
 }

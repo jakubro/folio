@@ -52,6 +52,7 @@ export class Tree {
   /** Loading and moving the current page both open folders; one at a time, or a folder opens twice. */
   #opening = Promise.resolve()
   #changed = new Set<string>()
+  #problems = new Map<string, number>()
 
   constructor(current: string) {
     this.#current = current
@@ -63,15 +64,32 @@ export class Tree {
       this.#dataToggle.setAttribute("aria-pressed", String(dataShown()))
       this.onChange()
     })
-    this.element.append(this.#dataToggle)
+    const corner = document.createElement("div")
+    corner.className = "tree-corner"
+    corner.append(this.#dataToggle)
+    this.element.append(corner)
   }
 
-  /** Load the root, then reopen the current page's ancestors and the folders open before. */
-  load(): Promise<void> {
+  /** Fetch every folder to open at once and show them in one step, scrolled as left or centred. */
+  load(scroll?: number): Promise<void> {
     return this.#queue(async () => {
-      if (await this.#open("", this.element)) {
-        await this.#reopen([...remembered(), ...this.#ancestors()])
+      const wanted = [...new Set([...remembered(), ...this.#ancestors()])].sort()
+      const [root, ...listings] = await Promise.all(["", ...wanted].map((at) => fetchListing(at)))
+
+      if (!root) {
+        return
+      }
+
+      const folder = this.#folder("", root)
+      this.#attachAll(wanted, listings)
+      this.element.append(folder.list)
+      remember(this.#folders.keys())
+      this.onChange()
+
+      if (scroll === undefined) {
         this.#reveal()
+      } else {
+        this.element.scrollTop = scroll
       }
     })
   }
@@ -85,6 +103,15 @@ export class Tree {
   /** Mark documents read before that changed since, and every folder holding one. */
   mark(changed: Set<string>): void {
     this.#changed = changed
+
+    for (const item of this.element.querySelectorAll<HTMLLIElement>("li[data-path]")) {
+      this.#show(item)
+    }
+  }
+
+  /** Mark each file health lists problems for, by its count, and every folder holding one. */
+  markProblems(counts: Map<string, number>): void {
+    this.#problems = counts
 
     for (const item of this.element.querySelectorAll<HTMLLIElement>("li[data-path]")) {
       this.#show(item)
@@ -125,6 +152,11 @@ export class Tree {
       return false
     }
 
+    parent.append(this.#folder(urlPath, listing).list)
+    return true
+  }
+
+  #folder(urlPath: string, listing: Listing): Folder {
     const folder: Folder = {
       list: document.createElement("ul"),
       version: listing.version,
@@ -132,8 +164,20 @@ export class Tree {
     }
     this.#folders.set(urlPath, folder)
     this.#fill(urlPath, folder, listing.entries)
-    parent.append(folder.list)
-    return true
+    return folder
+  }
+
+  /** Paths must be sorted: a parent then comes before its children, whose items it creates. */
+  #attachAll(paths: string[], listings: (Listing | undefined)[]): void {
+    for (const [index, urlPath] of paths.entries()) {
+      const listing = listings[index]
+      const item = this.#itemFor(urlPath)
+
+      if (listing && item && !this.#folders.has(urlPath)) {
+        item.classList.add("expanded")
+        item.append(this.#folder(urlPath, listing).list)
+      }
+    }
   }
 
   #fill(urlPath: string, folder: Folder, entries: Entry[]): void {
@@ -167,6 +211,7 @@ export class Tree {
     row.innerHTML = `${entry.kind === "folder" ? `<span class="chevron">${ICONS.chevron}</span>` : '<span class="chevron"></span>'}${iconFor(entry.kind)}`
     row.append(document.createTextNode(entry.name))
     row.title = entry.name
+    row.dataset.name = entry.name
 
     if (entry.kind === "folder") {
       item.dataset.folder = ""
@@ -200,6 +245,36 @@ export class Tree {
       : this.#changed.has(at)
 
     item.firstElementChild?.classList.toggle(inside ? "holds-changed" : "changed", changed)
+    this.#showProblems(item, at, inside)
+  }
+
+  #showProblems(item: HTMLLIElement, at: string, inside: boolean): void {
+    const row = item.firstElementChild as HTMLElement | null
+    const count = inside
+      ? [...this.#problems.keys()].some((path) => path.startsWith(`${at}/`))
+        ? 1
+        : 0
+      : (this.#problems.get(at) ?? 0)
+    let mark = row?.querySelector<HTMLElement>(":scope > .problem-mark")
+
+    if (!row) {
+      return
+    }
+
+    if (count === 0) {
+      mark?.remove()
+      row.title = row.dataset.name ?? row.title
+      return
+    }
+
+    if (!mark) {
+      mark = Object.assign(document.createElement("span"), { className: "problem-mark" })
+      row.append(mark)
+    }
+
+    if (!inside) {
+      row.title = `${row.dataset.name} - ${count} ${count === 1 ? "problem" : "problems"}`
+    }
   }
 
   async #expand(urlPath: string, item: HTMLLIElement): Promise<void> {
@@ -243,8 +318,17 @@ export class Tree {
       }
     }
 
-    await this.#reopen(this.#ancestors())
-    this.#reveal()
+    const missing = this.#ancestors()
+      .filter((at) => !this.#folders.has(at))
+      .sort()
+
+    if (missing.length > 0) {
+      this.#attachAll(missing, await Promise.all(missing.map((at) => fetchListing(at))))
+      remember(this.#folders.keys())
+      this.onChange()
+    }
+
+    this.#revealHidden()
   }
 
   #queue(work: () => Promise<void>): Promise<void> {
@@ -259,13 +343,13 @@ export class Tree {
     return ancestors.map((_, i) => ancestors.slice(0, i + 1).join("/"))
   }
 
-  async #reopen(paths: string[]): Promise<void> {
-    for (const urlPath of [...new Set(paths)].sort()) {
-      const item = this.#itemFor(urlPath)
+  #revealHidden(): void {
+    const row = this.element.querySelector(".current")
+    const panel = this.element.getBoundingClientRect()
+    const box = row?.getBoundingClientRect()
 
-      if (item && !this.#folders.has(urlPath)) {
-        await this.#expand(urlPath, item)
-      }
+    if (box && (box.top < panel.top || box.bottom > panel.bottom)) {
+      this.#reveal()
     }
   }
 

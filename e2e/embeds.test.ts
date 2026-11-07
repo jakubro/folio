@@ -1,4 +1,4 @@
-/** Headless Chromium run of folio's documented behaviour: embedded data, queries, view addresses and snapshots. */
+/** Headless Chromium run of Folio's documented behaviour: embedded data, queries, view addresses and snapshots. */
 
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -622,6 +622,60 @@ test("Freeze, Snapshot offline, Snapshot is frozen: a page downloads as one HTML
     true,
   )
   assert.deepEqual(requests, [])
+  await offline.close()
+  fs.rmSync(saved)
+})
+
+test("Folio's tabs, A frozen page: every page Folio serves, and a page it freezes, carries the F as its icon", async () => {
+  write({
+    "store/icon/page.md": "# Icon\n\nA page.",
+    "store/icon/rows.csv": "name\nada\n",
+  })
+  const drawn = (href: string) =>
+    new Promise<number>((resolve) => {
+      const image = new Image()
+      image.onload = () => resolve(image.naturalWidth)
+      image.onerror = () => resolve(0)
+      image.src = href
+    })
+  const icons: string[] = []
+
+  for (const urlPath of ["store/icon/page.md", "store/icon/rows.csv", "store/icon/", ""]) {
+    const page = await context.newPage()
+    await page.goto(`${base}/${urlPath}`)
+    const href = await page.$eval('head link[rel="icon"]', (link) => (link as HTMLLinkElement).href)
+    assert.ok((await page.evaluate(drawn, href)) > 0, `${urlPath}: the icon draws`)
+    icons.push(href)
+    await page.close()
+  }
+
+  assert.equal(new Set(icons).size, 1, "one icon on every page")
+  const front = await context.newPage()
+  await front.goto(`${base}/`)
+  assert.ok((await front.evaluate(drawn, `${base}/favicon.ico`)) > 0, "/favicon.ico draws")
+  await front.close()
+  const svg = decodeURIComponent(icons[0].replace(/^data:image\/svg\+xml,/, ""))
+  assert.match(svg, /<rect width="24" height="24" rx="4" fill="#93c5fd"\/>/)
+  assert.match(svg, /<path d="M16 7H9v11M9 12h5" fill="none" stroke="#1e3a8a" stroke-width="2"\/>/)
+
+  const page = await open("store/icon/page.md")
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.click('button[title="Freeze this page into one HTML file"]'),
+  ])
+  const saved = path.join(os.tmpdir(), `folio-frozen-icon-${process.pid}.html`)
+  await download.saveAs(saved)
+  await page.close()
+
+  const offline = await browser.newContext({ offline: true })
+  const frozen = await offline.newPage()
+  await frozen.goto(`file://${saved}`)
+  const frozenIcon = await frozen.$eval(
+    'head link[rel="icon"]',
+    (link) => (link as HTMLLinkElement).href,
+  )
+  assert.equal(frozenIcon, icons[0])
+  assert.ok((await frozen.evaluate(drawn, frozenIcon)) > 0, "the frozen page's icon draws offline")
   await offline.close()
   fs.rmSync(saved)
 })

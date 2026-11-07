@@ -8,8 +8,8 @@ import { isInside } from "./files.ts"
 const TIMEOUT_MS = 10_000
 const MAX_BUFFER = 256 * 1024 * 1024
 /**
- * No command folio runs may write to a repository: optional locks off, no prompts, no pager; every
- * path is literal, so no name folio passes is read as a pattern or a magic pathspec.
+ * No command Folio runs may write to a repository: optional locks off, no prompts, no pager; every
+ * path is literal, so no name Folio passes is read as a pattern or a magic pathspec.
  */
 const ENV = {
   ...process.env,
@@ -50,10 +50,12 @@ export interface Commit {
 const COMMITS = 2000
 const LOGGED = 50_000
 const tops = new Map<string, Promise<string | undefined>>()
+const marked = new Map<string, Promise<string | undefined>>()
+const trustedTops = new Map<string, Promise<boolean>>()
 const logs = new Map<string, { key: string; files: Promise<Map<string, Commit[]>> }>()
 
 /**
- * The commits touching a file, newest first, at most 2,000; none outside a repository folio may
+ * The commits touching a file, newest first, at most 2,000; none outside a repository Folio may
  * read. Each repository's log is read once, whole, and read again only once a commit has moved its
  * HEAD.
  */
@@ -63,7 +65,7 @@ export async function commits(file: string, root: string): Promise<Commit[]> {
 }
 
 /**
- * The top folder of the repository a folder belongs to, if folio may read it: its git directory
+ * The top folder of the repository a folder belongs to, if Folio may read it: its git directory
  * lies inside the served folder, or is the `.git` of the served folder or a folder above it. A
  * `.git` file pointing anywhere else - another repository's objects - is refused.
  */
@@ -74,9 +76,7 @@ export function repositoryOf(dir: string, root: string): Promise<string | undefi
   if (found === undefined) {
     found = (async () => {
       const top = await topLevel(dir)
-      const named = top && (await git(top, ["rev-parse", "--absolute-git-dir"]))?.trim()
-      const real = named && fs.existsSync(named) ? fs.realpathSync(named) : undefined
-      return real && trusted(real, root) ? top : undefined
+      return top && (await trustedTop(top, root)) ? top : undefined
     })()
     tops.set(key, found)
   }
@@ -84,8 +84,38 @@ export function repositoryOf(dir: string, root: string): Promise<string | undefi
   return found
 }
 
-async function topLevel(dir: string): Promise<string | undefined> {
-  return (await git(dir, ["rev-parse", "--show-toplevel"]))?.trim() || undefined
+/** Git is asked from the nearest folder holding a `.git`, once for every folder below it. */
+function topLevel(dir: string): Promise<string | undefined> {
+  let mark = dir
+
+  while (!fs.existsSync(path.join(mark, ".git")) && path.dirname(mark) !== mark) {
+    mark = path.dirname(mark)
+  }
+
+  let found = marked.get(mark)
+
+  if (!found) {
+    found = git(mark, ["rev-parse", "--show-toplevel"]).then((out) => out?.trim() || undefined)
+    marked.set(mark, found)
+  }
+
+  return found
+}
+
+function trustedTop(top: string, root: string): Promise<boolean> {
+  const key = `${root}\0${top}`
+  let found = trustedTops.get(key)
+
+  if (!found) {
+    found = (async () => {
+      const named = (await git(top, ["rev-parse", "--absolute-git-dir"]))?.trim()
+      const real = named && fs.existsSync(named) ? fs.realpathSync(named) : undefined
+      return real !== undefined && trusted(real, root)
+    })()
+    trustedTops.set(key, found)
+  }
+
+  return found
 }
 
 function trusted(gitDir: string, root: string): boolean {

@@ -392,8 +392,8 @@ export async function moveFiles(editor: Editor, moves: Map<string, string>): Pro
 }
 
 /**
- * Every address written in a file as the folder model reads it: links and pictures outside code, HTML, math and
- * frontmatter, embeds and figures outside code, includes anywhere.
+ * Every address written in a file: links and pictures outside code, HTML, math and frontmatter, embeds and figures
+ * outside code, includes anywhere.
  */
 function writtenIn(editor: Editor, source: string): Written[] {
   const text = editor.textOf(source) ?? ""

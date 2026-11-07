@@ -1,5 +1,5 @@
 /**
- * Screenshot gate: folio's pages and the documentation's pictures, served from the fixture folder and
+ * Screenshot gate: Folio's pages and the documentation's pictures, served from the fixture folder and
  * compared against recorded images.
  */
 

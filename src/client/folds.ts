@@ -12,7 +12,9 @@ export function foldable(article: HTMLElement, pagePath: string): void {
   const folded = new Set(remembered()[pagePath])
   page = pagePath
 
-  for (const heading of article.querySelectorAll<HTMLElement>(":is(h1, h2, h3, h4, h5, h6)[id]")) {
+  for (const heading of article.querySelectorAll<HTMLElement>(
+    ":is(h1, h2, h3, h4, h5, h6)[id]:not([data-outline])",
+  )) {
     if (!heading.querySelector(":scope > .fold-toggle")) {
       const control = button("", "", "fold-toggle")
       // Both icons stay in the button: replacing the one under the pointer would lose its leave events.
@@ -57,6 +59,10 @@ export function blocksOf(article: HTMLElement): Node[] {
   )
 }
 
+export function isFold(element: Element): boolean {
+  return owners.has(element)
+}
+
 export function reveal(element: Element): void {
   const headings: HTMLElement[] = []
 
@@ -65,6 +71,8 @@ export function reveal(element: Element): void {
 
     if (heading) {
       headings.push(heading)
+    } else if (node instanceof HTMLDetailsElement && !summaryOf(node)?.contains(element)) {
+      node.open = true
     }
   }
 
@@ -72,6 +80,27 @@ export function reveal(element: Element): void {
     unfold(heading)
     remember(heading, false)
   }
+}
+
+/** The outermost heading or summary standing in for an element a fold or a closed `<details>` hides. */
+export function foldedUnder(element: Element): HTMLElement | undefined {
+  let shown: HTMLElement | undefined
+
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const heading = owners.get(node)
+
+    if (heading && node.hasAttribute("hidden")) {
+      shown = heading
+    } else if (node instanceof HTMLDetailsElement && !node.open) {
+      const summary = summaryOf(node)
+
+      if (!summary?.contains(element)) {
+        shown = summary ?? node
+      }
+    }
+  }
+
+  return shown
 }
 
 function remember(heading: HTMLElement, folding: boolean): void {
@@ -130,6 +159,8 @@ function show(heading: HTMLElement, folded: boolean): void {
   const control = heading.querySelector(":scope > .fold-toggle") as HTMLButtonElement
   const label = folded ? "Unfold section" : "Fold section"
 
+  document.dispatchEvent(new Event("folio:folds"))
+
   heading.classList.toggle("folded", folded)
   const [unfolded, closed] = control.querySelectorAll("svg")
   unfolded.style.display = folded ? "none" : ""
@@ -142,12 +173,21 @@ function show(heading: HTMLElement, folded: boolean): void {
 /** A collapsible block titled by a heading ranks as that heading, so a section ends before it. */
 export function levelOf(node: Node): number {
   const element = node instanceof HTMLElement ? node : undefined
+
+  if (element?.matches(".metadata-title")) {
+    return 0
+  }
+
   const titled = element?.matches("details")
     ? element.querySelector(":scope > summary :is(h1, h2, h3, h4, h5, h6)")
     : element
   const level = HEADING.exec(titled?.tagName ?? "")?.[1]
 
   return level ? Number(level) : Number.POSITIVE_INFINITY
+}
+
+function summaryOf(details: HTMLDetailsElement): HTMLElement | undefined {
+  return details.querySelector<HTMLElement>(":scope > summary") ?? undefined
 }
 
 function remembered(): Record<string, string[]> {

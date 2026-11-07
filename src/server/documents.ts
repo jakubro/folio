@@ -240,11 +240,11 @@ export class Documents {
         return headingsOf(urlPath, blocks)
       case "links":
         return blocks.flatMap((block) =>
-          (block.links ?? []).map(({ url, context }) => {
+          (block.links ?? []).map(({ url, context, line }) => {
             const target = linkTarget(urlPath, url)
             return {
               path: urlPath,
-              line: block.lines[0],
+              line: line ?? block.lines[0],
               url,
               target: target?.path ?? null,
               fragment: target?.fragment || null,

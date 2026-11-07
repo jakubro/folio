@@ -10,7 +10,7 @@ import { test } from "node:test"
 import { pathToFileURL } from "node:url"
 import { CLI, ENV, freePort, until, writeIn } from "./harness.ts"
 
-test("Read over HTTP, Read over MCP, Read only: an agent reads the model through folio's MCP server, on its socket", async () => {
+test("Read over HTTP, Read over MCP, Read only: an agent reads the model through Folio's MCP server, on its socket", async () => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-clients-")))
   const socket = path.join(
     fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-socket-")),
@@ -76,7 +76,7 @@ test("Read over HTTP, Read over MCP, Read only: an agent reads the model through
     assert.ok(tools.every(({ annotations }) => annotations.readOnlyHint))
 
     const reference = fs.readFileSync(
-      path.join(import.meta.dirname, "../docs/reference.md"),
+      path.join(import.meta.dirname, "../docs/reference/model-api.md"),
       "utf8",
     )
     const index = await new Promise<{ resources: Record<string, unknown> }>((resolve, reject) => {
@@ -151,7 +151,7 @@ test("Read over HTTP, Read over MCP, Read only: an agent reads the model through
   assert.equal(fs.existsSync(socket), false, "the socket goes with the server")
 })
 
-test("Pass, Fail, Built-in as error, Nothing by default, Running folio, Standalone: folio check prints health and fails on errors", async () => {
+test("Pass, Fail, Built-in as error, Nothing by default, Running Folio, Standalone: folio check prints health and fails on errors", async () => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-check-")))
   const state = fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-check-state-"))
   const env = { ...ENV, XDG_STATE_HOME: state }
@@ -215,7 +215,7 @@ test("Pass, Fail, Built-in as error, Nothing by default, Running folio, Standalo
       const running = await run("--port", String(port))
       assert.equal(running.out, included.out)
       assert.equal(running.status, 1)
-      assert.ok(said.includes("GET /?api=health"), "the running folio answered")
+      assert.ok(said.includes("GET /?api=health"), "the running Folio answered")
     } finally {
       server.kill()
     }
@@ -225,7 +225,7 @@ test("Pass, Fail, Built-in as error, Nothing by default, Running folio, Standalo
   }
 })
 
-test("Check, folio moved; Agent's folder served; Folio restarted: without --port, check and mcp find the folio serving their folder wherever it serves", async () => {
+test("Check, Folio moved; Agent's folder served; Folio restarted: without --port, check and mcp find the Folio serving their folder wherever it serves", async () => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-found-")))
   const state = fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-found-state-"))
   const env = { ...ENV, XDG_STATE_HOME: state }
@@ -283,16 +283,16 @@ test("Check, folio moved; Agent's folder served; Folio restarted: without --port
     })
     assert.equal(checked.status, 0, checked.out)
     assert.match(checked.out, /notes\/a\.md:3 {2}- {2}link {2}Links to notes\/gone\.md/)
-    assert.ok(first.said().includes("GET /?api=health"), "the running folio answered")
+    assert.ok(first.said().includes("GET /?api=health"), "the running Folio answered")
 
     assert.deepEqual(await documents(), [{ path: "notes/a.md", kind: null }])
-    assert.ok(told.includes(`found the folio at http://localhost:${first.port}/`), told)
+    assert.ok(told.includes(`found the Folio at http://localhost:${first.port}/`), told)
 
     first.child.kill()
     await new Promise((resolve) => first.child.once("exit", resolve))
     const second = await serve()
     assert.deepEqual(await documents(), [{ path: "notes/a.md", kind: null }])
-    assert.ok(told.includes(`found the folio at http://localhost:${second.port}/`), told)
+    assert.ok(told.includes(`found the Folio at http://localhost:${second.port}/`), told)
   } finally {
     agent.kill()
 
@@ -302,6 +302,68 @@ test("Check, folio moved; Agent's folder served; Folio restarted: without --port
 
     fs.rmSync(folder, { recursive: true, force: true })
     fs.rmSync(state, { recursive: true, force: true })
+  }
+})
+
+test("Folio at an address, Folio on a socket, Folio serving the open folder: started as the plugin starts it, folio mcp reads the Folio its argument names by address or socket, and with an empty one the Folio serving its folder", async () => {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-named-state-"))
+  const sockets = fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-named-socket-"))
+  const env = { ...ENV, XDG_STATE_HOME: state, CLAUDE_PLUGIN_ROOT: sockets }
+  const started: ChildProcess[] = []
+  const folders: string[] = []
+  const serve = async (name: string, socket?: string) => {
+    const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `folio-e2e-${name}-`)))
+    folders.push(folder)
+    writeIn(folder, { [`${name}.md`]: `# ${name}\n` })
+    const port = await freePort()
+    const child = spawn(
+      process.execPath,
+      [CLI, folder, "--port", String(port), ...(socket ? ["--socket", socket] : [])],
+      { env },
+    )
+    let said = ""
+    started.push(child)
+    child.stdout?.on("data", (chunk) => {
+      said += chunk
+    })
+    await until(() => said.includes("documents in"))
+    return { folder, port }
+  }
+  const documents = async (folio: string, cwd: string) => {
+    const agent = spawn(process.execPath, [CLI, "mcp", folio], { env, cwd })
+    started.push(agent)
+    let heard = ""
+    agent.stdout?.on("data", (chunk) => {
+      heard += chunk
+    })
+    agent.stdin?.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "folio_documents", arguments: {} } })}\n`,
+    )
+    await until(() => heard.includes("\n"))
+    agent.kill()
+    const { content } = JSON.parse(heard).result as { content: { text: string }[] }
+    return JSON.parse(content[0].text).documents.map(({ path }: { path: string }) => path)
+  }
+
+  try {
+    const socket = path.join(sockets, "folio.sock")
+    const ported = await serve("ported")
+    const socketed = await serve("socketed", socket)
+
+    assert.deepEqual(await documents(`localhost:${ported.port}`, socketed.folder), ["ported.md"])
+    assert.deepEqual(await documents(`http://localhost:${ported.port}/`, socketed.folder), [
+      "ported.md",
+    ])
+    assert.deepEqual(await documents(socket, ported.folder), ["socketed.md"])
+    assert.deepEqual(await documents("", socketed.folder), ["socketed.md"])
+  } finally {
+    for (const child of started) {
+      child.kill()
+    }
+
+    for (const folder of [...folders, state, sockets]) {
+      fs.rmSync(folder, { recursive: true, force: true })
+    }
   }
 })
 

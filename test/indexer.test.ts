@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { Indexer, IndexerDown } from "../src/server/indexer.ts"
+import { blocks } from "../src/server/blocks.ts"
+import { Indexer, IndexerDown, Indexers } from "../src/server/indexer.ts"
 
 const WORKER = new URL("../src/server/index-worker.ts", import.meta.url)
 
@@ -60,4 +61,40 @@ test("a worker that cannot start fails every request as down", async () => {
 
   await assert.rejects(indexer.split("# x", "markdown"), IndexerDown)
   await indexer.close()
+})
+
+test("parsed blocks given identities on the worker match a split carrying the previous version", async () => {
+  const indexer = new Indexer(WORKER)
+  const before = blocks("# Title\n\nFirst words here.\n\nSecond words.\n", "markdown")
+  const after = "# Title\n\nNew opening.\n\nFirst words here, reworded.\n\nSecond words.\n"
+  const parts = blocks(after, "markdown").map(({ id: _, ...part }) => part)
+
+  assert.deepEqual(await indexer.identify(parts, before), blocks(after, "markdown", before))
+  await indexer.close()
+})
+
+test("texts sent to indexers at once split side by side, each on a thread of its own", async () => {
+  const indexers = new Indexers(new URL("./slow-worker.ts", import.meta.url), 10_000, 2)
+  const started = performance.now()
+  const split = await Promise.all([
+    indexers.split("# One", "markdown"),
+    indexers.split("# Two", "markdown"),
+  ])
+  const took = performance.now() - started
+
+  assert.deepEqual(
+    split.map((found) => found.map((block) => block.text)),
+    [["# One"], ["# Two"]],
+  )
+  assert.ok(took < 900, `two half-second splits took ${Math.round(took)} ms`)
+  await indexers.close()
+  await assert.rejects(indexers.split("# x", "markdown"), /closed/)
+})
+
+test("an indexer's threads beside it close with it", async () => {
+  const indexer = new Indexer(WORKER)
+
+  await indexer.beside.split("# x", "markdown")
+  await indexer.close()
+  await assert.rejects(indexer.beside.split("# x", "markdown"), /closed/)
 })

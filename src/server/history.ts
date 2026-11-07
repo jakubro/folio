@@ -1,11 +1,11 @@
-/** History of a document: its git history merged with the saves folio keeps, and the results each embed showed. */
+/** History of a document: its git history merged with the saves Folio keeps, and the results each embed showed. */
 
 import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { promisify } from "node:util"
 import zlib from "node:zlib"
-import { type Block, versionOf } from "./blocks.ts"
+import { type Block, type Part, versionOf } from "./blocks.ts"
 import type { Embedded } from "./data.ts"
 import { isInside } from "./files.ts"
 import { type Commit, commits, gitText, repositoryOf, tracked } from "./git.ts"
@@ -42,7 +42,10 @@ export interface BlockVersion {
   text?: string
 }
 
-type Split = (text: string, kind: "markdown" | "mermaid", previous?: Block[]) => Promise<Block[]>
+export interface Splitter {
+  split(text: string, kind: "markdown" | "mermaid", previous?: Block[]): Promise<Block[]>
+  identify(parts: Part[], previous: Block[]): Promise<Block[]>
+}
 
 export interface ValueResult {
   at: number
@@ -69,19 +72,21 @@ export class History {
   readonly #root: string
   readonly #dir: string
   readonly #log: Log
-  readonly #split: Split
+  readonly #splitter: Splitter
   readonly #budget: number
   readonly #compared = new Map<string, Paired[]>()
+  readonly #parsed = new Map<string, Promise<Part[] | undefined>>()
+  readonly #matched = new Map<string, Promise<Block[] | undefined>>()
   readonly #lines = new Map<string, number>()
   readonly #trackedFiles = new Map<string, Promise<Set<string>>>()
   #writes = Promise.resolve()
 
   /** `budget` bounds the bytes of text kept for all documents together. */
-  constructor(root: string, store: string, log: Log, split: Split, budget = TOTAL_BYTES) {
+  constructor(root: string, store: string, log: Log, splitter: Splitter, budget = TOTAL_BYTES) {
     this.#root = root
     this.#dir = path.join(store, "history")
     this.#log = log
-    this.#split = split
+    this.#splitter = splitter
     this.#budget = budget
   }
 
@@ -276,8 +281,8 @@ export class History {
     }
 
     const kind = kindOf(urlPath)
-    const left = await this.#split(before, kind)
-    const right = await this.#split(after, kind, left)
+    const left = await this.#splitter.split(before, kind)
+    const right = await this.#splitter.split(after, kind, left)
     const kept = new Set(right.map((block) => block.id))
     const pairs: Paired[] = []
     let next = 0
@@ -318,19 +323,10 @@ export class History {
    * the id asked for is the id the page shows; only the newest 200 versions are read.
    */
   async block(urlPath: string, id: string, current: Block[]): Promise<BlockVersion[]> {
-    const kind = kindOf(urlPath)
     const found: BlockVersion[] = []
-    let newer = current
 
-    for (const version of (await this.versions(urlPath)).slice(0, BLOCK_VERSIONS)) {
-      const text = version.removed ? undefined : await this.text(urlPath, version.id)
-
-      if (text === undefined) {
-        continue
-      }
-
-      newer = await this.#split(text, kind, newer)
-      const block = newer.find((other) => other.id === id)
+    for (const { version, blocks } of await this.#chain(urlPath, current)) {
+      const block = blocks.find((other) => other.id === id)
       const last = found.at(-1)
 
       if (!last || last.text !== block?.text) {
@@ -341,6 +337,14 @@ export class History {
     }
 
     return found
+  }
+
+  /** Work out a document's block history before it is asked for; never rejects, a failure is logged. */
+  prepare(urlPath: string, current: Block[]): Promise<void> {
+    return this.#chain(urlPath, current).then(
+      () => undefined,
+      (error: Error) => this.#log(`history: ${error.message}`),
+    )
   }
 
   /** Keep a result an embed showed, when it differs from the one before. */
@@ -439,7 +443,7 @@ export class History {
   }
 
   /**
-   * Keep the text a document had when folio first knew it, unless git tracks it or folio already
+   * Keep the text a document had when Folio first knew it, unless git tracks it or Folio already
    * keeps its saves: queued before any later save, so an edit soon after start never replaces it.
    */
   firstSeen(urlPath: string, text: string, at: number): Promise<void> {
@@ -470,7 +474,7 @@ export class History {
     })
   }
 
-  /** The documents folio saw saved or removed in a period, in milliseconds. */
+  /** The documents Folio saw saved or removed in a period, in milliseconds. */
   async savedIn(from: number, to: number): Promise<string[]> {
     const dir = path.join(this.#dir, "documents")
     const found: string[] = []
@@ -503,6 +507,59 @@ export class History {
     }
 
     return found
+  }
+
+  /**
+   * Kept by version and the blocks it was matched against, so later asks read them back; on the first
+   * miss every older version is parsed at once, and only the matching runs one version after another.
+   */
+  async #chain(
+    urlPath: string,
+    current: Block[],
+  ): Promise<{ version: Version; blocks: Block[] }[]> {
+    const kind = kindOf(urlPath)
+    const versions = (await this.versions(urlPath))
+      .slice(0, BLOCK_VERSIONS)
+      .filter((version) => !version.removed)
+    const chain: { version: Version; blocks: Block[] }[] = []
+    let newer = current.map(slim)
+    let parts: Promise<Part[] | undefined>[] | undefined
+
+    for (const [index, version] of versions.entries()) {
+      const previous = newer
+      const blocks = await kept(
+        this.#matched,
+        `${urlPath}\0${version.id}\0${fingerprint(previous)}`,
+        () => {
+          parts ??= versions.map((other, at) =>
+            at < index ? Promise.resolve(undefined) : this.#parse(urlPath, other.id, kind),
+          )
+          return parts[index].then(
+            async (found) => found && (await this.#splitter.identify(found, previous)).map(slim),
+          )
+        },
+      )
+
+      if (blocks) {
+        chain.push({ version, blocks })
+        newer = blocks
+      }
+    }
+
+    return chain
+  }
+
+  #parse(urlPath: string, id: string, kind: "markdown" | "mermaid"): Promise<Part[] | undefined> {
+    return kept(this.#parsed, `${urlPath}\0${id}`, async () => {
+      const text = await this.text(urlPath, id)
+      return text === undefined
+        ? undefined
+        : (await this.#splitter.split(text, kind)).map((block) => ({
+            kind: block.kind,
+            lines: block.lines,
+            text: block.text,
+          }))
+    })
   }
 
   async #saves(urlPath: string): Promise<Save[]> {
@@ -638,6 +695,54 @@ export class History {
   #valueFile(from: string, reference: string): string {
     return path.join(this.#dir, "values", hash(from), `${hash(reference)}.json`)
   }
+}
+
+/** Kept or made under `key`, least recent out first; a failure or nothing found is not kept. */
+function kept<T>(
+  held: Map<string, Promise<T | undefined>>,
+  key: string,
+  make: () => Promise<T | undefined>,
+): Promise<T | undefined> {
+  const found = held.get(key) ?? make()
+  const drop = () => {
+    if (held.get(key) === found) {
+      held.delete(key)
+    }
+  }
+
+  held.delete(key)
+  held.set(key, found)
+  found.then((value) => value === undefined && drop(), drop)
+
+  if (held.size > BLOCK_VERSIONS) {
+    held.delete(held.keys().next().value as string)
+  }
+
+  return found
+}
+
+/** Matching reads a block's id, kind and text alone. */
+function slim({ id, kind, lines, text }: Block): Block {
+  return { id, kind, lines, text }
+}
+
+const FINGERPRINTS = new WeakMap<Block[], string>()
+
+function fingerprint(blocks: Block[]): string {
+  let found = FINGERPRINTS.get(blocks)
+
+  if (found === undefined) {
+    const hash = createHash("sha1")
+
+    for (const { id, kind, text } of blocks) {
+      hash.update(`${id}\0${kind}\0${text}\0`)
+    }
+
+    found = hash.digest("hex")
+    FINGERPRINTS.set(blocks, found)
+  }
+
+  return found
 }
 
 function kindOf(urlPath: string): "markdown" | "mermaid" {

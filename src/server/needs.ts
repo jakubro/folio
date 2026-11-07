@@ -28,19 +28,52 @@ export interface NeedsState {
   watched: string[]
 }
 
+export interface NeedsPart {
+  needs: Need[]
+  watched: string[]
+}
+
 const RANK: Need["source"][] = ["error", "problem", "attention", "changed"]
 
 export async function needsOf(model: Model, data: Data): Promise<NeedsState> {
+  return needsFrom(
+    await Promise.all([
+      problemNeeds(model, data),
+      attentionNeeds(model, data),
+      changedNeeds(model, data),
+    ]),
+  )
+}
+
+/** A part not known yet - undefined - leaves the state unready; the others are shown. */
+export function needsFrom(parts: (NeedsPart | undefined)[]): NeedsState {
+  const needs = parts
+    .flatMap((part) => part?.needs ?? [])
+    .sort((a, b) => RANK.indexOf(a.source) - RANK.indexOf(b.source))
+  const ready = parts.every((part) => part !== undefined)
+
+  return {
+    ready,
+    needs,
+    version: createHash("sha1")
+      .update(JSON.stringify([ready, needs]))
+      .digest("hex")
+      .slice(0, 16),
+    watched: [...new Set(parts.flatMap((part) => part?.watched ?? []))],
+  }
+}
+
+/** Undefined until health is known, which is not the same as nothing wrong. */
+export async function problemNeeds(model: Model, data: Data): Promise<NeedsPart | undefined> {
   const health = await healthOf(model, data).state()
 
   if (!health.ready) {
-    return { ready: false, needs: [], version: "", watched: [] }
+    return undefined
   }
 
   await model.reads.load()
   const read = new Set(model.reads.documents().map(({ path: at }) => at))
   const needs: Need[] = []
-  const dirs = new Set<string>()
 
   for (const { kind, path: at, line, block, what, severity } of health.problems) {
     const source = severity === "error" ? "error" : read.has(at) ? "problem" : undefined
@@ -50,30 +83,45 @@ export async function needsOf(model: Model, data: Data): Promise<NeedsState> {
     }
   }
 
-  for (const declaration of conventionsOf(model).all()) {
+  return { needs, watched: [] }
+}
+
+/** Undefined until the folder is read: queries over a half-read folder list too little. */
+export async function attentionNeeds(model: Model, data: Data): Promise<NeedsPart | undefined> {
+  if (!model.ready) {
+    return undefined
+  }
+
+  const conventions = conventionsOf(model)
+  const needs: Need[] = []
+  const dirs = new Set<string>()
+
+  for (const declaration of conventions.all()) {
     for (const [name, definition] of Object.entries(declaration.attention)) {
-      needs.push(...(await attention(model, data, declaration, name, definition, dirs)))
+      const found = await attention(model, data, declaration, name, definition, dirs)
+      needs.push(...found.filter(({ path: at }) => !conventions.skipsAll(at)))
     }
+  }
+
+  return { needs, watched: [...dirs] }
+}
+
+/** Undefined until the folder is read: documents not read yet would count as changed. */
+export async function changedNeeds(model: Model, data: Data): Promise<NeedsPart | undefined> {
+  if (!model.ready) {
+    return undefined
   }
 
   const { documents } = await changesState(model.root, model, data)
 
-  for (const { path: at, blocks, at: when } of documents) {
-    needs.push({
+  return {
+    needs: documents.map(({ path: at, blocks, at: when }) => ({
       source: "changed",
       path: at,
-      what: `${blocks} ${blocks === 1 ? "block" : "blocks"} changed since you read it`,
+      what: `${blocks} ${blocks === 1 ? "block" : "blocks"} changed since last read`,
       at: when,
-    })
-  }
-
-  needs.sort((a, b) => RANK.indexOf(a.source) - RANK.indexOf(b.source))
-
-  return {
-    ready: true,
-    needs,
-    version: createHash("sha1").update(JSON.stringify(needs)).digest("hex").slice(0, 16),
-    watched: [...dirs],
+    })),
+    watched: [],
   }
 }
 

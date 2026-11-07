@@ -1,6 +1,13 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { compareCells, numberOf } from "../src/client/tableviews.ts"
+import {
+  compareCells,
+  inQuotes,
+  matcherOf,
+  numberOf,
+  valuesIn,
+  wanted,
+} from "../src/client/tableviews.ts"
 
 test("cells written as numbers read as numbers, separators, signs, percent and currency included", () => {
   assert.deepEqual(
@@ -72,4 +79,147 @@ test("a cell of many spaces or digits before a letter reads as text at once", ()
     undefined,
   ])
   assert.ok(Date.now() - started < 200, `read in ${Date.now() - started} ms`)
+})
+
+test("a filter's values: quotes ask for a whole cell as written, * and ? for a pattern of it, other text is found within", () => {
+  assert.deepEqual(
+    [
+      '"open"',
+      ' " Open " ',
+      '""',
+      '"op',
+      '"',
+      "open",
+      'open"',
+      'a "b" c',
+      '"tag":"k3"',
+      '"no*"',
+      "n*th",
+      "op | ",
+    ].map(wanted),
+    [
+      [{ pieces: ["open"], whole: true }],
+      [{ pieces: ["Open"], whole: true }],
+      [{ pieces: [""], whole: true }],
+      [{ pieces: ["op"], whole: false }],
+      [],
+      [{ pieces: ["open"], whole: false }],
+      [{ pieces: ['open"'], whole: false }],
+      [{ pieces: ['a "b" c'], whole: false }],
+      [{ pieces: ['"tag":"k3"'], whole: false }],
+      [{ pieces: ["no*"], whole: true }],
+      [{ pieces: ["n", { wild: "*" }, "th"], whole: true }],
+      [{ pieces: ["op"], whole: false }],
+    ],
+  )
+})
+
+test("a filter reads escapes, wildcards and values parted by bars", () => {
+  const cells = [
+    "north",
+    "south",
+    "east",
+    "ninth",
+    "month",
+    "open",
+    "review",
+    "closed",
+    "reopened",
+    '{"id": 3}',
+    'say "hi"',
+    '"open"',
+    "C:\\Users",
+    "a\\b",
+    "5*3",
+    "a|b",
+    "no*",
+  ]
+  const kept = (typed: string) => cells.filter(matcherOf(typed, true))
+
+  assert.deepEqual(
+    {
+      quoteAtStart: kept('\\"id'),
+      equalQuotesInside: kept('"say \\"hi\\""'),
+      quotesKept: kept('\\"open\\"'),
+      backslash: kept("C:\\Users"),
+      literalBackslash: kept("a\\\\b"),
+      pattern: kept("n*th"),
+      startsWith: kept("no*"),
+      endsWith: kept("*th"),
+      oneCharacter: kept("s?uth"),
+      literalStar: kept("5\\*3"),
+      caseOf: kept("NO*"),
+      quotedStar: kept('"no*"'),
+      severalValues: kept('"open" | "review"'),
+      patternsAsValues: kept("op* | rev*"),
+      mixed: kept('"open" | clo'),
+      literalBar: kept("a\\|b"),
+      typing: kept("open |"),
+      lone: kept('"').length,
+      records: cells.filter(matcherOf('"no*"', false)),
+    },
+    {
+      quoteAtStart: ['{"id": 3}'],
+      equalQuotesInside: ['say "hi"'],
+      quotesKept: ['"open"'],
+      backslash: ["C:\\Users"],
+      literalBackslash: ["a\\b"],
+      pattern: ["north", "ninth"],
+      startsWith: ["north", "no*"],
+      endsWith: ["north", "south", "ninth", "month"],
+      oneCharacter: ["south"],
+      literalStar: ["5*3"],
+      caseOf: ["north", "no*"],
+      quotedStar: ["no*"],
+      severalValues: ["open", "review"],
+      patternsAsValues: ["open", "review"],
+      mixed: ["open", "closed"],
+      literalBar: ["a|b"],
+      typing: ["open", "reopened", '"open"'],
+      lone: cells.length,
+      records: [],
+    },
+  )
+})
+
+test("a value written in quotes escapes what a filter would read otherwise, and keeps only that value", () => {
+  const values = ['say "hi"', "5*3", "a|b", "C:\\Users", "a\\*b?", "plain"]
+
+  assert.deepEqual(values.map(inQuotes), [
+    '"say \\"hi\\""',
+    '"5\\*3"',
+    '"a\\|b"',
+    '"C:\\\\Users"',
+    '"a\\\\\\*b\\?"',
+    '"plain"',
+  ])
+  assert.deepEqual(
+    values.map((value) => values.filter(matcherOf(inQuotes(value), true))),
+    values.map((value) => [value]),
+  )
+})
+
+test("cells' values are told apart as quotes match them, shown as most write them, most common first, blanks left out", () => {
+  assert.deepEqual(
+    valuesIn([
+      "open",
+      "Open",
+      " open ",
+      "closed",
+      "",
+      "  ",
+      "waiting",
+      "10",
+      "9",
+      "OPEN",
+      "closed",
+    ]),
+    [
+      ["open", 4],
+      ["closed", 2],
+      ["9", 1],
+      ["10", 1],
+      ["waiting", 1],
+    ],
+  )
 })

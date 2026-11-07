@@ -75,15 +75,17 @@ export class Impact {
     })
   }
 
-  /** Bring the index up to date; started once folio is serving, so the first ask finds it ready. */
+  /** Bring the index up to date; started once Folio is serving, so the first ask finds it ready. */
   refresh(): Promise<void> {
     if (!this.#refreshing) {
-      this.#refreshing = this.#catchUp().finally(() => {
-        this.#refreshing = undefined
-      })
+      this.#refreshing = this.#data.apart(() =>
+        this.#catchUp().finally(() => {
+          this.#refreshing = undefined
+        }),
+      )
     }
 
-    return this.#refreshing
+    return this.#data.joined(this.#refreshing)
   }
 
   /** The files a document includes, at any depth, and the data and query files its embeds read. */

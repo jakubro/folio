@@ -17,14 +17,34 @@ const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url))
 const REPOSITORY = "https://github.com/jakubro/folio"
 const REF = "main"
 
+const GUIDE = ["reading", "writing", "data", "keeping-up", "trust", "agents-editors-and-ci"]
+const REFERENCE = [
+  "command-line",
+  "addresses",
+  "model-api",
+  "editors",
+  "keyboard-and-mouse",
+  "files",
+  "data-files",
+  "embedded-data",
+  "queries",
+  "reading",
+  "history",
+  "digests",
+  "conventions",
+  "saved-views",
+  "markdown",
+  "security-and-limits",
+]
+
 /**
- * The reading path: get running, see what folio adds, look something up. The contributor document
+ * The reading path: get running, see what Folio adds, look something up. The contributor document
  * sits last under an internal label, so it is not read as a promise.
  */
 const SIDEBAR = [
   { label: "Start here", slug: "index" },
-  { label: "Guide", slug: "guide" },
-  { label: "Reference", slug: "reference" },
+  { label: "Guide", items: GUIDE.map((page) => ({ slug: `guide/${page}` })) },
+  { label: "Reference", items: REFERENCE.map((page) => ({ slug: `reference/${page}` })) },
   {
     label: "Internal",
     collapsed: true,
@@ -51,7 +71,7 @@ export default defineConfig({
     // Claims fenced mermaid blocks before Starlight's renderer sees them, so it must stay first.
     mermaid({ autoTheme: true }),
     starlight({
-      title: "folio",
+      title: "Folio",
       plugins: [starlightThemeRapide()],
       components: { ThemeProvider: "./src/components/ThemeProvider.astro" },
       // Inlined rather than emitted, or code blocks lose their styling in the dev server:

@@ -1,9 +1,12 @@
 /** Command-line arguments and each command's help: serve a folder, check its health, serve an editor, speak MCP. */
 
+import fs from "node:fs"
 import { parseArgs } from "node:util"
 
 export const DEFAULT_PORT = 8640
 const COMMANDS = ["check", "lsp", "mcp"] as const
+const ADDRESS_RE = /^[a-z][a-z\d+.-]*:\/\/|^[^/]*:\d+(?:\/|$)/i
+const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"]
 
 type Command = "serve" | (typeof COMMANDS)[number]
 
@@ -30,14 +33,14 @@ const USAGE: Record<Command, string> = {
   serve: "folio [FOLDER] [--port N] [--socket PATH]... [--verbose]",
   check: "folio check [FOLDER] [--port N | --socket PATH]",
   lsp: "folio lsp [FOLDER]",
-  mcp: "folio mcp [--port N | --socket PATH]",
+  mcp: "folio mcp [FOLIO | --port N | --socket PATH]",
 }
 
 const HELP_ROW: [string, string] = ["-h, --help", "Show this help"]
 
 export const HELP: Record<Command, Help> = {
   serve: {
-    title: "folio - a live view of a folder of markdown and data",
+    title: "Folio - a live view of a folder of markdown and data",
     sections: [
       { title: "Usage", rows: Object.values(USAGE) },
       {
@@ -46,7 +49,7 @@ export const HELP: Record<Command, Help> = {
           ["(none)", "Serve FOLDER in the browser, at http://localhost:PORT/"],
           ["check", "Print the folder's health, and fail when a problem is an error"],
           ["lsp", "Serve an editor the folder's links, includes and health"],
-          ["mcp", "Answer an agent from the folio serving a folder"],
+          ["mcp", "Answer an agent from the Folio serving a folder"],
         ],
       },
       {
@@ -62,7 +65,7 @@ export const HELP: Record<Command, Help> = {
           ],
           ["--socket PATH", "Also serve on a unix socket; give it again for several"],
           ["--verbose", "Print every request and update, not only pages opened and problems"],
-          ["--version", "Print folio's version"],
+          ["--version", "Print Folio's version"],
           ["-h, --help", "Show this help; folio COMMAND --help shows a command's"],
         ],
       },
@@ -95,9 +98,9 @@ export const HELP: Record<Command, Help> = {
         rows: [
           [
             "-p, --port N",
-            `Ask the folio serving FOLDER on this port (default: wherever a folio serving FOLDER serves, else ${DEFAULT_PORT})`,
+            `Ask the Folio serving FOLDER on this port (default: wherever a Folio serving FOLDER serves, else ${DEFAULT_PORT})`,
           ],
-          ["--socket PATH", "Ask the folio serving FOLDER on this unix socket"],
+          ["--socket PATH", "Ask the Folio serving FOLDER on this unix socket"],
           HELP_ROW,
         ],
       },
@@ -137,17 +140,23 @@ export const HELP: Record<Command, Help> = {
     ],
   },
   mcp: {
-    title: "folio mcp - an MCP server on standard input and output, reading a running folio",
+    title: "folio mcp - an MCP server on standard input and output, reading a running Folio",
     sections: [
       { title: "Usage", rows: [USAGE.mcp] },
       {
-        title: "Options",
+        title: "Arguments",
         rows: [
           [
-            "-p, --port N",
-            `Read the folio on this port (default: the folio serving the nearest folder at or above one of the agent's roots, or the current folder, else ${DEFAULT_PORT})`,
+            "FOLIO",
+            `The Folio to read: its address, such as localhost:8641, or a unix socket it serves on (default: the Folio serving the nearest folder at or above one of the agent's roots, or the current folder, else ${DEFAULT_PORT})`,
           ],
-          ["--socket PATH", "Read the folio on this unix socket"],
+        ],
+      },
+      {
+        title: "Options",
+        rows: [
+          ["-p, --port N", "Read the Folio on this port"],
+          ["--socket PATH", "Read the Folio on this unix socket"],
           HELP_ROW,
         ],
       },
@@ -162,7 +171,8 @@ export const HELP: Record<Command, Help> = {
         title: "Examples",
         rows: [
           '{ "mcpServers": { "folio": { "command": "folio", "args": ["mcp"] } } }',
-          "folio mcp --socket /run/folio.sock",
+          "folio mcp localhost:8641",
+          "folio mcp /run/folio.sock",
         ],
       },
     ],
@@ -187,13 +197,9 @@ export function parseOptions(argv: string[]): Options {
     )
   }
 
-  const allowed = command === "mcp" ? 0 : 1
-
-  if (positionals.length > allowed) {
+  if (positionals.length > 1) {
     throw new Error(
-      command === "mcp"
-        ? `folio mcp takes no folder: it reads the folio serving one.\n${usage(command)}`
-        : `Expected one folder, got ${positionals.length}.\n${usage(command)}`,
+      `Expected one ${command === "mcp" ? "Folio" : "folder"}, got ${positionals.length}.\n${usage(command)}`,
     )
   }
 
@@ -221,12 +227,12 @@ export function parseOptions(argv: string[]): Options {
   }
 
   if (sockets.length > 1) {
-    throw new Error(`folio ${command} reads one folio, on one socket.\n${usage(command)}`)
+    throw new Error(`folio ${command} reads one Folio, on one socket.\n${usage(command)}`)
   }
 
   if (command !== "lsp" && sockets.length > 0 && values.port !== undefined) {
     throw new Error(
-      `folio ${command} reads one folio, on a port or a socket, not both.\n${usage(command)}`,
+      `folio ${command} reads one Folio, on a port or a socket, not both.\n${usage(command)}`,
     )
   }
 
@@ -236,9 +242,20 @@ export function parseOptions(argv: string[]): Options {
     ...(sockets.length > 0 && { socket: sockets[0] }),
   }
 
-  return command === "mcp"
-    ? { command, ...reach }
-    : { command, folder: positionals[0] ?? ".", ...reach }
+  if (command !== "mcp") {
+    return { command, folder: positionals[0] ?? ".", ...reach }
+  }
+
+  // The plugin passes its setting as the argument, an empty one while the setting is unset.
+  if (!positionals[0]) {
+    return { command, ...reach }
+  }
+
+  if (values.port !== undefined || sockets.length > 0) {
+    throw new Error(`folio mcp reads one Folio, named once.\n${usage(command)}`)
+  }
+
+  return { command, ...folioAt(positionals[0]) }
 }
 
 function parsed(args: string[], command: Command) {
@@ -271,6 +288,32 @@ function parsed(args: string[], command: Command) {
             : `${name} needs a value.`
     throw new Error(`${said}\n${usage(command)}`)
   }
+}
+
+function folioAt(written: string): { port: number; portGiven?: true; socket?: string } {
+  if (fs.existsSync(written) && fs.statSync(written).isDirectory()) {
+    throw new Error(`folio mcp takes no folder: it reads the Folio serving one.\n${usage("mcp")}`)
+  }
+
+  if (!ADDRESS_RE.test(written)) {
+    return { port: DEFAULT_PORT, socket: written }
+  }
+
+  const url = URL.parse(written.includes("://") ? written : `http://${written}`)
+
+  if (url?.protocol !== "http:" || !LOCAL_HOSTS.includes(url.hostname)) {
+    throw new Error(
+      `Not a Folio's address: ${written}. Folio answers http on localhost only.\n${usage("mcp")}`,
+    )
+  }
+
+  const port = url.port === "" ? 80 : Number(url.port)
+
+  if (port < 1) {
+    throw new Error(`Invalid port: ${url.port}.\n${usage("mcp")}`)
+  }
+
+  return { port, portGiven: true }
 }
 
 function usage(command: Command): string {

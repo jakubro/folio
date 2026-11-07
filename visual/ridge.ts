@@ -1,5 +1,5 @@
 /**
- * A folio of its own over a copy of the ridge folder, with a git history committed on fixed dates and
+ * A Folio of its own over a copy of the ridge folder, with a git history committed on fixed dates and
  * every file dated alike, so a picture of history, change or reading comes out the same on any day.
  */
 
@@ -198,6 +198,6 @@ function indexed(child: ChildProcess): Promise<void> {
         resolve()
       }
     })
-    child.once("exit", (code) => reject(new Error(`folio exited with ${code}: ${said}`)))
+    child.once("exit", (code) => reject(new Error(`Folio exited with ${code}: ${said}`)))
   })
 }

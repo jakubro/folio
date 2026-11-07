@@ -1,4 +1,4 @@
-/** Fixture folders, a folio server and a headless Chromium for the browser tests; each test file gets its own. */
+/** Fixture folders, a Folio server and a headless Chromium for the browser tests; each test file gets its own. */
 
 import assert from "node:assert/strict"
 import { type ChildProcess, spawn } from "node:child_process"
@@ -14,7 +14,12 @@ import { type Browser, type BrowserContext, chromium, type Page } from "playwrig
 export const CLI = path.join(import.meta.dirname, "../dist/cli.js")
 export const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-")))
 const state = fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-state-"))
-export const ENV = { ...process.env, XDG_STATE_HOME: state }
+export const ENV = {
+  ...process.env,
+  XDG_STATE_HOME: state,
+  XDG_CACHE_HOME: state,
+  FOLIO_EMBED_WORKER: path.join(import.meta.dirname, "embed-words.ts"),
+}
 
 export const FILES: Record<string, string> = {
   "notes/guide.md": [
@@ -289,7 +294,7 @@ export async function cells(page: Page, table: number, column: number): Promise<
 }
 
 export async function panel(page: Page, table: number): Promise<void> {
-  await page.hover(`.markdown-body table >> nth=${table}`)
+  await page.hover(`.markdown-body table >> nth=${table} >> :is(th, td):visible >> nth=0`)
   await page.click(".table-control")
   await page.waitForSelector(".table-panel:not([hidden])")
 }
@@ -297,8 +302,8 @@ export async function panel(page: Page, table: number): Promise<void> {
 export async function caption(page: Page, table: number): Promise<string | null> {
   return page.evaluate(
     (t) =>
-      document.querySelectorAll(".markdown-body table")[t].querySelector("caption")?.textContent ??
-      null,
+      document.querySelectorAll(".markdown-body table")[t].querySelector("caption .table-count")
+        ?.textContent ?? null,
     table,
   )
 }
@@ -356,7 +361,7 @@ export function snapshotOf(folder: string): string[] {
     })
 }
 
-/** A folio of its own on a fresh folder and port, sharing the suite's state folder. */
+/** A Folio of its own on a fresh folder and port, sharing the suite's state folder. */
 export async function serveFolder(
   folder: string,
 ): Promise<{ base: string; stop: () => void; stopped: Promise<unknown> }> {

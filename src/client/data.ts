@@ -187,6 +187,7 @@ export function dataArticle(
             memory.records.set(label, new Set(opened(table, memory.records.get(label))))
             return pager.ask(asked(asking), table, rowsOf)
           },
+          (search, column) => pager.values(search, column),
           pager.total,
           reopened,
           label === resume?.asker,
@@ -389,7 +390,7 @@ function views(
     }
 
     panel.onPick = pick
-    panel.onSort = (field, descending) => {
+    panel.onSort = (field, descending, adding) => {
       if (!shown.has("Table")) {
         choose("Table")
         table()?.dispatchEvent(new CustomEvent("folio:tables", { bubbles: true }))
@@ -397,7 +398,10 @@ function views(
 
       choose("Table")
       table()?.dispatchEvent(
-        new CustomEvent("folio:sort", { bubbles: true, detail: { column: field, descending } }),
+        new CustomEvent("folio:sort", {
+          bubbles: true,
+          detail: { column: field, descending, adding },
+        }),
       )
     }
     panelOf(counted.article, panel.element)
@@ -718,8 +722,33 @@ function servesTable(
         }
       )
     },
+    (search, column) => fetchValues(urlPath, part, undefined, search, column),
     total,
   )
+}
+
+async function fetchValues(
+  urlPath: string,
+  part: string | undefined,
+  filter: Filter | undefined,
+  search: Asking["search"],
+  column: number,
+): Promise<[string, number][] | undefined> {
+  const query = new URLSearchParams({ values: String(column) })
+
+  if (search) {
+    query.set("search", JSON.stringify(search))
+  }
+
+  try {
+    const response = await fetch(`${address(urlPath)}?${asked(part, filter)}&${query}`)
+    const counted: { values?: [string, number][] } | undefined = response.ok
+      ? await response.json()
+      : undefined
+    return counted?.values
+  } catch {
+    return undefined
+  }
 }
 
 async function fetchRows(
@@ -850,6 +879,10 @@ class Pager {
     const rows = rowsOf(this.found)
     this.dress(rows, owner)
     return { rows, kept: this.total }
+  }
+
+  values(search: Asking["search"], column: number): Promise<[string, number][] | undefined> {
+    return fetchValues(this.#urlPath, this.#part, this.#filter, search, column)
   }
 
   /** Waits for a sort or search still loading, so the rows it adds follow the order asked for last. */
@@ -1190,12 +1223,15 @@ function recordRows(found: Collection): HTMLTableRowElement[] {
 
 /** A record's line holds the whole record: its filters search every field, and it sorts by none. */
 function recordsAsking({ search }: Asking): Asking {
-  const texts = [search?.text, ...(search?.columns ?? []).map(([, text]) => text)].filter(
-    (text): text is string => Boolean(text),
-  )
-
-  return texts.length > 0
-    ? { search: { text: texts[0], columns: texts.slice(1).map((text) => [-1, text]), hidden: [] } }
+  return search
+    ? {
+        search: {
+          ...search,
+          terms: search.terms.map(([, text]) => [-1, text]),
+          hidden: [],
+          literal: true,
+        },
+      }
     : {}
 }
 

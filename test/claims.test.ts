@@ -51,7 +51,7 @@ test("a block records each tied figure, outside code, and reads its data", () =>
   assert.equal(code.claims, undefined)
 })
 
-test("outside folio, under GitHub's sanitizing, a tied figure reads as typed", async () => {
+test("outside Folio, under GitHub's sanitizing, a tied figure reads as typed", async () => {
   const html = String(
     await unified()
       .use(remarkParse)

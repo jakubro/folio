@@ -99,12 +99,116 @@ test("data files render as data pages, and list only when data files are asked f
   assert.equal(neighbours(root, "rows.csv"), undefined)
 })
 
+test("a folder listed again shows a subfolder once a page appears deep inside it, and drops it once the page goes", async () => {
+  const root = fixture({ "a.md": "", "deep/one/two/table.csv": "" })
+
+  await settled()
+  assert.deepEqual(listing(root, ""), [{ name: "a.md", kind: "markdown" }])
+
+  fs.writeFileSync(path.join(root, "deep/one/two/page.md"), "")
+  assert.deepEqual(listing(root, ""), [
+    { name: "deep", kind: "folder" },
+    { name: "a.md", kind: "markdown" },
+  ])
+
+  fs.rmSync(path.join(root, "deep/one/two/page.md"))
+  assert.deepEqual(listing(root, ""), [{ name: "a.md", kind: "markdown" }])
+
+  fs.mkdirSync(path.join(root, "deep/one/three"))
+  fs.writeFileSync(path.join(root, "deep/one/three/note.md"), "")
+  assert.deepEqual(listing(root, "")?.[0], { name: "deep", kind: "folder" })
+})
+
+test("a folder whose only page is a link is listed by where the link leads now, its answer kept or not", async () => {
+  const outside = fixture({ "far.md": "" })
+  const root = fixture({ "a.md": "", "away/target.md": "", "away/notes.txt": "" })
+
+  fs.mkdirSync(path.join(root, "linked"))
+  fs.symlinkSync(path.join(root, "away/target.md"), path.join(root, "linked/page.md"))
+  fs.mkdirSync(path.join(root, "dangling"))
+  fs.symlinkSync(path.join(root, "away/later.md"), path.join(root, "dangling/page.md"))
+  await settled()
+
+  const folders = () =>
+    (listing(root, "") ?? []).filter(({ kind }) => kind === "folder").map(({ name }) => name)
+
+  assert.deepEqual(folders(), ["away", "linked"])
+
+  fs.rmSync(path.join(root, "linked/page.md"))
+  fs.symlinkSync(path.join(outside, "far.md"), path.join(root, "linked/page.md"))
+  await settled()
+  fs.writeFileSync(path.join(root, "away/later.md"), "")
+  assert.deepEqual(folders(), ["away", "dangling"])
+})
+
+test("a folder listed again is dropped once its page becomes a link to no page or sits behind a linked folder", () => {
+  const root = fixture({
+    "a.md": "",
+    "away/notes.txt": "",
+    "away/table.csv": "a\n1\n",
+    "linked/page.md": "",
+    "plain/page.md": "",
+    "moved/inner/page.md": "",
+  })
+  const folders = (data = false) =>
+    (listing(root, "", data) ?? []).filter(({ kind }) => kind === "folder").map(({ name }) => name)
+
+  assert.deepEqual(folders(), ["linked", "moved", "plain"])
+  assert.deepEqual(folders(true), ["away", "linked", "moved", "plain"])
+
+  fs.rmSync(path.join(root, "linked/page.md"))
+  fs.symlinkSync(path.join(root, "away/table.csv"), path.join(root, "linked/page.md"))
+  fs.rmSync(path.join(root, "plain/page.md"))
+  fs.symlinkSync(path.join(root, "away/notes.txt"), path.join(root, "plain/page.md"))
+  fs.renameSync(path.join(root, "moved/inner"), path.join(root, "away/inner"))
+  fs.symlinkSync(path.join(root, "away/inner"), path.join(root, "moved/inner"))
+
+  assert.deepEqual(folders(), ["away"])
+  assert.deepEqual(folders(true), ["away", "linked"])
+})
+
 test("listing refuses files, missing folders and folders outside the root", () => {
   const root = fixture({ "a.md": "" })
 
   assert.equal(listing(root, "a.md"), undefined)
   assert.equal(listing(root, "missing"), undefined)
   assert.equal(listing(root, ".."), undefined)
+})
+
+test("a file sorts before the files whose names extend it, the extension breaking a tie", () => {
+  const root = fixture({
+    "5.71.md": "",
+    "5.70.B.md": "",
+    "5.70.A.md": "",
+    "5.70.1.md": "",
+    "5.70.md": "",
+    "5.7.md": "",
+    "notes_2.md": "",
+    "notes.md": "",
+    "notes.csv": "",
+    "README-old.md": "",
+    "README.md": "",
+    "5.70.x/a.md": "",
+    "5.70/a.md": "",
+  })
+  const names = (data: boolean) => listing(root, "", data)?.map(({ name }) => name)
+
+  assert.deepEqual(names(true), [
+    "5.70",
+    "5.70.x",
+    "5.7.md",
+    "5.70.md",
+    "5.70.1.md",
+    "5.70.A.md",
+    "5.70.B.md",
+    "5.71.md",
+    "notes.csv",
+    "notes.md",
+    "notes_2.md",
+    "README.md",
+    "README-old.md",
+  ])
+  assert.deepEqual(neighbours(root, "5.70.md"), { previous: "5.7.md", next: "5.70.1.md" })
 })
 
 test("neighbours walk every page in tree order across folders, passing over images", () => {
@@ -156,3 +260,8 @@ test("neighbours answer pages only, and nothing for a page the tree does not lis
 
   assert.deepEqual(neighbours(root, ".hidden/d.md"), { previous: null, next: null })
 })
+
+/** Kept answers need change times a second old, and utimes moves a change time rather than aging it. */
+function settled(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 1100))
+}

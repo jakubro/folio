@@ -64,7 +64,7 @@ test("what needs the reader: errors, problems in what they read, declared attent
     await until(async () => (await listed()).some((line) => line.startsWith("changed")))
     assert.match(
       (await listed()).at(-1) ?? "",
-      /^changed read\.md 2 blocks changed since you read it$/,
+      /^changed read\.md 2 blocks changed since last read$/,
     )
 
     fs.writeFileSync(path.join(root, "review.csv"), "path\n")
@@ -99,6 +99,55 @@ test("a message filled from a kind's date field writes the date as it is", async
       (await needsOf(model, data)).needs.map(({ path: at, what }) => `${at} ${what}`),
       ["gauges/north.md Calibration due - last done 2026-04-12"],
     )
+  } finally {
+    model.close()
+    await data.close()
+  }
+})
+
+test("a folder health leaves out entirely keeps its attention rows and query errors off what needs the reader", async () => {
+  const declaration = (skip: string) =>
+    `# Root\n\n${fence(["health:", "  - where: 'stations/**'", `    skip: ${skip}`].join("\n"))}\n`
+  const { root, model, data } = await served(indexer, {
+    "FOLIO.md": declaration("all"),
+    "stations/FOLIO.md": `# Stations\n\n${fence(
+      [
+        "attention:",
+        "  calibration:",
+        "    message: '{path} is due'",
+        "    query: select path from 'due.csv'",
+        "  broken:",
+        "    message: never",
+        "    query: select nothing from 'missing.csv'",
+      ].join("\n"),
+    )}\n`,
+    "stations/due.csv": "path\nstations/north.md\nreport.md\n",
+    "stations/north.md": "# North\n",
+    "report.md": "# Report\n",
+  })
+  const until = async (test: () => Promise<boolean>) => {
+    for (let tries = 0; !(await test()); tries++) {
+      assert.ok(tries < 200, "timed out")
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+  }
+  const listed = async () =>
+    (await needsOf(model, data)).needs.map(({ source, path: at }) => `${source} ${at}`)
+
+  try {
+    assert.deepEqual(await listed(), ["attention report.md"])
+
+    fs.writeFileSync(path.join(root, "FOLIO.md"), declaration("[link]"))
+    await until(async () => (await listed()).length === 3)
+    assert.deepEqual(await listed(), [
+      "error stations/FOLIO.md",
+      "attention stations/north.md",
+      "attention report.md",
+    ])
+
+    fs.writeFileSync(path.join(root, "FOLIO.md"), declaration("all"))
+    await until(async () => (await listed()).length === 1)
+    assert.deepEqual(await listed(), ["attention report.md"])
   } finally {
     model.close()
     await data.close()

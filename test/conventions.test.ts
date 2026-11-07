@@ -159,12 +159,12 @@ test("a declaration that cannot be read is listed in health, and its other fence
         [
           "declaration",
           13,
-          "No section is named colours: a declaration holds kinds, rules, health, save, digests, attention and stale.",
+          "No section is named colours: a declaration holds kinds, rules, health, save, related, digests, attention and stale.",
         ],
         [
           "declaration",
           18,
-          "A declaration is a map of sections: kinds, rules, health, save, digests, attention and stale.",
+          "A declaration is a map of sections: kinds, rules, health, save, related, digests, attention and stale.",
         ],
         ["declaration", 22, "health is a list."],
       ],
@@ -175,6 +175,49 @@ test("a declaration that cannot be read is listed in health, and its other fence
         .kinds.map(({ name }) => name),
       ["note"],
     )
+  } finally {
+    model.close()
+    await data.close()
+  }
+})
+
+test("an alias whose anchor is never set is listed at its line, its declaration declares nothing, and the folder is read; setting the anchor applies it", async () => {
+  const broken = fence("kinds:\n  page: {where: '*.md'}\n  other: *nope")
+  const { root, model, data } = await served({
+    "FOLIO.md": `# Conventions\n\n${broken}\n`,
+    "a.md": "# A\n",
+    "notes/FOLIO.md": fence("kinds:\n  plan: {where: '*.md'}"),
+    "notes/plan.md": "# Plan\n\nSee [the missing page](gone.md).\n",
+  })
+  const conventions = conventionsOf(model)
+  const problems = async () =>
+    (await healthOf(model, data).state()).problems.map(({ kind, path, line, what }) =>
+      kind === "declaration" ? [kind, path, line, what] : [kind, path, line],
+    )
+
+  try {
+    assert.equal(model.ready, true)
+    assert.deepEqual(await problems(), [
+      ["link", "notes/plan.md", 3],
+      [
+        "declaration",
+        "FOLIO.md",
+        6,
+        "The declaration cannot be read: Unresolved alias (the anchor must be set before the alias): nope",
+      ],
+    ])
+    assert.deepEqual(
+      ["a.md", "notes/plan.md"].map((document) => conventions.kindOf(document) ?? null),
+      [null, "plan"],
+    )
+
+    fs.writeFileSync(
+      path.join(root, "FOLIO.md"),
+      `# Conventions\n\n${fence("kinds:\n  page: &nope {where: '*.md'}\n  other: *nope")}\n`,
+    )
+    await until(() => conventions.kindOf("a.md") === "page")
+    assert.deepEqual([...conventions.kinds()].sort(), ["other", "page", "plan"])
+    assert.deepEqual(await problems(), [["link", "notes/plan.md", 3]])
   } finally {
     model.close()
     await data.close()

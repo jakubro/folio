@@ -13,6 +13,7 @@ import remarkParse from "remark-parse"
 import remarkRehype from "remark-rehype"
 import { type Processor, unified } from "unified"
 import { backticks } from "../client/backticks.ts"
+import { linksOf } from "../client/frontmatter.ts"
 import { SCHEMA } from "../client/schema.ts"
 import { table, tables } from "../client/tables.ts"
 import { type Claim, claimsIn, queriesIn, referencesIn, VALUE } from "./embeds.ts"
@@ -37,9 +38,9 @@ export interface Block {
   references?: string[]
   queries?: string[]
   claims?: Claim[]
-  /** Where it holds text its page reads no link in - code, HTML, math, frontmatter - by offset in its file. */
+  /** Where it holds text markdown reads no link in - code, HTML, math, frontmatter - by offset in its file. */
   literals?: Literal[]
-  /** Where it writes the address of each link and definition, angle brackets included, by offset in its file. */
+  /** Where it writes each link or definition address outside frontmatter, angle brackets included, by offset. */
   addresses?: Address[]
 }
 
@@ -71,15 +72,18 @@ interface Heading {
   level: number
   /** Its line in its file, 1-based. */
   line: number
+  inDetails?: true
 }
 
 interface Link {
   url: string
-  /** The block's text around the link, as read. */
+  /** The block's text around the link, as read; in frontmatter, the key and the value holding it. */
   context: string
+  /** Its own line, which its block's first line does not tell for a link in frontmatter. */
+  line?: number
 }
 
-type Part = Omit<Block, "id">
+export type Part = Omit<Block, "id">
 
 interface Drawn extends Omit<Heading, "line"> {
   offset: number
@@ -165,7 +169,8 @@ function parts(text: string): Part[] {
   return tree.children.map((node: RootContent, index) => {
     const { start, end } = node.position as NonNullable<RootContent["position"]>
     const language = node.type === "code" ? node.lang : undefined
-    const links = linksIn(node, definitions)
+    const links =
+      node.type === "yaml" ? frontmatterLinks(node.value, start.line) : linksIn(node, definitions)
     const shown = masked?.children[index]
     const read = shown?.type === node.type ? linksIn(shown, definitions) : []
 
@@ -189,11 +194,12 @@ function parts(text: string): Part[] {
       text: text.slice(start.offset, end.offset),
       ...(node.type === "heading" && { slug: headings[0]?.slug, title: headings[0]?.text }),
       ...(headings.length > 0 && {
-        headings: headings.map(({ text: title, id, level, offset }) => ({
+        headings: headings.map(({ text: title, id, level, offset, inDetails }) => ({
           text: title,
           ...(id !== undefined && { id }),
           level,
           line: lineAt(offset),
+          ...(inDetails && { inDetails }),
         })),
       }),
       ...(links.length > 0 && { links }),
@@ -234,7 +240,7 @@ function headingsOf(tree: Root, text: string): Drawn[] {
 
   const slugger = new GithubSlugger()
   const drawn: Drawn[] = []
-  const visit = (node: HastNodes) => {
+  const visit = (node: HastNodes, inDetails: boolean) => {
     if (node.type === "element" && /^h[1-6]$/.test(node.tagName)) {
       const id = typeof node.properties.id === "string" ? node.properties.id : undefined
       const title = textOf(node)
@@ -248,21 +254,33 @@ function headingsOf(tree: Root, text: string): Drawn[] {
           slug,
           id: id?.replace(/^user-content-/, ""),
           level: Number(node.tagName[1]),
+          ...(inDetails && { inDetails: true }),
         })
       }
     }
 
     if ("children" in node) {
-      node.children.forEach(visit)
+      const within = inDetails || (node.type === "element" && node.tagName === "details")
+      for (const child of node.children) {
+        visit(child, within)
+      }
     }
   }
 
-  visit(SANITIZE.runSync(hast, text) as HastRoot)
+  visit(SANITIZE.runSync(hast, text) as HastRoot, false)
   return drawn
 }
 
 function some(node: HastNodes, test: (node: HastNodes) => boolean): boolean {
   return test(node) || ("children" in node && node.children.some((child) => some(child, test)))
+}
+
+function frontmatterLinks(yaml: string, opening: number): Link[] {
+  return linksOf(yaml).map(({ url, context, span, offset }) => ({
+    url,
+    context: around(context, ...span),
+    line: opening + 1 + (yaml.slice(0, offset).match(/\n/g)?.length ?? 0),
+  }))
 }
 
 function linksIn(node: RootContent, definitions: Map<string, string>): Link[] {
@@ -361,13 +379,15 @@ export function plainOf(markdown: string): string {
   return plainText(MARKDOWN.runSync(MARKDOWN.parse(markdown), markdown) as Root)
 }
 
-/** The text of a document's one h1, in its own file; none with no h1, an empty one or several. */
+/** A document's one h1 in its own file, outside `<details>`; none if absent, empty or repeated. */
 export function titleOf(blocks: Block[]): string | undefined {
-  const top = blocks.flatMap((block) => (block.headings ?? []).filter(({ level }) => level === 1))
+  const top = blocks.flatMap((block) =>
+    (block.headings ?? []).filter(({ level, inDetails }) => level === 1 && !inDetails),
+  )
   return top.length === 1 && top[0].text !== "" ? top[0].text : undefined
 }
 
-/** Where markdown holds text its page reads no link in, by node type, and where it writes each link's address. */
+/** Where markdown holds text it reads no link in, by node type, and where it writes each link's address. */
 export function placesOf(markdown: string): Places {
   return placesIn(MARKDOWN.runSync(MARKDOWN.parse(markdown), markdown) as Root, markdown)
 }
@@ -484,31 +504,33 @@ export function unitsOf(text: string, kind: string): Unit[] | undefined {
 
 /** Dice's coefficient over character trigrams. */
 export function similarity(a: string, b: string): number {
-  const left = trigrams(a)
-  const right = trigrams(b)
-  let shared = 0
-
-  for (const gram of left) {
-    if (right.has(gram)) {
-      shared++
-    }
-  }
-
-  return left.size + right.size === 0 ? 1 : (2 * shared) / (left.size + right.size)
+  return dice(trigrams(a), trigrams(b))
 }
 
 /** Identity holds for unchanged text wherever it moved, then for similar text of one kind, best pairs first. */
-function identify(current: Part[], previous: Block[]): Block[] {
+export function identify(current: Part[], previous: Block[]): Block[] {
   const ids: (string | undefined)[] = current.map(() => undefined)
   const unused = new Set(previous)
+  const alike = new Map<string, Block[]>()
+  const grams = new Map<string, Set<string>>()
+  const gramsOf = (text: string) => {
+    let found = grams.get(text)
+
+    if (!found) {
+      found = trigrams(text)
+      grams.set(text, found)
+    }
+
+    return found
+  }
+
+  for (const block of previous) {
+    const key = `${block.kind}\0${normal(block.text, block.kind)}`
+    alike.set(key, [...(alike.get(key) ?? []), block])
+  }
 
   for (const [index, part] of current.entries()) {
-    const match = previous.find(
-      (block) =>
-        unused.has(block) &&
-        block.kind === part.kind &&
-        normal(block.text, part.kind) === normal(part.text, part.kind),
-    )
+    const match = alike.get(`${part.kind}\0${normal(part.text, part.kind)}`)?.shift()
 
     if (match) {
       ids[index] = match.id
@@ -521,7 +543,7 @@ function identify(current: Part[], previous: Block[]): Block[] {
       ? []
       : [...unused]
           .filter((block) => block.kind === part.kind)
-          .map((block) => ({ index, block, score: similarity(block.text, part.text) }))
+          .map((block) => ({ index, block, score: dice(gramsOf(block.text), gramsOf(part.text)) }))
           .filter(({ score }) => score >= SIMILAR),
   )
 
@@ -550,6 +572,18 @@ function fresh(part: Part, taken: Set<string>): string {
       return id
     }
   }
+}
+
+function dice(left: Set<string>, right: Set<string>): number {
+  let shared = 0
+
+  for (const gram of left) {
+    if (right.has(gram)) {
+      shared++
+    }
+  }
+
+  return left.size + right.size === 0 ? 1 : (2 * shared) / (left.size + right.size)
 }
 
 function trigrams(text: string): Set<string> {

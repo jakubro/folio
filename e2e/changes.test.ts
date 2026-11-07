@@ -1,4 +1,4 @@
-/** Headless Chromium run of folio's documented behaviour: what is new, catch-up, history, impact and digests. */
+/** Headless Chromium run of Folio's documented behaviour: what is new, catch-up, history, impact and digests. */
 
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
@@ -67,11 +67,17 @@ test("Never read, Open a changed page, Previous version, Clears by reading, Remo
 
     assert.deepEqual(shown, { hidden: false, removed: ["dawn"], added: ["sunrise"] })
     await page.waitForTimeout(2500)
+    assert.deepEqual(
+      await marksOf(page),
+      ["mark-changed", "mark-changed", "mark-new"],
+      "read blocks keep their marks until each has been on screen 5 s",
+    )
+    await page.waitForTimeout(3500)
     assert.deepEqual(await marksOf(page), ["mark-changed"], "the block being compared stays marked")
 
     await page.keyboard.press("Escape")
     await page.waitForTimeout(2500)
-    assert.deepEqual(await marksOf(page), [], "marks clear once read")
+    assert.deepEqual(await marksOf(page), [], "marks clear once read and shown long enough")
 
     writeIn(folder, {
       "duty.md": plan({
@@ -84,6 +90,8 @@ test("Never read, Open a changed page, Previous version, Clears by reading, Remo
     await page.waitForSelector(".read-mark.mark-changed")
     assert.deepEqual(await marksOf(page), ["mark-changed"], "a change to the open page is marked")
     await page.waitForTimeout(2500)
+    assert.deepEqual(await marksOf(page), ["mark-changed"], "a new mark stays its 5 s too")
+    await page.waitForTimeout(3500)
 
     writeIn(folder, {
       "duty.md": plan({
@@ -101,7 +109,7 @@ test("Never read, Open a changed page, Previous version, Clears by reading, Remo
       "Filters are cleaned every Monday.",
     )
     await page.keyboard.press("Escape")
-    await page.waitForTimeout(2500)
+    await page.waitForTimeout(6000)
     assert.deepEqual(await marksOf(page), [], "a removed block's tick clears once seen")
 
     writeIn(folder, {
@@ -126,6 +134,144 @@ test("Never read, Open a changed page, Previous version, Clears by reading, Remo
     assert.deepEqual([rewritten.marks, rewritten.removed], [[], []])
     assert.deepEqual(await marksOf(page), [], "spacing and padding mark nothing")
     await page.close()
+  } finally {
+    served.stop()
+    fs.rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("Open a changed page, Changed cells, Read as before, Scrolled away, Another tab: a change mark stays on screen long enough to be seen", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-linger-")))
+  const page = (top: string, row: string, far: string) =>
+    `# Linger\n\n${top}\n\n| Pump | Hours |\n|---|---|\n| north | ${row} |\n| south | 4 |\n\nFiller paragraph 0 about the pumps.\n\nFiller paragraph 1 about the pumps.\n\nFiller paragraph 2 about the pumps.\n\nFiller paragraph 3 about the pumps.\n\nFiller paragraph 4 about the pumps.\n\nFiller paragraph 5 about the pumps.\n\nFiller paragraph 6 about the pumps.\n\nFiller paragraph 7 about the pumps.\n\nFiller paragraph 8 about the pumps.\n\nFiller paragraph 9 about the pumps.\n\nFiller paragraph 10 about the pumps.\n\nFiller paragraph 11 about the pumps.\n\nFiller paragraph 12 about the pumps.\n\nFiller paragraph 13 about the pumps.\n\nFiller paragraph 14 about the pumps.\n\nFiller paragraph 15 about the pumps.\n\nFiller paragraph 16 about the pumps.\n\nFiller paragraph 17 about the pumps.\n\nFiller paragraph 18 about the pumps.\n\nFiller paragraph 19 about the pumps.\n\nFiller paragraph 20 about the pumps.\n\nFiller paragraph 21 about the pumps.\n\nFiller paragraph 22 about the pumps.\n\nFiller paragraph 23 about the pumps.\n\nFiller paragraph 24 about the pumps.\n\nFiller paragraph 25 about the pumps.\n\nFiller paragraph 26 about the pumps.\n\nFiller paragraph 27 about the pumps.\n\nFiller paragraph 28 about the pumps.\n\nFiller paragraph 29 about the pumps.\n\nFiller paragraph 30 about the pumps.\n\nFiller paragraph 31 about the pumps.\n\nFiller paragraph 32 about the pumps.\n\nFiller paragraph 33 about the pumps.\n\nFiller paragraph 34 about the pumps.\n\nFiller paragraph 35 about the pumps.\n\nFiller paragraph 36 about the pumps.\n\nFiller paragraph 37 about the pumps.\n\nFiller paragraph 38 about the pumps.\n\nFiller paragraph 39 about the pumps.\n\n${far}\n`
+  writeIn(folder, { "linger.md": page("The pump runs at night.", "6", "The far paragraph.") })
+  const served = await serveFolder(folder)
+  const shown = (tab: Page) =>
+    tab.$$eval(
+      ".read-mark:not([hidden]):not(.clearing)",
+      (found) =>
+        found.filter((mark) => {
+          const { top, bottom } = mark.getBoundingClientRect()
+          return bottom > 0 && top < innerHeight
+        }).length,
+    )
+  const unreadMarks = async () =>
+    ((await (await fetch(`${served.base}/linger.md?read`)).json()) as { marks: unknown[] }).marks
+      .length
+
+  try {
+    const first = await context.newPage()
+    await first.goto(`${served.base}/linger.md`)
+    await first.waitForSelector(".markdown-body > [data-folio-version]")
+    await first.evaluate(() => scrollTo(0, document.body.scrollHeight))
+    await first.waitForTimeout(2500)
+    await first.evaluate(() => scrollTo(0, 0))
+    await first.waitForTimeout(2500)
+    await first.close()
+
+    writeIn(folder, {
+      "linger.md": page("The pump runs at night, slowly.", "7", "The far paragraph, edited."),
+    })
+    await waitFor(async () => (await unreadMarks()) === 3)
+
+    const tab = await context.newPage()
+    await tab.goto(`${served.base}/linger.md`)
+    await tab.waitForSelector(".read-mark")
+    await tab.waitForTimeout(2200)
+    assert.equal(await shown(tab), 2, "the top two marks stay past the read")
+    assert.equal(await tab.locator(".cell-changed").count(), 1, "the changed cell stays tinted")
+    await waitFor(async () => (await unreadMarks()) === 1)
+
+    await tab.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "hidden",
+      })
+    })
+    await tab.waitForTimeout(4000)
+    await tab.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "visible",
+      })
+    })
+    assert.equal(await shown(tab), 2, "hidden time did not count")
+    await tab.waitForTimeout(3600)
+    assert.equal(await shown(tab), 0, "the top marks fade after 5 s on screen")
+    assert.equal(
+      await tab.locator(".cell-changed:not(.cell-clearing)").count(),
+      0,
+      "the cell fades with its bar",
+    )
+
+    await tab.evaluate(() => scrollTo(0, document.body.scrollHeight))
+    await tab.waitForTimeout(2200)
+    await tab.evaluate(() => scrollTo(0, 0))
+    await tab.waitForTimeout(3000)
+    await tab.evaluate(() => scrollTo(0, document.body.scrollHeight))
+    await tab.waitForTimeout(1000)
+    assert.equal(await shown(tab), 1, "a mark scrolled away keeps what is left of its time")
+    await tab.waitForTimeout(2800)
+    assert.equal(await shown(tab), 0, "and fades after 3 s more on screen")
+
+    await tab.reload()
+    await tab.waitForSelector(".markdown-body > [data-folio-version]")
+    await tab.waitForTimeout(500)
+    assert.equal(
+      await tab.locator(".read-mark").count(),
+      0,
+      "read as before: a reload shows no mark",
+    )
+    await tab.close()
+  } finally {
+    served.stop()
+    fs.rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("Several rows: a read row keeps its mark while the block's other changed rows stay unread", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-linger-rows-")))
+  const rows = (top: string, bottom: string) =>
+    Array.from(
+      { length: 60 },
+      (_, i) => `| pump ${i} | ${i === 0 ? top : i === 59 ? bottom : i} |`,
+    ).join("\n")
+  const page = (top: string, bottom: string, lead: string) =>
+    `# Rows\n\n${lead}\n\n| Pump | Hours |\n|---|---|\n${rows(top, bottom)}\n`
+  writeIn(folder, { "rows.md": page("6", "8", "The pumps run at night.") })
+  const served = await serveFolder(folder)
+  const visibleMarks = (tab: Page) =>
+    tab.$$eval(".read-mark:not([hidden]):not(.clearing)", (found) =>
+      found
+        .filter((mark) => {
+          const { top, bottom } = mark.getBoundingClientRect()
+          return bottom > 0 && top < innerHeight
+        })
+        .map((mark) => (mark as HTMLElement).dataset.folioPart ?? "whole"),
+    )
+
+  try {
+    const first = await context.newPage()
+    await first.goto(`${served.base}/rows.md`)
+    await first.waitForSelector(".markdown-body > [data-folio-version]")
+    await first.evaluate(() => scrollTo(0, document.body.scrollHeight))
+    await first.waitForTimeout(2500)
+    await first.evaluate(() => scrollTo(0, 0))
+    await first.waitForTimeout(2500)
+    await first.close()
+
+    writeIn(folder, { "rows.md": page("7", "9", "The pumps run at night, slowly.") })
+    const tab = await context.newPage()
+    await tab.goto(`${served.base}/rows.md`)
+    await tab.waitForSelector(".read-mark")
+    await tab.waitForTimeout(3000)
+    assert.equal(
+      (await visibleMarks(tab)).length,
+      2,
+      "the read top row keeps its bar beside the read paragraph's, the far row still unread",
+    )
+
+    await tab.close()
   } finally {
     served.stop()
     fs.rmSync(folder, { recursive: true, force: true })
@@ -186,13 +332,18 @@ test("Tree marks, Catch-up view, Open from it, Empties by reading, Unread docume
       entries: [...document.querySelectorAll(".catch-up li")].map((item) =>
         item.textContent?.replace(/changed, .*/, "changed"),
       ),
-      badge: (document.querySelector(".catch-up-link") as HTMLElement).dataset.count,
+      badge: getComputedStyle(document.querySelector(".catch-up-link") as Element, "::after")
+        .content,
+      tooltip: (document.querySelector(".catch-up-link") as HTMLElement).title,
+      outline: [...document.querySelectorAll(".outline a")].map((link) => link.textContent),
     }))
 
     assert.deepEqual(view, {
       title: "Catch up",
       entries: ["notes/c.md1 block changed", "docs/a.md2 blocks changed"],
-      badge: "2",
+      badge: "none",
+      tooltip: "Catch up: 2 documents changed since you read them",
+      outline: ["Since yesterday"],
     })
     await page.waitForSelector('.tree li[data-path="docs"] > .tree-row.holds-changed')
     await page.waitForSelector('.tree li[data-path="notes"] > .tree-row.holds-changed')
@@ -200,6 +351,13 @@ test("Tree marks, Catch-up view, Open from it, Empties by reading, Unread docume
 
     writeIn(folder, { "docs/b.md": text("beta").replace("valves", "gates") })
     await page.waitForFunction(() => document.querySelectorAll(".catch-up li").length === 3)
+    await page.waitForFunction(() =>
+      (document.querySelector(".catch-up-link") as HTMLElement).title.includes(" 3 documents"),
+    )
+    assert.equal(
+      await page.$eval(".catch-up-link", (link) => getComputedStyle(link, "::after").content),
+      "none",
+    )
 
     await page.click('.catch-up a[href="/notes/c.md"]')
     await page.waitForSelector(".read-mark.mark-changed")
@@ -440,7 +598,7 @@ test("Timeline, Past version, Compare, A block's past, Nested repositories, No h
     assert.match(
       (await json(`scratch/loose.md?version=${loose.versions[1].id}`)).text,
       /First draft/,
-      "an untracked file keeps the text folio first knew",
+      "an untracked file keeps the text Folio first knew",
     )
 
     const report = await context.newPage()
@@ -709,10 +867,12 @@ test("Pick a period, Contents, Busy periods, Open from it, Freeze, Folder untouc
       open: [...document.querySelectorAll("details.digest-folder")].every(
         (d) => (d as HTMLDetailsElement).open,
       ),
+      outline: [...document.querySelectorAll(".outline a")].map((link) => link.textContent),
     }))
 
     assert.deepEqual(contents, {
       title: "Digest",
+      outline: ["pumps - 2 documents", "valves - 1 document"],
       folders: ["pumps - 2 documents", "valves - 1 document"],
       documents: ["pumps/gone.md removed", "pumps/old.md changed", "valves/new.md created"],
       removed: [],
@@ -720,7 +880,12 @@ test("Pick a period, Contents, Busy periods, Open from it, Freeze, Folder untouc
       open: true,
     })
 
-    await page.goto(`${served.base}/?digest&from=2024-05-09&to=2024-05-11`)
+    await page.fill(".digest-periods input:nth-of-type(1)", "2024-05-09")
+    await page.fill(".digest-periods input:nth-of-type(2)", "2024-05-11")
+    await Promise.all([
+      page.waitForURL(/\?digest&from=2024-05-09&to=2024-05-11$/),
+      page.click(".digest-periods button"),
+    ])
     await page.waitForSelector(".digest-folder")
     assert.equal(
       await page.$$eval("details.digest-folder", (found) =>
@@ -1092,7 +1257,7 @@ test("Many rows, Folded, Sorted and filtered, Read row by row: a long table mark
 
     await page.hover(".markdown-body table")
     await page.click(".table-control")
-    await page.fill('.table-panel input[placeholder="Filter rows"]', "run-1")
+    await page.fill('.table-panel input[aria-label="Filter rows"]', "run-1")
     await page.waitForTimeout(300)
     assert.deepEqual(
       (await aligned(page)).sort(),
@@ -1265,6 +1430,503 @@ test("List item, Code lines, Figure in a cell, Included, New table, Drawn blocks
       /Its data changed since you read it: data\.csv#0\.n/,
     )
     await page.close()
+  } finally {
+    served.stop()
+    fs.rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("Fold, Unfold, A closed details, Not read while folded: a folded section keeps its change marks to itself", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-folded-")))
+  const pumps = (north: string, spare: string) =>
+    [
+      "# Pumps",
+      "## North",
+      `The north pump ${north}.`,
+      `Its valve ${north} too.`,
+      "## South",
+      "The south pump is idle.",
+      "<details>\n<summary>Spares</summary>",
+      `The spare gasket ${spare}.`,
+      "</details>",
+      "Last line.",
+    ].join("\n\n")
+  writeIn(folder, { "pumps.md": pumps("runs at night", "sits in the shed") })
+  const served = await serveFolder(folder)
+  const open = async () => {
+    const page = await context.newPage()
+    await page.goto(`${served.base}/pumps.md`)
+    await page.waitForSelector(".markdown-body > [data-folio-version]")
+    return page
+  }
+  const shown = (page: Page) =>
+    page.evaluate(() => {
+      const top = (element: Element | null | undefined) =>
+        element ? Math.round(element.getBoundingClientRect().top + scrollY) : null
+      const marks = [...document.querySelectorAll<HTMLElement>(".read-mark:not([hidden])")]
+      const heading = [...document.querySelectorAll("h2")].find((h) => h.textContent === "North")
+
+      return {
+        folded: marks
+          .filter((mark) => mark.matches(".mark-folded"))
+          .map((mark) => Math.round(Number.parseFloat(mark.style.top))),
+        changed: marks.filter((mark) => mark.matches(".mark-changed:not(.clearing)")).length,
+        north: top(heading),
+        summary: top(document.querySelector(".markdown-body summary")),
+      }
+    })
+  const fold = (page: Page) =>
+    page.$eval("h2#north .fold-toggle", (control) => (control as HTMLElement).click())
+
+  try {
+    let page = await open()
+    await page.$eval(".markdown-body details", (details) => {
+      ;(details as HTMLDetailsElement).open = true
+    })
+    await page.waitForTimeout(2500)
+    await page.close()
+
+    writeIn(folder, { "pumps.md": pumps("runs at dawn", "sits in the barn") })
+    await waitFor(async () => {
+      const response = await fetch(`${served.base}/pumps.md?read`)
+      return ((await response.json()) as { marks: unknown[] }).marks.length === 3
+    })
+    page = await open()
+    await page.waitForSelector(".read-mark.mark-changed")
+    await fold(page)
+    await page.waitForSelector(".read-mark.mark-folded:not([hidden]) >> nth=1")
+
+    const folded = await shown(page)
+    assert.deepEqual(folded.folded.sort(), [folded.north, folded.summary].sort())
+    assert.equal(folded.changed, 0, "no mark shows outside a folded section")
+
+    await page.waitForTimeout(10_000)
+    await fold(page)
+    await page.waitForFunction(
+      () => document.querySelectorAll(".read-mark.mark-folded").length === 1,
+    )
+    const unfolded = await shown(page)
+    assert.deepEqual(unfolded.folded, [unfolded.summary])
+    assert.equal(unfolded.changed, 2, "the marks inside are still there once unfolded")
+
+    await page.waitForTimeout(3000)
+    assert.equal((await shown(page)).changed, 2, "they fade only after their own time on screen")
+    await page.waitForTimeout(4500)
+    assert.equal((await shown(page)).changed, 0)
+
+    await page.$eval(".markdown-body details", (details) => {
+      ;(details as HTMLDetailsElement).open = true
+    })
+    await page.waitForFunction(
+      () => document.querySelectorAll(".read-mark.mark-folded").length === 0,
+    )
+    const opened = await page.evaluate(() => {
+      const mark = document.querySelector<HTMLElement>(".read-mark.mark-changed:not([hidden])")
+      const spare = [...document.querySelectorAll(".markdown-body details p")].find((p) =>
+        p.textContent?.includes("barn"),
+      )
+      return [
+        Math.round(Number.parseFloat(mark?.style.top ?? "0")),
+        Math.round((spare?.getBoundingClientRect().top ?? 0) + scrollY),
+      ]
+    })
+    assert.equal(opened[0], opened[1], "the block inside the opened details carries its own bar")
+    await page.close()
+  } finally {
+    served.stop()
+    fs.rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("A change while folded, A removed block, Nested: a folded heading tells of what changed inside", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-nested-")))
+  const pumps = (gauge: string, valve = "Its valve closes at noon.") =>
+    [
+      "# Pumps",
+      "## North",
+      "The north pump runs at night.",
+      valve,
+      "### Gauges",
+      `The gauge ${gauge}.`,
+      "## South",
+      "The south pump is idle.",
+    ]
+      .filter(Boolean)
+      .join("\n\n")
+  writeIn(folder, { "pumps.md": pumps("reads two bar") })
+  const served = await serveFolder(folder)
+  const markTops = (page: Page, selector: string) =>
+    page.$$eval(selector, (marks) =>
+      marks.map((mark) => Math.round(Number.parseFloat((mark as HTMLElement).style.top))),
+    )
+  const headingTop = (page: Page, id: string) =>
+    page.$eval(`#${id}`, (h) => Math.round(h.getBoundingClientRect().top + scrollY))
+  const fold = (page: Page, id: string) =>
+    page.$eval(`h2#${id} .fold-toggle, h3#${id} .fold-toggle`, (control) =>
+      (control as HTMLElement).click(),
+    )
+
+  try {
+    const page = await context.newPage()
+    await page.goto(`${served.base}/pumps.md`)
+    await page.waitForSelector(".markdown-body > [data-folio-version]")
+    await page.waitForTimeout(2500)
+    await fold(page, "gauges")
+    await fold(page, "north")
+
+    writeIn(folder, { "pumps.md": pumps("reads three bar") })
+    await page.waitForSelector(".read-mark.mark-folded:not([hidden])")
+    assert.deepEqual(await markTops(page, ".read-mark.mark-folded:not([hidden])"), [
+      await headingTop(page, "north"),
+    ])
+    assert.deepEqual(await markTops(page, ".read-mark.mark-changed:not([hidden])"), [])
+
+    writeIn(folder, { "pumps.md": pumps("reads three bar", "") })
+    await waitFor(async () => {
+      const response = await fetch(`${served.base}/pumps.md?read`)
+      return ((await response.json()) as { removed: unknown[] }).removed.length === 1
+    })
+    await page.waitForTimeout(500)
+    assert.deepEqual(await markTops(page, ".read-mark.mark-folded:not([hidden])"), [
+      await headingTop(page, "north"),
+    ])
+    assert.deepEqual(await markTops(page, ".read-mark.mark-removed:not([hidden])"), [])
+
+    await fold(page, "north")
+    await page.waitForSelector(".read-mark.mark-removed:not([hidden])")
+    assert.deepEqual(await markTops(page, ".read-mark.mark-folded:not([hidden])"), [
+      await headingTop(page, "gauges"),
+    ])
+    await page.close()
+  } finally {
+    served.stop()
+    fs.rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("A removal after a closed details, A details without a summary, Nested details: marks of blocks written in HTML land where they belong", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-html-marks-")))
+  const compact = (extra: boolean) =>
+    [
+      "# Compact",
+      "The pump is idle.",
+      "<details>\n<summary>Spares</summary>\nA gasket and a seal.\n</details>",
+      ...(extra ? ["The valve closes at noon."] : []),
+      "Last line.",
+    ].join("\n\n")
+  const bare = (spare: string) =>
+    [
+      "# Bare",
+      "The pump is idle.",
+      "<details>",
+      `The spare gasket ${spare}.`,
+      "</details>",
+      "Last line.",
+    ].join("\n\n")
+  writeIn(folder, {
+    "compact.md": compact(true),
+    "bare.md": bare("sits in the shed"),
+    "nested.md": [
+      "# Nested",
+      "<details open>\n<summary>Outer</summary>",
+      "Outer text.",
+      "<details open>\n<summary>Inner</summary>",
+      "Inner text.",
+      "</details>",
+      "</details>",
+    ].join("\n\n"),
+  })
+  const served = await serveFolder(folder)
+  const read = async (name: string, open = false) => {
+    const page = await context.newPage()
+    await page.goto(`${served.base}/${name}`)
+    await page.waitForSelector(".markdown-body > [data-folio-version]")
+
+    if (open) {
+      await page.$eval(".markdown-body details", (details) => {
+        ;(details as HTMLDetailsElement).open = true
+      })
+    }
+
+    await page.waitForTimeout(2500)
+    await page.close()
+  }
+  const marked = async (name: string, kind: "marks" | "removed") =>
+    waitFor(async () => {
+      const response = await fetch(`${served.base}/${name}?read`)
+      return ((await response.json()) as Record<string, unknown[]>)[kind].length === 1
+    })
+  const shown = async (name: string) => {
+    const page = await context.newPage()
+    await page.goto(`${served.base}/${name}`)
+    await page.waitForSelector(".markdown-body > [data-folio-version]")
+    await page.waitForTimeout(800)
+    return page
+  }
+
+  try {
+    const nested = await shown("nested.md")
+    assert.equal(
+      await nested.$eval(
+        ".markdown-body details details p",
+        (p) => (p as HTMLElement).dataset.folioId !== undefined,
+      ),
+      true,
+      "a block inside a nested details is a block of the page",
+    )
+    await nested.close()
+
+    await read("compact.md")
+    writeIn(folder, { "compact.md": compact(false) })
+    await marked("compact.md", "removed")
+    const page = await shown("compact.md")
+    await page.waitForSelector(".read-mark.mark-removed:not([hidden])")
+    assert.equal(await page.$$eval(".read-mark.mark-folded", (bars) => bars.length), 0)
+    await page.close()
+
+    await read("bare.md", true)
+    writeIn(folder, { "bare.md": bare("sits in the barn") })
+    await marked("bare.md", "marks")
+    const closed = await shown("bare.md")
+    const tops = await closed.evaluate(() => ({
+      bars: [...document.querySelectorAll<HTMLElement>(".read-mark:not([hidden])")].map(
+        (bar) => `${bar.className} ${Math.round(Number.parseFloat(bar.style.top))}`,
+      ),
+      details: Math.round(
+        (document.querySelector(".markdown-body details")?.getBoundingClientRect().top ?? 0) +
+          scrollY,
+      ),
+    }))
+    assert.deepEqual(tops.bars, [`read-mark mark-folded ${tops.details}`])
+    await closed.close()
+  } finally {
+    served.stop()
+    fs.rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("Rows in a folded section, A details on a long page: marks drawn while folded or parsing keep their parts and blocks", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-parsed-marks-")))
+  const table = (hours: string) =>
+    [
+      "# Pumps",
+      "## North",
+      `| Pump | Hours |\n|---|---|\n| north | ${hours} |\n| south | 4 |\n| east | 2 |`,
+      "## South",
+      "The south pump is idle.",
+    ].join("\n\n")
+  const filler = Array.from({ length: 4000 }, (_, k) => `Paragraph ${k} of the filler text.`)
+  const long = (spare: string) =>
+    [
+      "# Big",
+      "<details open>\n<summary>Spares</summary>",
+      `The spare gasket ${spare}.`,
+      "</details>",
+      ...filler,
+    ].join("\n\n")
+  writeIn(folder, { "pumps.md": table("6"), "big.md": long("sits in the shed") })
+  const served = await serveFolder(folder)
+
+  try {
+    const page = await context.newPage()
+    await page.goto(`${served.base}/pumps.md`)
+    await page.waitForSelector(".markdown-body > [data-folio-version]")
+    await page.waitForTimeout(2500)
+    await page.$eval("h2#north .fold-toggle", (control) => (control as HTMLElement).click())
+    writeIn(folder, { "pumps.md": table("7") })
+    await page.waitForSelector(".read-mark.mark-folded:not([hidden])")
+    await page.$eval("h2#north .fold-toggle", (control) => (control as HTMLElement).click())
+    await page.waitForSelector(".read-mark.mark-changed:not([hidden])")
+    assert.deepEqual(
+      await page.$$eval(".read-mark.mark-changed:not([hidden])", (bars) =>
+        bars.map((bar) => (bar as HTMLElement).dataset.folioPart ?? "whole"),
+      ),
+      ["1"],
+      "the changed row keeps its own bar once the section unfolds",
+    )
+    await page.close()
+
+    const big = await context.newPage()
+    await big.goto(`${served.base}/big.md`)
+    await big.waitForSelector(".markdown-body > [data-folio-version]")
+    await big.waitForFunction(
+      () => document.querySelector<HTMLElement>(".markdown-body details p")?.dataset.folioId,
+    )
+    await big.waitForTimeout(2500)
+    writeIn(folder, { "big.md": long("sits in the barn") })
+    await waitFor(async () => {
+      const response = await fetch(`${served.base}/big.md?read`)
+      return ((await response.json()) as { marks: unknown[] }).marks.length === 1
+    })
+    await big.waitForFunction(
+      () =>
+        document.querySelector<HTMLElement>(".markdown-body details p")?.dataset.folioId &&
+        document.querySelector(".read-mark.mark-changed:not([hidden])"),
+      undefined,
+      { timeout: 15000 },
+    )
+    await big.close()
+  } finally {
+    served.stop()
+    fs.rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("A section folded inside a details, A removal under a summary's heading, A folded heading changed itself: folds inside HTML keep their blocks and bars", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-html-folds-")))
+  const spares = (top: string[] = [], last = "Last line.") =>
+    [
+      "# Spares",
+      ...top,
+      "Intro text.",
+      "<details open>\n<summary>Spares</summary>",
+      "## Inner",
+      "The spare **gasket** sits in the shed.",
+      "A second *inner* line.",
+      "</details>",
+      last,
+      "First note[^a] and second[^b].",
+      "[^a]: Note a.",
+      "[^b]: Note b.",
+    ].join("\n\n")
+  const summary = (only: boolean, heading = "North", inside = "The north pump runs.") =>
+    [
+      "# Summary",
+      "Intro text.",
+      "<details open>\n<summary><h2>Parts</h2></summary>",
+      ...(only ? ["The spare gasket sits in the shed."] : []),
+      "</details>",
+      `## ${heading}`,
+      inside,
+      "## South",
+      "Last line.",
+    ].join("\n\n")
+  const opening = (first: boolean) =>
+    [
+      "# Opening",
+      "<details open>\n<summary>Parts</summary>",
+      ...(first ? ["First inner line."] : []),
+      "Second inner line.",
+      "</details>",
+      "After the details.",
+    ].join("\n\n")
+  writeIn(folder, {
+    "spares.md": spares(),
+    "summary.md": summary(true),
+    "opening.md": opening(true),
+  })
+  const served = await serveFolder(folder)
+
+  try {
+    const page = await context.newPage()
+    await page.goto(`${served.base}/spares.md`)
+    await page.waitForFunction(
+      () => document.querySelector<HTMLElement>(".markdown-body details p")?.dataset.folioId,
+    )
+    const gasket = () =>
+      page.$eval(
+        ".markdown-body details p:has(strong)",
+        (p) => `${(p as HTMLElement).dataset.folioId} ${(p as HTMLElement).dataset.folioLines}`,
+      )
+    const [id, lines] = (await gasket()).split(" ")
+    const [from, to] = lines.split("-").map(Number)
+    await page.$eval("h2#inner .fold-toggle", (control) => (control as HTMLElement).click())
+    writeIn(folder, { "spares.md": spares(["Top added."], "Last line changed.") })
+    await waitText(page, "Last line changed.")
+    await page.waitForTimeout(1500)
+    assert.equal(await gasket(), `${id} ${from + 2}-${to + 2}`)
+    assert.equal(
+      await page.$$eval(".markdown-body .fold[data-folio-id]", (found) => found.length),
+      0,
+    )
+    assert.equal(
+      await page.$$eval(
+        ".markdown-body section.footnotes li[data-folio-id]",
+        (found) => found.length,
+      ),
+      0,
+    )
+    await page.close()
+
+    const reading = await context.newPage()
+    await reading.goto(`${served.base}/summary.md`)
+    await reading.waitForSelector(".markdown-body > [data-folio-version]")
+    await reading.waitForTimeout(2500)
+    await reading.close()
+    writeIn(folder, { "summary.md": summary(false, "Northern", "The north pump stops.") })
+    await waitFor(async () => {
+      const read = (await (await fetch(`${served.base}/summary.md?read`)).json()) as Record<
+        string,
+        unknown[]
+      >
+      return read.removed.length === 1 && read.marks.length === 2
+    })
+    const folded = await context.newPage()
+    await folded.goto(`${served.base}/summary.md`)
+    await folded.waitForSelector(".read-mark.mark-removed")
+    await folded.$eval(".markdown-body summary h2 .fold-toggle", (control) =>
+      (control as HTMLElement).click(),
+    )
+    await folded.$eval(".markdown-body h2#northern .fold-toggle", (control) =>
+      (control as HTMLElement).click(),
+    )
+    await folded.waitForTimeout(500)
+    const shown = await folded.evaluate(() => {
+      const at = (selector: string) =>
+        Math.round((document.querySelector(selector)?.getBoundingClientRect().top ?? 0) + scrollY)
+      const changed = document.querySelector<HTMLElement>(".read-mark.mark-changed:not([hidden])")
+      const box = changed?.getBoundingClientRect()
+      return {
+        bars: [...document.querySelectorAll<HTMLElement>(".read-mark:not([hidden])")]
+          .map((bar) => `${bar.className} ${Math.round(Number.parseFloat(bar.style.top))}`)
+          .sort(),
+        parts: at(".markdown-body summary h2"),
+        northern: at(".markdown-body h2#northern"),
+        clicked:
+          box &&
+          document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2) === changed,
+      }
+    })
+    assert.deepEqual(
+      shown.bars,
+      [
+        `read-mark mark-changed ${shown.northern}`,
+        `read-mark mark-folded ${shown.northern}`,
+        `read-mark mark-folded ${shown.parts}`,
+      ].sort(),
+    )
+    assert.equal(shown.clicked, true, "the folded heading's own bar is the one under the pointer")
+    await folded.close()
+
+    const first = await context.newPage()
+    await first.goto(`${served.base}/opening.md`)
+    await first.waitForSelector(".markdown-body > [data-folio-version]")
+    await first.waitForTimeout(2500)
+    await first.close()
+    writeIn(folder, { "opening.md": opening(false) })
+    await waitFor(async () => {
+      const read = (await (await fetch(`${served.base}/opening.md?read`)).json()) as Record<
+        string,
+        unknown[]
+      >
+      return read.removed.length === 1
+    })
+    const gone = await context.newPage()
+    await gone.goto(`${served.base}/opening.md`)
+    await gone.waitForSelector(".read-mark.mark-removed:not([hidden])")
+    const where = await gone.evaluate(() => {
+      const at = (selector: string) => document.querySelector(selector)?.getBoundingClientRect()
+      return {
+        tick: at(".read-mark.mark-removed")?.top ?? 0,
+        summary: at(".markdown-body summary")?.bottom ?? 0,
+        second: at(".markdown-body details p")?.top ?? 0,
+      }
+    })
+    assert.ok(
+      where.summary <= where.tick && where.tick < where.second,
+      `the tick of a block gone from a details' start sits at ${where.tick}, outside ${where.summary}-${where.second}`,
+    )
+    await gone.close()
   } finally {
     served.stop()
     fs.rmSync(folder, { recursive: true, force: true })

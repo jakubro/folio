@@ -23,7 +23,9 @@ const GROUPS: Record<string, string> = {
 /** Past this many problems in a kind, its folders open folded. */
 const FOLDED_PAST = 20
 
-let shown: { version: string; problems: Map<string, Problem>; article: HTMLElement } | undefined
+let shown:
+  | { version: string; ready: boolean; problems: Map<string, Problem>; article: HTMLElement }
+  | undefined
 
 export async function healthPage(): Promise<{ version: string; article: HTMLElement } | undefined> {
   const response = await fetch("/?health-data")
@@ -39,13 +41,15 @@ export async function healthPage(): Promise<{ version: string; article: HTMLElem
     Object.assign(document.createElement("h1"), { textContent: "Health" }),
     document.createElement("p"),
   )
-  shown = { version: state.version, problems: keyed(state.problems), article }
+  shown = { version: state.version, ready: state.ready, problems: keyed(state.problems), article }
   draw(state.ready ? Object.keys(GROUPS) : [], state.ready)
   return { version: state.version, article }
 }
 
 /** Fetch what changed since the version shown and redraw only the kinds it touched. */
-export async function updateHealth(): Promise<string | undefined> {
+export async function updateHealth(
+  around: (redraw: () => void) => void,
+): Promise<string | undefined> {
   const held = shown
 
   if (!held) {
@@ -81,8 +85,15 @@ export async function updateHealth(): Promise<string | undefined> {
   }
 
   held.version = answer.version
-  draw([...kinds], answer.ready)
+  held.ready = answer.ready
+  around(() => draw([...kinds], answer.ready))
   return held.version
+}
+
+export function heldHealth(): HealthState | undefined {
+  return (
+    shown && { ready: shown.ready, version: shown.version, problems: [...shown.problems.values()] }
+  )
 }
 
 function draw(kinds: string[], ready: boolean): void {
@@ -94,7 +105,7 @@ function draw(kinds: string[], ready: boolean): void {
   const total = article.children[1] as HTMLElement
 
   total.textContent = !ready
-    ? "Not known yet: folio is still reading the folder."
+    ? "Not known yet: Folio is still reading the folder."
     : problems.size === 0
       ? "Nothing is wrong in the folder."
       : `${problems.size} ${problems.size === 1 ? "problem" : "problems"} in the folder.`
@@ -127,11 +138,12 @@ function sectionOf(kind: string, found: Problem[], old: HTMLDetailsElement | nul
     open: old?.open ?? true,
   })
   section.dataset.kind = kind
-  section.append(
-    Object.assign(document.createElement("summary"), {
-      textContent: `${GROUPS[kind]} - ${found.length}`,
-    }),
-  )
+  const summary = Object.assign(document.createElement("summary"), {
+    textContent: `${GROUPS[kind]} - ${found.length}`,
+    id: `kind-${kind}`,
+  })
+  summary.dataset.outline = "2"
+  section.append(summary)
 
   for (const [folder, entries] of byFolder(found)) {
     const was = old?.querySelector<HTMLDetailsElement>(

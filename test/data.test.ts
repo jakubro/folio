@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite"
 import { after, before, mock, test } from "node:test"
 import { DuckDBInstance } from "@duckdb/node-api"
 import { numberOf } from "../src/client/tableviews.ts"
-import { type Comparison, Data } from "../src/server/data.ts"
+import { type Comparison, Data, type Search, urgently } from "../src/server/data.ts"
 
 const slow = new Data(
   fs.realpathSync(os.tmpdir()),
@@ -272,11 +272,11 @@ test("a sort orders a whole file or table of every reader, as many rows as asked
     ["many.sqlite", "spread"],
   ]) {
     const largest = await data.page(path.join(folder, name), "v1", table, {
-      order: { column: 0, descending: true },
+      order: [{ column: 0, descending: true }],
       rows: 5000,
     })
     const smallest = await data.page(path.join(folder, name), "v1", table, {
-      order: { column: 0, descending: false },
+      order: [{ column: 0, descending: false }],
       rows: 3,
     })
 
@@ -311,10 +311,10 @@ test("a page of every reader pages on from where asked and finds text in the who
     const page = (read: Parameters<Data["page"]>[3]) =>
       data.page(path.join(folder, name), "v1", table, read)
     const second = await page({ offset: 200 })
-    const sorted = await page({ order: { column: 0, descending: true }, offset: 200 })
-    const found = await page({ search: { text: "W12", columns: [], hidden: [] } })
-    const column = await page({ search: { text: "", columns: [[0, "600"]], hidden: [] } })
-    const shown = await page({ search: { text: "1", columns: [], hidden: [0] }, rows: 5000 })
+    const sorted = await page({ order: [{ column: 0, descending: true }], offset: 200 })
+    const found = await page({ search: searchOf("W12") })
+    const column = await page({ search: searchOf("", [[0, "600"]]) })
+    const shown = await page({ search: searchOf("1", [], [0]), rows: 5000 })
 
     assert.equal(second.grid?.rows.length, 200, name)
     assert.deepEqual(second.grid?.rows[0], [(200 * 7919) % 6007, "w200"], name)
@@ -369,7 +369,7 @@ test("a sort of repeated values pages through every row once, in that column's o
 
     for (let offset = 0; offset < 6000; offset += 200) {
       const page = await data.page(path.join(folder, name), "v1", table, {
-        order: { column: 1, descending: false },
+        order: [{ column: 1, descending: false }],
         offset,
       })
       seen.push(...((page.grid?.rows ?? []) as [number, string][]))
@@ -381,6 +381,66 @@ test("a sort of repeated values pages through every row once, in that column's o
       [...seen.map(([, kind]) => kind)].sort(),
       name,
     )
+  }
+})
+
+test("a sort by several columns orders a whole file or table of every reader by each level in turn", async () => {
+  const folder = file("levels")
+  fs.mkdirSync(folder, { recursive: true })
+  const rows = Array.from({ length: 900 }, (_, i) => ({
+    id: i,
+    kind: ["b", "c", "a"][i % 3],
+    size: ["10", "9", "", "100"][i % 4],
+  }))
+  fs.writeFileSync(
+    path.join(folder, "rows.jsonl"),
+    rows.map((row) => `${JSON.stringify(row)}\n`).join(""),
+  )
+  const duck = await DuckDBInstance.create(path.join(folder, "rows.duckdb"))
+  const connection = await duck.connect()
+  await connection.run(
+    `create table spread as select * from read_json('${path.join(folder, "rows.jsonl")}', columns = {id: 'integer', kind: 'varchar', size: 'varchar'})`,
+  )
+  await connection.run(`copy spread to '${path.join(folder, "rows.csv")}' (format csv, header)`)
+  await connection.run(`copy spread to '${path.join(folder, "rows.parquet")}' (format parquet)`)
+  connection.closeSync()
+  duck.closeSync()
+  const sqlite = new DatabaseSync(path.join(folder, "rows.sqlite"))
+  sqlite.exec(
+    `begin; create table spread (id integer, kind text, size text); ${rows.map(({ id, kind, size }) => `insert into spread values (${id}, '${kind}', '${size}');`).join(" ")} commit;`,
+  )
+  sqlite.close()
+  const wanted = [...rows]
+    .sort(
+      (a, b) =>
+        a.kind.localeCompare(b.kind) ||
+        Number(a.size === "") - Number(b.size === "") ||
+        Number(b.size) - Number(a.size) ||
+        a.id - b.id,
+    )
+    .map(({ id }) => id)
+
+  for (const [name, table] of [
+    ["rows.csv"],
+    ["rows.jsonl"],
+    ["rows.parquet"],
+    ["rows.duckdb", "spread"],
+    ["rows.sqlite", "spread"],
+  ]) {
+    const seen: number[] = []
+
+    for (let offset = 0; offset < 900; offset += 200) {
+      const page = await data.page(path.join(folder, name), "v1", table, {
+        order: [
+          { column: 1, descending: false },
+          { column: 2, descending: true },
+        ],
+        offset,
+      })
+      seen.push(...(page.grid?.rows ?? []).map(([id]) => Number(id)))
+    }
+
+    assert.deepEqual(seen, wanted, name)
   }
 })
 
@@ -397,13 +457,347 @@ test("a search finds a time as its cell shows it, and a nested value by its JSON
   const found = async (text: string) =>
     (
       await data.page(path.join(folder, "times.parquet"), "v1", undefined, {
-        search: { text, columns: [], hidden: [] },
+        search: searchOf(text),
       })
     ).grid?.total
 
   assert.equal(await found("T10:00"), 2000)
   assert.equal(await found("2024-01-01T09:00:00.000Z"), 2000)
   assert.equal(await found('"tag":"k3"'), 667)
+})
+
+test("text in quotes keeps the values equal to it as the page writes them, in every reader, but not in a list of records", async () => {
+  const folder = await spread("quoted")
+
+  for (const [name, table] of [
+    ["many.csv"],
+    ["many.tsv"],
+    ["many.jsonl"],
+    ["many.parquet"],
+    ["many.duckdb", "spread"],
+    ["many.sqlite", "spread"],
+  ]) {
+    const total = async (text: string, columns: [number, string][] = [], literal = false) =>
+      (
+        await data.page(path.join(folder, name), "v1", table, {
+          search: { ...searchOf(text, columns), literal },
+        })
+      ).grid?.total
+
+    assert.deepEqual(
+      [
+        await total('"w12"'),
+        await total(' "W12 " '),
+        await total('"w12'),
+        await total("", [[1, '"w600"']]),
+        await total("", [[0, '"600"']]),
+        await total("", [[0, "600"]]),
+        await total('"w12"', [[0, '"5"']]),
+        await total("", [[-1, '"w12"']], true),
+      ],
+      [1, 1, 111, 1, 1, 13, 0, 0],
+      name,
+    )
+  }
+})
+
+test("a filter reads escapes, wildcards and values parted by bars, in every reader", async () => {
+  const folder = file("patterns")
+  fs.mkdirSync(folder, { recursive: true })
+  const stations = ["north", "south", "east", "ninth", "month"]
+  const statuses = ["open", "review", "closed", "reopened"]
+  // A CSV or TSV page reads a doubled quote inside a quoted field as two quotes, so its filter asks for two.
+  const notes = ['say "hi"', "5*3", "a|b", "C:\\Users", "a\\b", '"open"', '"id": 1', "50%_off"]
+  const rows = stations.flatMap((station) =>
+    statuses.flatMap((status) => notes.map((note) => [station, status, note])),
+  )
+  fs.writeFileSync(
+    path.join(folder, "rows.jsonl"),
+    rows
+      .map(([station, status, note]) => `${JSON.stringify({ station, status, note })}\n`)
+      .join(""),
+  )
+  const duck = await DuckDBInstance.create(path.join(folder, "rows.duckdb"))
+  const connection = await duck.connect()
+  await connection.run(
+    `create table spread as select * from read_json('${path.join(folder, "rows.jsonl")}')`,
+  )
+
+  for (const [name, options] of [
+    ["rows.csv", "format csv, header"],
+    ["rows.tsv", "format csv, header, delimiter '\t'"],
+    ["rows.parquet", "format parquet"],
+  ]) {
+    await connection.run(`copy spread to '${path.join(folder, name)}' (${options})`)
+  }
+
+  connection.closeSync()
+  duck.closeSync()
+  const sqlite = new DatabaseSync(path.join(folder, "rows.sqlite"))
+  sqlite.exec("create table spread (station text, status text, note text)")
+  const insert = sqlite.prepare("insert into spread values (?, ?, ?)")
+
+  for (const row of rows) {
+    insert.run(...row)
+  }
+
+  sqlite.close()
+
+  for (const [name, table] of [
+    ["rows.csv"],
+    ["rows.tsv"],
+    ["rows.jsonl"],
+    ["rows.parquet"],
+    ["rows.duckdb", "spread"],
+    ["rows.sqlite", "spread"],
+  ]) {
+    const total = async (text: string, columns: [number, string][] = [], literal = false) => {
+      const page = await data.page(path.join(folder, name), "v1", table, {
+        search: { ...searchOf(text, columns), literal },
+      })
+      return page.error ?? page.grid?.total
+    }
+
+    assert.deepEqual(
+      {
+        pattern: await total("", [[0, "n*th"]]),
+        startsWith: await total("", [[0, "no*"]]),
+        endsWith: await total("", [[0, "*th"]]),
+        oneCharacter: await total("", [[0, "s?uth"]]),
+        caseOf: await total("", [[0, "NO*"]]),
+        quotedStar: await total("", [[0, '"no*"']]),
+        severalValues: await total("", [[1, '"open" | "review"']]),
+        patternsAsValues: await total("", [[1, "op* | rev*"]]),
+        mixed: await total("", [[1, '"open" | clo']]),
+        quoteAtStart: await total("", [[2, '\\"id']]),
+        equalQuotesInside: await total("", [
+          [2, /\.[ct]sv$/.test(name) ? '"say \\"\\"hi\\"\\""' : '"say \\"hi\\""'],
+        ]),
+        quotesKept: await total("", [[2, '\\"open\\"']]),
+        backslash: await total("", [[2, "C:\\Users"]]),
+        literalBackslash: await total("", [[2, "a\\\\b"]]),
+        literalStar: await total("", [[2, "5\\*3"]]),
+        literalBar: await total("", [[2, "a\\|b"]]),
+        percentAndUnderscore: await total("", [[2, "50%?off | 50_*"]]),
+        anyColumn: await total('"north" | "south"'),
+        records: await total("", [[-1, '"open"']], true),
+      },
+      {
+        pattern: 64,
+        startsWith: 32,
+        endsWith: 128,
+        oneCharacter: 32,
+        caseOf: 32,
+        quotedStar: 0,
+        severalValues: 80,
+        patternsAsValues: 80,
+        mixed: 80,
+        quoteAtStart: 20,
+        equalQuotesInside: 20,
+        quotesKept: 20,
+        backslash: 20,
+        literalBackslash: 20,
+        literalStar: 20,
+        literalBar: 20,
+        percentAndUnderscore: 20,
+        anyColumn: 64,
+        records: 20,
+      },
+      name,
+    )
+  }
+})
+
+test("a search's terms join by and and or, and binding first, in every reader", async () => {
+  const folder = file("joined")
+  fs.mkdirSync(folder, { recursive: true })
+  const rows = ["north", "south", "east"].flatMap((station) =>
+    ["open", "closed"].flatMap((status) => ["0", "1", "2"].map((rain) => [station, status, rain])),
+  )
+  fs.writeFileSync(
+    path.join(folder, "rows.csv"),
+    `station,status,rain\n${rows.map((row) => row.join(",")).join("\n")}\n`,
+  )
+  const duck = await DuckDBInstance.create(path.join(folder, "rows.duckdb"))
+  const connection = await duck.connect()
+  await connection.run(
+    `create table spread as select * from read_csv('${path.join(folder, "rows.csv")}', all_varchar = true)`,
+  )
+  await connection.run(`copy spread to '${path.join(folder, "rows.parquet")}' (format parquet)`)
+  await connection.run(`copy spread to '${path.join(folder, "rows.jsonl")}' (format json)`)
+  connection.closeSync()
+  duck.closeSync()
+  const sqlite = new DatabaseSync(path.join(folder, "rows.sqlite"))
+  sqlite.exec("create table spread (station text, status text, rain text)")
+  const insert = sqlite.prepare("insert into spread values (?, ?, ?)")
+
+  for (const row of rows) {
+    insert.run(...row)
+  }
+
+  sqlite.close()
+
+  for (const [name, table] of [
+    ["rows.csv"],
+    ["rows.jsonl"],
+    ["rows.parquet"],
+    ["rows.duckdb", "spread"],
+    ["rows.sqlite", "spread"],
+  ]) {
+    const total = async (search: Search) =>
+      (await data.page(path.join(folder, name), "v1", table, { search })).grid?.total
+    const terms: [number, string][] = [
+      [0, '"north"'],
+      [2, '"0"'],
+      [1, '"open"'],
+    ]
+
+    assert.deepEqual(
+      {
+        andThenOr: await total({ terms, joins: ["and", "or"], hidden: [] }),
+        orThenAnd: await total({ terms, joins: ["or", "and"], hidden: [] }),
+        allAnd: await total({ terms, joins: ["and", "and"], hidden: [] }),
+        allOr: await total({ terms, joins: ["or", "or"], hidden: [] }),
+        anyColumn: await total({ terms: [[-1, '"open"']], joins: [], hidden: [] }),
+        anyShownColumn: await total({ terms: [[-1, '"open"']], joins: [], hidden: [1] }),
+      },
+      { andThenOr: 10, orThenAnd: 8, allAnd: 1, allOr: 14, anyColumn: 9, anyShownColumn: 0 },
+      name,
+    )
+  }
+})
+
+test("a fraction is found as the page writes it, a whole one without its point", async () => {
+  const folder = file("fractions")
+  fs.mkdirSync(folder, { recursive: true })
+  const duck = await DuckDBInstance.create()
+  const connection = await duck.connect()
+  await connection.run(
+    `copy (select range / 2 as half, (range / 4)::decimal(9, 2) as quarter from range(6000)) to '${path.join(folder, "halves.parquet")}' (format parquet)`,
+  )
+  connection.closeSync()
+  duck.closeSync()
+  const total = async (columns: [number, string][]) =>
+    (
+      await data.page(path.join(folder, "halves.parquet"), "v1", undefined, {
+        search: searchOf("", columns),
+      })
+    ).grid?.total
+
+  assert.deepEqual(
+    [
+      await total([[0, '"1"']]),
+      await total([[0, '"1.5"']]),
+      await total([[0, "1.0"]]),
+      await total([[1, '"0.25"']]),
+      await total([[1, '"2"']]),
+    ],
+    [1, 1, 0, 1, 1],
+  )
+})
+
+test("a search reads a tiny or huge fraction as the page writes it, passes a list of numbers, and reads a lone quote as no filter", async () => {
+  const folder = file("written")
+  fs.mkdirSync(folder, { recursive: true })
+  const duck = await DuckDBInstance.create()
+  const connection = await duck.connect()
+  await connection.run(
+    `copy (select * from (values (0.00001::double, [1.5, 2.0]::double[], 'a'), (0.000015, [3.0], null), (1e-7, [], 'b'), (1152921504606846976::double, [4.25], null), (2.5, null, 'c')) t(x, sizes, tag)) to '${path.join(folder, "numbers.parquet")}' (format parquet)`,
+  )
+  connection.closeSync()
+  duck.closeSync()
+  const total = async (text: string, columns: [number, string][] = [], literal = false) => {
+    const page = await data.page(path.join(folder, "numbers.parquet"), "v1", undefined, {
+      search: { ...searchOf(text, columns), literal },
+    })
+    return page.error ?? page.grid?.total
+  }
+
+  assert.deepEqual(
+    [
+      await total("", [[0, '"0.00001"']]),
+      await total("", [[0, '"0.000015"']]),
+      await total("", [[0, '"1e-7"']]),
+      await total("", [[0, '"1152921504606847000"']]),
+      await total("zzz"),
+      await total('"2.5"'),
+      await total("", [[-1, "4.25"]], true),
+      await total("", [[2, '"']]),
+      await total('"'),
+    ],
+    [1, 1, 1, 1, 0, 1, 1, 5, 5],
+  )
+})
+
+test("a column's values count every record a filter and search keep, told apart as quotes match them, in every reader", async () => {
+  const folder = file("values")
+  fs.mkdirSync(folder, { recursive: true })
+  const duck = await DuckDBInstance.create(path.join(folder, "few.duckdb"))
+  const connection = await duck.connect()
+  const rows = `select range as n, ['Oslo', 'Lima'][range % 2 + 1] as city, ['open', 'closed', 'open', 'waiting', 'Open', ' OPEN '][range % 6 + 1] as status, (range % 3) / 2 as half from range(6000)`
+
+  for (const [name, options] of [
+    ["few.csv", "format csv, header"],
+    ["few.jsonl", "format json"],
+    ["few.parquet", "format parquet"],
+  ]) {
+    await connection.run(`copy (${rows}) to '${path.join(folder, name)}' (${options})`)
+  }
+
+  await connection.run(`create table few as ${rows}`)
+  connection.closeSync()
+  duck.closeSync()
+  const sqlite = new DatabaseSync(path.join(folder, "few.sqlite"))
+  sqlite.exec(
+    `begin; create table few (n integer, city text, status text, half real); ${Array.from({ length: 6000 }, (_, i) => `insert into few values (${i}, '${["Oslo", "Lima"][i % 2]}', '${["open", "closed", "open", "waiting", "Open", " OPEN "][i % 6]}', ${(i % 3) / 2});`).join(" ")} commit;`,
+  )
+  sqlite.close()
+
+  for (const [name, table] of [
+    ["few.csv"],
+    ["few.jsonl"],
+    ["few.parquet"],
+    ["few.duckdb", "few"],
+    ["few.sqlite", "few"],
+  ]) {
+    const values = (column: number, refinement: Parameters<Data["values"]>[2] = {}) =>
+      data.values(path.join(folder, name), table, refinement, column)
+
+    assert.deepEqual(
+      await values(2),
+      {
+        values: [
+          ["open", 4000],
+          ["closed", 1000],
+          ["waiting", 1000],
+        ],
+      },
+      name,
+    )
+    assert.deepEqual(
+      await values(2, { search: searchOf("", [[1, '"oslo"']]) }),
+      { values: [["open", 3000]] },
+      name,
+    )
+    assert.deepEqual(
+      await values(1, { filter: { field: "status", eq: "waiting" } }),
+      { values: [["Lima", 1000]] },
+      name,
+    )
+    assert.deepEqual(
+      await values(3),
+      {
+        values: [
+          ["0", 2000],
+          ["0.5", 2000],
+          ["1", 2000],
+        ],
+      },
+      name,
+    )
+    assert.equal((await values(0)).values?.length, 13, name)
+    assert.match((await values(9)).error ?? "", /no column 10/, name)
+  }
 })
 
 test("a text file whose copy is slow shows its first rows and is counted once copied, however long the copy", async () => {
@@ -459,7 +853,7 @@ test("a sort pages through a file holding a column named as its row numbers are"
     `FOLIO_ROW,kind\n${Array.from({ length: 300 }, (_, i) => `${i},${i % 3}`).join("\n")}\n`,
   )
   const page = await data.page(path.join(folder, "rows.csv"), "v1", undefined, {
-    order: { column: 1, descending: false },
+    order: [{ column: 1, descending: false }],
   })
 
   assert.equal(page.error, undefined)
@@ -534,7 +928,7 @@ test("a sort puts blanks last both ways and orders text without regard to case",
   const sorted = async (column: number, descending: boolean) =>
     (
       await data.page(file("sorted/words.csv"), "v1", undefined, {
-        order: { column, descending },
+        order: [{ column, descending }],
         rows: 10,
       })
     ).grid?.rows.map((row) => row[column])
@@ -545,7 +939,7 @@ test("a sort puts blanks last both ways and orders text without regard to case",
   assert.match(
     (
       await data.page(file("sorted/words.csv"), "v1", undefined, {
-        order: { column: 7, descending: false },
+        order: [{ column: 7, descending: false }],
         rows: 10,
       })
     ).error ?? "",
@@ -564,7 +958,7 @@ test("a SQLite table sorts a column of whole numbers too large for a double", as
 
   for (const descending of [false, true]) {
     const page = await data.page(path.join(folder, "big.sqlite"), "v1", "big", {
-      order: { column: 0, descending },
+      order: [{ column: 0, descending }],
       rows: 5000,
     })
 
@@ -613,7 +1007,7 @@ test("text written as a number sorts by its value before other text in every rea
     const order = async (descending: boolean) =>
       (
         await data.page(path.join(folder, name), "v1", table, {
-          order: { column: 1, descending },
+          order: [{ column: 1, descending }],
           rows: 5000,
         })
       ).grid?.rows
@@ -662,7 +1056,7 @@ test("the server reads every text as a number exactly when the page does", async
   )
   const sorted = (
     await data.page(file("written/texts.jsonl"), "v1", undefined, {
-      order: { column: 0, descending: false },
+      order: [{ column: 0, descending: false }],
       rows: 5000,
     })
   ).grid?.rows.map((row) => String(row[0] ?? "")) as string[]
@@ -877,6 +1271,87 @@ test("a reader stacks a pattern's matches by name, and a pattern matching nothin
     assert.deepEqual(absent.dirs, [root])
   } finally {
     fs.rmSync(file("swapped"), { recursive: true, force: true })
+  }
+})
+
+test("an error naming an interruption keeps its own text; only the time limit says a query or read was stopped", async () => {
+  const metrics = new DatabaseSync(file("metrics.sqlite"))
+  metrics.exec("create table visits (city text)")
+  metrics.close()
+
+  try {
+    await assert.rejects(data.query("select * from 'interrupt.csv'", root), {
+      message: "No data file at interrupt.csv.",
+    })
+    await assert.rejects(data.query("select interrupted_at from 'rows.csv'", root), (error) => {
+      const text = (error as Error).message
+      assert.match(text, /interrupted_at/)
+      assert.doesNotMatch(text, /ran longer than/)
+      return true
+    })
+
+    for (const database of ["metrics.sqlite", "shop.duckdb"]) {
+      assert.equal(
+        (await data.embed(file(database), "1", "interrupts")).error,
+        "No table named interrupts in this database.",
+      )
+    }
+  } finally {
+    fs.rmSync(file("metrics.sqlite"))
+  }
+})
+
+test("a read a tab waits on starts at once while slow work no tab waits on fills the engine", async () => {
+  const busy = new Data(root, fs.mkdtempSync(path.join(os.tmpdir(), "folio-busy-")), 4000)
+  const slow = "select sum(hash(a.range + b.range)) from range(200000) a, range(200000) b"
+  const background = [1, 2, 3].map(() => busy.query(slow, root).catch((error: Error) => error))
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const started = Date.now()
+    const { grid } = await urgently(() => busy.query("select 42 as answer", root))
+
+    assert.deepEqual(grid.rows, [[42]])
+    assert.ok(Date.now() - started < 2000, `the urgent read waited ${Date.now() - started} ms`)
+  } finally {
+    await Promise.all(background)
+    await busy.close()
+  }
+})
+
+test("a sorted page and a shared embed a tab waits on go first, though work no tab waits on asked for them first", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-joined-")))
+  const rows = path.join(folder, "rows.csv")
+  const total = "select sum(n) as total from 'rows.csv'"
+  const sorted = { offset: 0, order: [{ column: 0, descending: true }] }
+  fs.writeFileSync(rows, "n\n3\n1\n2\n")
+  const busy = new Data(folder, fs.mkdtempSync(path.join(os.tmpdir(), "folio-joined-data-")), 4000)
+  const slow = "select sum(hash(a.range + b.range)) from range(200000) a, range(200000) b"
+  const background: Promise<unknown>[] = [1, 2].map(() =>
+    busy.query(slow, folder).catch((error: Error) => error),
+  )
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    background.push(
+      busy.page(rows, "v1", undefined, sorted).catch((error: Error) => error),
+      busy.embedQuery(total, folder, "v1", "0.total"),
+    )
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const started = Date.now()
+    const [page, embedded] = await urgently(() =>
+      Promise.all([
+        busy.page(rows, "v1", undefined, sorted),
+        busy.embedQuery(total, folder, "v1", "0.total"),
+      ]),
+    )
+
+    assert.deepEqual(page.grid?.rows, [[3], [2], [1]])
+    assert.equal(Number(embedded.value), 6)
+    assert.ok(Date.now() - started < 2000, `the tab waited ${Date.now() - started} ms`)
+  } finally {
+    await Promise.all(background)
+    await busy.close()
   }
 })
 
@@ -1407,9 +1882,9 @@ test("a query asked for again while it runs or after, at the same version of wha
   const sql = "select count(*) as n from 'shared.csv'"
   const runs: string[] = []
   const counted = new (class extends Data {
-    override query(query: string, folder: string, limit?: number) {
+    override query(query: string, folder: string, options?: { limit?: number }) {
       runs.push(query)
-      return super.query(query, folder, limit)
+      return super.query(query, folder, options)
     }
   })(root, scratch)
   fs.writeFileSync(file("shared.csv"), "n\n1\n2\n")
@@ -1789,7 +2264,7 @@ test("statistics count every column of the whole file, and of the records a filt
 
   const rows = await data.page(path.join(folder, "runs.jsonl"), "v1", undefined, {
     filter: { field: "db", eq: "east" },
-    order: { column: 1, descending: true },
+    order: [{ column: 1, descending: true }],
     rows: 3,
   })
   assert.deepEqual(
@@ -2182,4 +2657,71 @@ async function spread(name: string): Promise<string> {
   )
   sqlite.close()
   return folder
+}
+
+test("closing the engine stops a running query at once, and the query it cut short never answers", {
+  timeout: 20_000,
+}, async () => {
+  const own = new Data(root, fs.mkdtempSync(path.join(os.tmpdir(), "folio-data-close-")), 60_000)
+  let answered = false
+  void own
+    .query("select sum(hash(a.range + b.range)) from range(1000000) a, range(1000000) b", root)
+    .then(
+      () => {
+        answered = true
+      },
+      () => {
+        answered = true
+      },
+    )
+  await new Promise((resolve) => setTimeout(resolve, 1000))
+
+  const asked = Date.now()
+  await own.close()
+
+  assert.ok(Date.now() - asked < 3000, `closed in ${Date.now() - asked} ms`)
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  const before = process.cpuUsage()
+  await new Promise((resolve) => setTimeout(resolve, 1000))
+  const spent = process.cpuUsage(before)
+
+  assert.ok(
+    spent.user + spent.system < 300_000,
+    `${(spent.user + spent.system) / 1000} ms of CPU after closing`,
+  )
+  assert.equal(answered, false)
+})
+
+test("closing the engine during a database read lets the read go unanswered, never as a read that ran too long", {
+  timeout: 20_000,
+}, async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-close-read-")))
+  const duck = await DuckDBInstance.create(path.join(folder, "slow.duckdb"))
+  const connection = await duck.connect()
+  await connection.run(
+    "create view slow as select sum(hash(a.range + b.range)) as s from range(1000000) a, range(1000000) b",
+  )
+  connection.closeSync()
+  duck.closeSync()
+  const own = new Data(
+    folder,
+    fs.mkdtempSync(path.join(os.tmpdir(), "folio-close-read-scratch-")),
+    60_000,
+  )
+  let answer: unknown
+  void own.embed(path.join(folder, "slow.duckdb"), "v1", "slow").then((embedded) => {
+    answer = embedded
+  })
+  await new Promise((resolve) => setTimeout(resolve, 1000))
+
+  await own.close()
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  assert.equal(answer, undefined)
+  fs.rmSync(folder, { recursive: true, force: true })
+})
+
+function searchOf(text: string, columns: [number, string][] = [], hidden: number[] = []): Search {
+  const terms: [number, string][] = [...(text ? [[-1, text] as [number, string]] : []), ...columns]
+  return { terms, joins: terms.slice(1).map(() => "and"), hidden }
 }

@@ -1,0 +1,13 @@
+{
+  "name": "folio",
+  "owner": {
+    "name": "Jakub Roman"
+  },
+  "description": "Folio for Claude Code: the MCP server reading the Folio serving the folder, and the skill writing documents for it.",
+  "plugins": [
+    {
+      "name": "folio",
+      "source": "./plugin"
+    }
+  ]
+}

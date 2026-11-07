@@ -1,11 +1,11 @@
 /**
  * A query's plan: one SELECT whose file references are checked against the served folder and bound to
- * sources folio reads itself, rebuilt as SQL before the engine runs it.
+ * sources Folio reads itself, rebuilt as SQL before the engine runs it.
  */
 
 import fs from "node:fs"
 import path from "node:path"
-import { confine, type Format, formatOf, globOf, isInside, readdir } from "./files.ts"
+import { belowRoot, confine, type Format, formatOf, globOf, isInside, isPruned } from "./files.ts"
 
 export interface Reference {
   /** Resolved through symlinks, inside the served folder. */
@@ -34,6 +34,9 @@ export const BATCH = 100
 
 /** A JSON reader stacking files by name holds a buffer for each of them while it binds: it is handed sixteen. */
 const JSON_FILES = 16
+
+/** A path a query or reference names that Folio will not read; its text names the path as written. */
+export class Unreadable extends Error {}
 
 /** A file a pattern matched, with its path in the served folder. */
 export interface Matched extends Reference {
@@ -81,6 +84,7 @@ export async function plan(
   source: Source,
   documents?: Documents,
   reserve?: (readers: number) => void,
+  absolute = false,
 ): Promise<{ sql: string; files: string[]; documents: string[]; dirs: string[] }> {
   const [[serialized]] = (
     await runner.runAndReadAll("select json_serialize_sql(?::varchar)", [sql])
@@ -100,8 +104,24 @@ export async function plan(
   const files = new Set<string>()
   const tables = new Set<string>()
   const dirs = new Set<string>()
+  // The visit below is synchronous, and a walk of a large folder must not hold up the server.
+  const walked = new Map(
+    await Promise.all(
+      patternsIn(tree.statements).map(
+        async (name) =>
+          [
+            name,
+            await matches(name, root, folder, absolute).catch((error: unknown) => ({ error })),
+          ] as const,
+      ),
+    ),
+  )
   const matched = (name: string) => {
-    const found = matches(name, root, folder)
+    const found = walked.get(name) as Awaited<ReturnType<typeof matches>> | { error: unknown }
+
+    if ("error" in found) {
+      throw found.error
+    }
 
     for (const dir of found.dirs) {
       dirs.add(dir)
@@ -136,7 +156,7 @@ export async function plan(
         rename(record, bound)
       })
     } else if (record.type === "BASE_TABLE" && fileLike(record)) {
-      const reference = resolve(String(record.table_name), root, folder)
+      const reference = resolve(String(record.table_name), root, folder, absolute)
       files.add(relative(root, reference.file))
       bindings.push(async () => {
         const bound = await source(reference, String(record.table_name))
@@ -180,7 +200,7 @@ export async function plan(
           const found = matched(literal.text)
 
           if (found.length === 0) {
-            throw Object.assign(new Error(`No data file matches ${literal.text}.`), {
+            throw Object.assign(new Unreadable(`No data file matches ${literal.text}.`), {
               dirs: [...dirs],
             })
           }
@@ -241,7 +261,7 @@ export async function plan(
             })
           }
         } else {
-          const reference = resolve(literal.text, root, folder)
+          const reference = resolve(literal.text, root, folder, absolute)
           files.add(relative(root, reference.file))
           literal.text = reference.file
 
@@ -273,47 +293,57 @@ export async function plan(
   return { sql: String(rebuilt), files: [...files], documents: [...tables], dirs: [...dirs] }
 }
 
-/** Resolve a reference against a folder, or the root after a slash; a whole name beats a split at its last `#`. */
-export function resolve(name: string, root: string, folder: string): Reference {
+/**
+ * Resolve a reference against a folder, or the root after a slash; a whole name beats a split at its last `#`.
+ * `absolute` also reads a name starting with root's own path as one below root.
+ */
+export function resolve(name: string, root: string, folder: string, absolute = false): Reference {
   if (SCHEME.test(name)) {
-    throw new Error(`Only the served folder's files can be read, not ${name}.`)
+    throw new Unreadable(`Only the served folder's files can be read, not ${name}.`)
   }
 
-  const hash = name.lastIndexOf("#")
-  const whole = locate(name, name, root, folder)
+  const asked = absolute ? fromRoot(root, name) : name
+  const hash = asked.lastIndexOf("#")
+  const whole = locate(asked, name, root, folder)
 
   if (whole) {
     return { ...whole, part: "" }
   }
 
-  const found = hash < 0 ? undefined : locate(name.slice(0, hash), name, root, folder)
+  const found = hash < 0 ? undefined : locate(asked.slice(0, hash), name, root, folder)
 
   if (!found) {
-    const address = hash < 0 ? name : name.slice(0, hash)
+    const address = hash < 0 ? asked : asked.slice(0, hash)
     const missing = address.startsWith("/")
       ? path.join(root, address)
       : path.resolve(folder, address)
-    throw Object.assign(new Error(`No data file at ${name}.`), { missing })
+    throw Object.assign(new Unreadable(`No data file at ${name}.`), { missing })
   }
 
-  return { ...found, part: name.slice(hash + 1) }
+  return { ...found, part: asked.slice(hash + 1) }
 }
 
 /** Symlinked folders are not followed, so a walk can neither loop nor leave the served folder. */
-function matches(name: string, root: string, folder: string): { files: Matched[]; dirs: string[] } {
+async function matches(
+  name: string,
+  root: string,
+  folder: string,
+  absolute: boolean,
+): Promise<{ files: Matched[]; dirs: string[] }> {
   if (SCHEME.test(name)) {
-    throw new Error(`Only the served folder's files can be read, not ${name}.`)
+    throw new Unreadable(`Only the served folder's files can be read, not ${name}.`)
   }
 
-  const hash = name.lastIndexOf("#")
-  const address = hash < 0 || isPattern(name.slice(hash)) ? name : name.slice(0, hash)
-  const part = address === name ? "" : name.slice(hash + 1)
+  const asked = absolute ? fromRoot(root, name) : name
+  const hash = asked.lastIndexOf("#")
+  const address = hash < 0 || isPattern(asked.slice(hash)) ? asked : asked.slice(0, hash)
+  const part = address === asked ? "" : asked.slice(hash + 1)
   const pattern = path.posix.normalize(
     address.startsWith("/") ? address.slice(1) : path.posix.join(relative(root, folder), address),
   )
 
   if (pattern === ".." || pattern.startsWith("../")) {
-    throw new Error(`${name} is outside the served folder.`)
+    throw new Unreadable(`${name} is outside the served folder.`)
   }
 
   const segments = pattern.split("/")
@@ -323,15 +353,17 @@ function matches(name: string, root: string, folder: string): { files: Matched[]
   const regex = globOf(pattern)
   const files: Matched[] = []
   const dirs: string[] = []
-  const walk = (dir: string, at: string, left: number) => {
+  const walk = async (dir: string, at: string, left: number): Promise<void> => {
     dirs.push(dir)
 
-    for (const dirent of readdir(dir)) {
+    const dirents = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [])
+
+    for (const dirent of dirents.filter(({ name: entry }) => !isPruned(entry))) {
       const within = at ? `${at}/${dirent.name}` : dirent.name
 
       if (dirent.isDirectory()) {
         if (left > 1) {
-          walk(path.join(dir, dirent.name), within, left - 1)
+          await walk(path.join(dir, dirent.name), within, left - 1)
         }
 
         continue
@@ -340,14 +372,16 @@ function matches(name: string, root: string, folder: string): { files: Matched[]
       const real = regex.test(within) ? confine(root, within) : undefined
       const format = real && formatOf(real)
 
-      if (real && format && format !== "sql" && fs.statSync(real).isFile()) {
+      const file = real ? await fs.promises.stat(real).catch(() => undefined) : undefined
+
+      if (real && format && format !== "sql" && file?.isFile()) {
         files.push({ file: real, format, part, path: within })
       }
     }
   }
 
-  if (start && fs.statSync(start).isDirectory()) {
-    walk(start, segments.slice(0, fixed).join("/"), depth)
+  if (start && (await fs.promises.stat(start)).isDirectory()) {
+    await walk(start, segments.slice(0, fixed).join("/"), depth)
   } else {
     // A pattern whose fixed folder is not there yet is heard through the nearest folder that is.
     for (let at = fixed - 1; at >= 0; at--) {
@@ -361,6 +395,34 @@ function matches(name: string, root: string, folder: string): { files: Matched[]
   }
 
   return { files: files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)), dirs }
+}
+
+/** Exactly the names the visit in `plan` reads through a pattern, each of which it looks up walked. */
+function patternsIn(node: unknown): string[] {
+  if (Array.isArray(node)) {
+    return node.flatMap(patternsIn)
+  }
+
+  if (node === null || typeof node !== "object") {
+    return []
+  }
+
+  const record = node as Record<string, unknown>
+  const call = record.function as { function_name?: string; arguments?: Argument[] } | undefined
+  const { literal } = (call?.arguments?.[0]?.expression ?? {}) as {
+    literal?: { kind: string; text: string }
+  }
+  const own =
+    record.type === "BASE_TABLE" && fileLike(record) && isPattern(String(record.table_name))
+      ? [String(record.table_name)]
+      : record.type === "TABLE_FUNCTION" &&
+          READERS.has(call?.function_name ?? "") &&
+          literal?.kind === "STRING" &&
+          isPattern(literal.text)
+        ? [literal.text]
+        : []
+
+  return [...own, ...Object.values(record).flatMap(patternsIn)]
 }
 
 /** A CTE or a view is named plainly; a dot, a slash or a `#` marks a file. */
@@ -379,11 +441,16 @@ function locate(
 
   // Not inside, or not once resolved: the path or a symlink on it leads out of the folder.
   if (!real && (!isInside(root, target) || fs.existsSync(target))) {
-    throw new Error(`${name} is outside the served folder.`)
+    throw new Unreadable(`${name} is outside the served folder.`)
   }
 
   const format = real && formatOf(real)
   return real && format && fs.statSync(real).isFile() ? { file: real, format } : undefined
+}
+
+function fromRoot(root: string, name: string): string {
+  const below = belowRoot(root, name)
+  return below === undefined ? name : `/${below}`
 }
 
 function relative(root: string, file: string): string {

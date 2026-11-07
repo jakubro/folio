@@ -5,7 +5,7 @@ import { button, ICONS } from "./icons.ts"
 const COPIED_MS = 1500
 
 export function copyButton(
-  text: () => string,
+  text: (event: MouseEvent) => string,
   label: string,
   className: string,
 ): HTMLButtonElement {
@@ -15,7 +15,7 @@ export function copyButton(
   copy.addEventListener("click", async (event) => {
     event.preventDefault()
     event.stopPropagation()
-    await navigator.clipboard.writeText(text())
+    await navigator.clipboard.writeText(text(event))
     clearTimeout(shown)
     copy.innerHTML = ICONS.check
     copy.classList.add("copied")

@@ -1,4 +1,4 @@
-/** Headless run of folio's command line as a person reads it: help, errors, a running folio's output, check. */
+/** Headless run of Folio's command line as a person reads it: help, errors, a running Folio's output, check. */
 
 import assert from "node:assert/strict"
 import { type ChildProcess, spawn, spawnSync } from "node:child_process"
@@ -48,11 +48,9 @@ test("Help, Command help, Version: laid out, coloured on a terminal, and exit 0"
     assert.equal(status, 0, command)
     assert.match(stdout, new RegExp(`^folio ${command} - `), command)
 
-    for (const section of ["Usage", "Options", "Exit codes", "Examples"]) {
+    for (const section of ["Usage", "Arguments", "Options", "Exit codes", "Examples"]) {
       assert.match(stdout, new RegExp(`\\n${section}\\n`), `${command}: ${section}`)
     }
-
-    assert.equal(/\nArguments\n/.test(stdout), command !== "mcp", `${command}: arguments`)
   }
 
   assert.match(folio(["check", "--help"]).stdout, /\n {2}1 {2}A problem is an error\n/)
@@ -64,7 +62,7 @@ test("Help, Command help, Version: laid out, coloured on a terminal, and exit 0"
 
   const version = folio(["--version"])
   assert.equal(version.status, 0)
-  assert.equal(version.stdout, `folio ${VERSION}\n`)
+  assert.equal(version.stdout, `Folio ${VERSION}\n`)
 })
 
 test("Bad option, Not a folder: one line naming what is wrong, after a bad option the usage; exit 2", () => {
@@ -80,7 +78,7 @@ test("Bad option, Not a folder: one line naming what is wrong, after a bad optio
   assert.equal(missing.stderr, "Not a folder: /nope-not-a-folder\n")
 })
 
-test("Start, Opening pages, Problems, Every request, Piped: a running folio prints what a person watching wants", async () => {
+test("Start, Opening pages, Problems, Every request, Piped: a running Folio prints what a person watching wants", async () => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-cli-")))
   writeIn(folder, {
     "a.md": "# A\n\nSee [b](b.md).\n",
@@ -154,7 +152,7 @@ test("Start, Opening pages, Problems, Every request, Piped: a running folio prin
     const said = lines(quiet.said())
 
     assert.ok(!quiet.said().includes(ESCAPE), "piped output carries no colour")
-    assert.deepEqual(said.slice(0, 2), [`folio serving ${folder}`, `  at ${quiet.base}/`])
+    assert.deepEqual(said.slice(0, 2), [`Folio serving ${folder}`, `  at ${quiet.base}/`])
     assert.match(said[2], /^TIME read 2 documents in \d+\.\d s$/)
     assert.deepEqual(said.slice(3), [
       "TIME opened /a.md",
@@ -182,7 +180,7 @@ test("Start, Opening pages, Problems, Every request, Piped: a running folio prin
   }
 })
 
-test("Start on a terminal: a coloured summary and a live progress line while folio reads the folder", async () => {
+test("Start on a terminal: a coloured summary and a live progress line while Folio reads the folder", async () => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-cli-tty-")))
   writeIn(
     folder,
@@ -203,7 +201,7 @@ test("Start on a terminal: a coloured summary and a live progress line while fol
 
   try {
     await until(() => said.includes("documents in"))
-    assert.ok(said.includes(`${ESCAPE}1mfolio`), said)
+    assert.ok(said.includes(`${ESCAPE}1mFolio`), said)
     assert.match(said, /reading the folder: \d+ documents/)
     const cleared = said.indexOf(`\r${ESCAPE}2K`)
     assert.ok(cleared >= 0 && cleared < said.indexOf("read 50 documents in"), said)
@@ -259,4 +257,47 @@ test("Check, Check piped, Reading, Checking, Done: one aligned line a problem, p
     fs.rmSync(folder, { recursive: true, force: true })
     fs.rmSync(state, { recursive: true, force: true })
   }
+})
+
+test("Stop during a query, Nothing running: Folio exits at once on SIGTERM or Ctrl-C, even while a query runs", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-cli-stop-")))
+  const slow = "select sum(hash(a.range + b.range)) from range(1000000) a, range(1000000) b"
+  writeIn(folder, { "note.md": "# Note\n" })
+
+  for (const [signal, code, querying] of [
+    ["SIGTERM", 143, true],
+    ["SIGINT", 130, true],
+    ["SIGTERM", 143, false],
+  ] as const) {
+    const port = await freePort()
+    const child = spawn(process.execPath, [CLI, folder, "--port", String(port)], { env: PIPED })
+    const exited = new Promise<number | null>((resolve) => child.once("exit", resolve))
+    let said = ""
+    child.stdout?.on("data", (chunk) => {
+      said += chunk
+    })
+
+    try {
+      await until(() => said.includes("documents in"))
+
+      if (querying) {
+        void fetch(`http://localhost:${port}/?api=query&sql=${encodeURIComponent(slow)}`).catch(
+          () => {},
+        )
+        await new Promise((resolve) => setTimeout(resolve, 1500))
+      }
+
+      child.kill(signal)
+      const status = await Promise.race([
+        exited,
+        new Promise((resolve) => setTimeout(() => resolve("still running after 5 s"), 5000)),
+      ])
+
+      assert.equal(status, code, `${signal}${querying ? " during a query" : ""}`)
+    } finally {
+      child.kill("SIGKILL")
+    }
+  }
+
+  fs.rmSync(folder, { recursive: true, force: true })
 })

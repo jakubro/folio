@@ -47,6 +47,54 @@ export async function historyPage(
   return timeline && timelineOf(urlPath, timeline)
 }
 
+export async function blockVersions(urlPath: string, id: string): Promise<BlockVersion[]> {
+  const found = await json<{ versions: BlockVersion[] }>(
+    urlPath,
+    `block-history=${encodeURIComponent(id)}`,
+  )
+
+  return found?.versions ?? []
+}
+
+export function versionList(
+  urlPath: string,
+  versions: BlockVersion[],
+  count = versions.length,
+): HTMLElement {
+  if (versions.length === 0) {
+    return paragraph("No history for this block.")
+  }
+
+  const list = document.createElement("ol")
+
+  list.className = "history-timeline history-block"
+  list.append(
+    ...versions.slice(0, count).map(({ version, at, text }, index) => {
+      const item = document.createElement("li")
+      const older = versions[index + 1]?.text
+      const shown =
+        text === undefined
+          ? paragraph("Not in the document.")
+          : older === undefined
+            ? cell(text)
+            : cell(
+                text,
+                diffRuns(older, text).filter((run) => run.kind !== "del"),
+              )
+
+      item.append(
+        Object.assign(document.createElement("a"), {
+          href: `${href(urlPath)}?history&at=${version}`,
+          textContent: when(at),
+        }),
+        shown,
+      )
+      return item
+    }),
+  )
+  return list
+}
+
 function when(at: number | string): string {
   return new Date(at).toLocaleString()
 }
@@ -60,8 +108,9 @@ function timelineOf(urlPath: string, { versions, values }: Timeline): HTMLElemen
     textContent: "Compare the two picked",
     disabled: true,
   })
+  const ids = new Map<HTMLInputElement, string>()
   const picked = () =>
-    [...list.querySelectorAll<HTMLInputElement>("input:checked")].map((box) => box.value)
+    [...list.querySelectorAll<HTMLInputElement>("input:checked")].map((box) => ids.get(box) ?? "")
 
   list.className = "history-timeline"
   list.append(
@@ -88,7 +137,6 @@ function timelineOf(urlPath: string, { versions, values }: Timeline): HTMLElemen
 
       const box = Object.assign(document.createElement("input"), {
         type: "checkbox",
-        value: version.id,
         title: "Pick to compare",
       })
       const open = Object.assign(document.createElement("a"), {
@@ -96,6 +144,7 @@ function timelineOf(urlPath: string, { versions, values }: Timeline): HTMLElemen
         textContent: "Open",
       })
 
+      ids.set(box, version.id)
       box.addEventListener("change", () => {
         const chosen = picked()
 
@@ -215,40 +264,10 @@ async function comparison(urlPath: string, compare: string): Promise<HTMLElement
 }
 
 async function blockPast(urlPath: string, id: string): Promise<HTMLElement> {
-  const found = await json<{ versions: BlockVersion[] }>(
-    urlPath,
-    `block-history=${encodeURIComponent(id)}`,
-  )
-  const versions = found?.versions ?? []
+  const versions = await blockVersions(urlPath, id)
   const element = page(`A block of ${name(urlPath)}, through its versions`, urlPath)
-  const list = document.createElement("ol")
 
-  list.className = "history-timeline history-block"
-  list.append(
-    ...versions.map(({ version, at, text }, index) => {
-      const item = document.createElement("li")
-      const older = versions[index + 1]?.text
-      const shown =
-        text === undefined
-          ? paragraph("Not in the document.")
-          : older === undefined
-            ? cell(text)
-            : cell(
-                text,
-                diffRuns(older, text).filter((run) => run.kind !== "del"),
-              )
-
-      item.append(
-        Object.assign(document.createElement("a"), {
-          href: `${href(urlPath)}?history&at=${version}`,
-          textContent: when(at),
-        }),
-        shown,
-      )
-      return item
-    }),
-  )
-  element.append(versions.length > 0 ? list : paragraph("No history for this block."))
+  element.append(versionList(urlPath, versions))
   return element
 }
 

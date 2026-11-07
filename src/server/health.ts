@@ -21,6 +21,7 @@ import {
 import { type Data, timedOut } from "./data.ts"
 import { Drawing } from "./drawing.ts"
 import { type Fence, fencesOf, queryFences } from "./embeds.ts"
+import { guarded } from "./failures.ts"
 import { confine, isInside, linkTarget } from "./files.ts"
 import { type Expansion, expand } from "./includes.ts"
 import type { Model } from "./model.ts"
@@ -113,7 +114,7 @@ const HTML_ID = /\b(?:id|name)\s*=\s*["']([^"']+)["']/g
 const NO_HTML = new Set(["code", "diagram", "math", "frontmatter"])
 const SLICE = 100
 const LOG_KEPT = 100
-const FORMAT = 3
+const FORMAT = 4
 const RETRY_MS = 30_000
 const BATCH = 64
 
@@ -128,7 +129,7 @@ export function healthOf(model: Model, data: Data): Health {
   let health = HEALTHS.get(model)
 
   if (!health) {
-    health = new Health(model, data, new Drawing(DRAW_WORKER))
+    health = guarded("health", new Health(model, data, new Drawing(DRAW_WORKER)))
     HEALTHS.set(model, health)
   }
 
@@ -544,7 +545,7 @@ class Health {
       const file = files[index]
 
       if (!held || held.format !== FORMAT || this.#model.hashOf(held.path) === undefined) {
-        // A document gone while folio was stopped is a change its linkers must hear of.
+        // A document gone while Folio was stopped is a change its linkers must hear of.
         if (held && this.#model.hashOf(held.path) === undefined) {
           this.#gone.add(held.path)
         }
@@ -937,7 +938,7 @@ class Health {
     const found: Problem[] = []
 
     for (const block of blocks) {
-      for (const { url } of block.links ?? []) {
+      for (const { url, line } of block.links ?? []) {
         const target = linkTarget(urlPath, url)
 
         if (!target || target.path === ".." || target.path.startsWith("../")) {
@@ -955,7 +956,7 @@ class Health {
           exists.set(target.path, there)
         }
 
-        const at = { path: urlPath, line: block.lines[0], block: block.id }
+        const at = { path: urlPath, line: line ?? block.lines[0], block: block.id }
 
         // A document's arrival or loss reaches the model; any other file's only a watch of its folder.
         if (!this.#model.hashOf(target.path)) {

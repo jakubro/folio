@@ -1,4 +1,4 @@
-/** Full-window mermaid viewer: wheel zoom at the pointer, drag to pan, buttons and keys for both, fit. */
+/** Full-window viewer: diagrams, charts and images zoomed and panned, maps and models moved in live. */
 
 import { button, ICONS } from "./icons.ts"
 
@@ -15,41 +15,117 @@ interface View {
   y: number
 }
 
+export interface Live {
+  parts: HTMLElement[]
+  moved(intoViewer: boolean): void
+}
+
+interface Picture {
+  element: HTMLElement | SVGSVGElement
+  size: () => [number, number]
+  fill: boolean
+}
+
 let overlay: Overlay | undefined
+let anchors = 0
 
-/** A button opening a rendered diagram full-window; the diagram itself stays clickable. */
-export function expandable(figure: HTMLElement): HTMLButtonElement {
-  const svg = figure.querySelector("svg")
-  const expand = button(ICONS.expand, "Expand diagram", "icon-button mermaid-expand")
+/** A button opening a drawn diagram or chart full-window, filling it; the drawing itself stays clickable. */
+export function expandDrawing(
+  what: string,
+  drawn: () => SVGSVGElement | null | undefined,
+): HTMLButtonElement {
+  return expander(what, () => {
+    const svg = drawn()
 
-  expand.addEventListener("click", () => {
     if (svg) {
-      overlay ??= new Overlay()
-      overlay.open(svg)
+      // viewBox is the drawing's intrinsic size, unaffected by any CSS cap on the rendered box.
+      const box = svg.viewBox.baseVal
+      const { width, height } = svg.getBoundingClientRect()
+      const size: [number, number] = [box?.width || width, box?.height || height]
+      viewer().showPicture({
+        element: svg.cloneNode(true) as SVGSVGElement,
+        size: () => size,
+        fill: true,
+      })
     }
   })
+}
 
-  return expand
+/** A button moving a live map's or model's parts into the viewer, filling it, and back when it closes. */
+export function expandLive(what: string, figure: HTMLElement, live: Live): HTMLButtonElement {
+  return expander(what, () => viewer().showLive(figure, live))
+}
+
+/**
+ * The corner of an image, to place right after it: a button opening it full-window. Anchored to the
+ * image rather than wrapped around it, so an image its page sizes, floats or aligns keeps its layout.
+ */
+export function imageCorner(image: HTMLImageElement): HTMLElement {
+  const corner = document.createElement("span")
+  const anchor = `--image-${++anchors}`
+
+  corner.className = "drawn-toolbar image-toolbar"
+  image.style.setProperty("anchor-name", anchor)
+  corner.style.setProperty("position-anchor", anchor)
+  corner.append(expander("image", () => viewer().showPicture(pictureOf(image))))
+  return corner
 }
 
 export function closeExpanded(): void {
   overlay?.close()
 }
 
+function expander(what: string, open: () => void): HTMLButtonElement {
+  const expand = button(ICONS.expand, `Expand ${what}`, "icon-button drawn-expand")
+
+  expand.addEventListener("click", () => {
+    // The button keeps its focus behind the open viewer, where Space or Enter would open it again.
+    if (!overlay?.shown) {
+      open()
+    }
+  })
+
+  return expand
+}
+
+function viewer(): Overlay {
+  overlay ??= new Overlay()
+  return overlay
+}
+
+function pictureOf(image: HTMLImageElement): Picture {
+  const shown = new Image()
+  const src = image.currentSrc || image.src
+  const svg = URL.canParse(src) && /\.svg$/i.test(new URL(src).pathname)
+  // An SVG without a width and height of its own reports a default natural size; its drawn box keeps its shape.
+  const { width, height } = image.getBoundingClientRect()
+
+  shown.src = src
+  shown.alt = image.alt
+  // A press on an image would start the browser's own drag of it, cancelling the pan.
+  shown.draggable = false
+  return {
+    element: shown,
+    size: () => (svg ? [width, height] : [shown.naturalWidth, shown.naturalHeight]),
+    fill: svg,
+  }
+}
+
 class Overlay {
   readonly #root = document.createElement("div")
   readonly #viewport = document.createElement("div")
   readonly #inner = document.createElement("div")
+  readonly #stage = document.createElement("div")
   readonly #zoomIn = button(ICONS.zoomIn, "Zoom in")
   readonly #zoomOut = button(ICONS.zoomOut, "Zoom out")
+  #picture: Picture | undefined
+  #live: { figure: HTMLElement; live: Live } | undefined
   #view: View | undefined
   #fit: View | undefined
   #bounds = { min: 0, max: Number.POSITIVE_INFINITY }
   #drag:
     | { startX: number; startY: number; originX: number; originY: number; moved: boolean }
     | undefined
-  /** Set by a drag that ends over the backdrop, so the click a drag-release synthesizes does not close. */
-  #dragged = false
 
   constructor() {
     const controls = document.createElement("div")
@@ -60,12 +136,13 @@ class Overlay {
       [ICONS.down, "Pan down", 0, -1],
       [ICONS.right, "Pan right", -1, 0],
     ]
-    const close = button(ICONS.close, "Close", "icon-button mermaid-zoom-close")
+    const close = button(ICONS.close, "Close", "icon-button viewer-close")
 
-    this.#root.className = "mermaid-zoom"
-    this.#viewport.className = "mermaid-zoom-viewport"
-    this.#inner.className = "mermaid-zoom-inner"
-    controls.className = "mermaid-zoom-controls"
+    this.#root.className = "viewer"
+    this.#viewport.className = "viewer-viewport"
+    this.#inner.className = "viewer-inner"
+    this.#stage.className = "viewer-stage"
+    controls.className = "viewer-controls"
     controls.append(this.#zoomOut, this.#zoomIn, fit, document.createElement("span"))
 
     for (const [icon, label, dx, dy] of pans) {
@@ -74,7 +151,7 @@ class Overlay {
       controls.append(pan)
     }
 
-    this.#viewport.append(this.#inner, controls)
+    this.#viewport.append(this.#inner, this.#stage, controls)
     this.#root.append(close, this.#viewport)
     // Appended last so a cloned diagram's duplicate ids never outrank the originals:
     // their markers and scoped styles resolve to the first match in document order.
@@ -84,13 +161,6 @@ class Overlay {
     this.#zoomOut.addEventListener("click", () => this.#zoomAtCentre(1 / ZOOM_STEP_RATIO))
     fit.addEventListener("click", () => this.#fitView())
     close.addEventListener("click", () => this.close())
-    this.#root.addEventListener("click", (event) => {
-      if (this.#dragged) {
-        this.#dragged = false
-      } else if (event.target === this.#root || event.target === this.#viewport) {
-        this.close()
-      }
-    })
     this.#viewport.addEventListener("wheel", (event) => this.#wheel(event), { passive: false })
     this.#viewport.addEventListener("pointerdown", (event) => this.#pointerDown(event))
     this.#viewport.addEventListener("pointermove", (event) => this.#pointerMove(event))
@@ -98,23 +168,53 @@ class Overlay {
     document.addEventListener("keydown", (event) => this.#key(event))
     // A resize changes what fitting means, but leaves the current view alone.
     window.addEventListener("resize", () => {
-      if (this.#root.classList.contains("visible")) {
+      if (this.shown) {
         this.#measure()
       }
     })
   }
 
-  open(svg: SVGSVGElement): void {
-    this.#inner.replaceChildren(svg.cloneNode(true))
+  get shown(): boolean {
+    return this.#root.classList.contains("visible")
+  }
+
+  showPicture(picture: Picture): void {
+    this.#picture = picture
+    this.#inner.replaceChildren(picture.element)
     this.#root.classList.add("visible")
     // Measured only once the overlay is laid out - a hidden viewport has no client box.
     this.#measure()
     this.#fitView()
+
+    picture.element.addEventListener("load", () => {
+      if (this.#picture === picture && !this.#view) {
+        this.#measure()
+        this.#fitView()
+      }
+    })
+  }
+
+  showLive(figure: HTMLElement, live: Live): void {
+    this.#live = { figure, live }
+    // Held at its height, so the page behind keeps its layout while the drawing is away.
+    figure.style.height = `${figure.offsetHeight}px`
+    this.#stage.replaceChildren(...live.parts)
+    this.#root.classList.add("visible", "live")
+    live.moved(true)
   }
 
   close(): void {
-    this.#root.classList.remove("visible")
+    if (this.#live) {
+      const { figure, live } = this.#live
+      figure.prepend(...live.parts)
+      figure.style.height = ""
+      live.moved(false)
+    }
+
+    this.#root.classList.remove("visible", "live")
     this.#inner.replaceChildren()
+    this.#picture = undefined
+    this.#live = undefined
     this.#view = undefined
     this.#fit = undefined
     this.#drag = undefined
@@ -132,24 +232,21 @@ class Overlay {
   }
 
   #computeFit(): View | undefined {
-    const svg = this.#inner.querySelector("svg")
     const vw = this.#viewport.clientWidth
     const vh = this.#viewport.clientHeight
-    // viewBox is the diagram's intrinsic size, unaffected by any CSS cap on the rendered box.
-    const box = svg?.viewBox.baseVal
-    const w = box?.width || svg?.getBoundingClientRect().width || 0
-    const h = box?.height || svg?.getBoundingClientRect().height || 0
+    const [w, h] = this.#picture?.size() ?? [0, 0]
 
-    if (!svg || !vw || !vh || !w || !h) {
+    if (!this.#picture || !vw || !vh || !w || !h) {
       return undefined
     }
 
-    // mermaid's width="100%" has nothing to resolve against here, so the SVG is pinned to its viewBox.
-    svg.style.width = `${w}px`
-    svg.style.height = `${h}px`
-    svg.style.maxWidth = "none"
+    // mermaid's width="100%" has nothing to resolve against here, so a picture is pinned to its own size.
+    const { style } = this.#picture.element
+    style.width = `${w}px`
+    style.height = `${h}px`
+    style.maxWidth = "none"
 
-    const scale = Math.min(vw / w, vh / h, 1)
+    const scale = Math.min(vw / w, vh / h, this.#picture.fill ? Number.POSITIVE_INFINITY : 1)
     return { scale, x: (vw - w * scale) / 2, y: (vh - h * scale) / 2 }
   }
 
@@ -212,7 +309,7 @@ class Overlay {
     if (
       event.button !== 0 ||
       !this.#view ||
-      (event.target as Element).closest(".mermaid-zoom-controls")
+      (event.target as Element).closest(".viewer-controls")
     ) {
       return
     }
@@ -244,19 +341,11 @@ class Overlay {
   }
 
   #pointerUp(): void {
-    if (this.#drag?.moved) {
-      this.#dragged = true
-      // Only the click synthesized right after this pointerup is a drag-release, never a later one.
-      setTimeout(() => {
-        this.#dragged = false
-      }, 0)
-    }
-
     this.#drag = undefined
   }
 
   #key(event: KeyboardEvent): void {
-    if (!this.#root.classList.contains("visible")) {
+    if (!this.shown) {
       return
     }
 

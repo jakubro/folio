@@ -350,3 +350,33 @@ test("finds where each link and definition writes its address and how the page r
     found,
   )
 })
+
+test("a link in a frontmatter value spanning lines is at its own line, or its value's when folded across lines", () => {
+  const [front] = blocks(
+    '---\nsummary: |\n  First.\n  See [P-4](p-4.md) next.\nnote: "[P-5](p-5.md)"\nwrapped: see [P-6 and\n  more](p-6.md)\n  then [P-7](p-7.md)\n---\n# Plan',
+    "markdown",
+  )
+
+  assert.deepEqual(
+    front.links?.map(({ url, line }) => [url, line]),
+    [
+      ["p-4.md", 4],
+      ["p-5.md", 5],
+      ["p-6.md", 6],
+      ["p-7.md", 8],
+    ],
+  )
+})
+
+test("a link in frontmatter is a link of its block, at its own line, read as its key and its value", () => {
+  const [front] = blocks(
+    '---\ntitle: Plan\ndependencies: ["[A-1](./a-1.md)"]\nrefs:\n  - kind: source\n    item: "[#12](https://example.com/item/12)"\nnote: none\n---\n\n# Plan',
+    "markdown",
+  )
+
+  assert.equal(front.kind, "frontmatter")
+  assert.deepEqual(front.links, [
+    { url: "./a-1.md", context: "dependencies: A-1", line: 3 },
+    { url: "https://example.com/item/12", context: "refs: #12", line: 6 },
+  ])
+})

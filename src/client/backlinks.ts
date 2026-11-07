@@ -94,6 +94,15 @@ function list(links: Backlink[]): HTMLElement {
       around.textContent = context
       item.append(link)
 
+      if (title !== undefined) {
+        item.append(
+          Object.assign(document.createElement("span"), {
+            className: "backlink-file",
+            textContent: ` ${source.split("/").pop()}`,
+          }),
+        )
+      }
+
       if (part) {
         item.append(
           Object.assign(document.createElement("span"), {

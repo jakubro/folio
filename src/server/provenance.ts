@@ -57,7 +57,9 @@ export async function provenance(
   id: string,
   occurrence = 0,
 ): Promise<Provenance | undefined> {
-  const block = model.held(source)?.find((found) => found.id === id)
+  const block = (model.held(source) ?? model.apart(source)?.blocks)?.find(
+    (found) => found.id === id,
+  )
 
   if (!block) {
     return undefined
@@ -220,7 +222,7 @@ function includedFrom(
   }
 
   const instance = layout.instances[index]
-  const held = model.held(source) ?? []
+  const held = model.held(source) ?? model.apart(source)?.blocks ?? []
   const lastLine = Math.max(0, ...held.map((block) => block.lines[1]))
 
   if (!instance || (instance.first === 1 && instance.last >= lastLine)) {

@@ -1,4 +1,4 @@
-/** The model API on a unix socket, for clients that cannot reach folio's port, such as a container's. */
+/** The model API on a unix socket, for clients that cannot reach Folio's port, such as a container's. */
 
 import fs from "node:fs"
 import type http from "node:http"
@@ -8,7 +8,7 @@ import net from "node:net"
 export async function listenSocket(server: http.Server, socket: string): Promise<void> {
   if (fs.existsSync(socket)) {
     if (!fs.lstatSync(socket).isSocket()) {
-      throw new Error(`${socket} is not a socket, so folio leaves it alone.`)
+      throw new Error(`${socket} is not a socket, so Folio leaves it alone.`)
     }
 
     if (await answers(socket)) {

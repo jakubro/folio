@@ -129,20 +129,6 @@ export interface ChangedDocument {
   at: string
 }
 
-export async function changed(
-  model: Model,
-  data?: Data,
-): Promise<{ documents: Changed[]; version: string }> {
-  await model.reads.load()
-  const embeds = data ? await impactOf(model, data).embeds(model.reads.embedKeys()) : new Map()
-  const documents = model.reads.changed(embeds)
-
-  return {
-    documents,
-    version: hash(JSON.stringify(documents.map(({ path: p, blocks, at }) => [p, blocks, at]))),
-  }
-}
-
 export async function changesState(
   root: string,
   model: Model,
@@ -173,6 +159,20 @@ export function fileVersion(file: string): string | undefined {
     return `${stat.mtimeMs.toString(36)}-${stat.size.toString(36)}`
   } catch {
     return undefined
+  }
+}
+
+async function changed(
+  model: Model,
+  data?: Data,
+): Promise<{ documents: Changed[]; version: string }> {
+  await model.reads.load()
+  const embeds = data ? await impactOf(model, data).embeds(model.reads.embedKeys()) : new Map()
+  const documents = model.reads.changed(embeds)
+
+  return {
+    documents,
+    version: hash(JSON.stringify(documents.map(({ path: p, blocks, at }) => [p, blocks, at]))),
   }
 }
 

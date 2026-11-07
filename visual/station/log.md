@@ -12,4 +12,4 @@ graph LR
   A[Mast] --> 
 ```
 
-The diagram above was cut off mid-edge; folio keeps its source and marks it.
+The diagram above was cut off mid-edge; Folio keeps its source and marks it.

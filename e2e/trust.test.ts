@@ -1,4 +1,4 @@
-/** Headless Chromium run of folio's documented behaviour: checked figures and where each block came from. */
+/** Headless Chromium run of Folio's documented behaviour: checked figures and where each block came from. */
 
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -148,7 +148,9 @@ test("Contradicted figure, Outline: a heading holding a tied figure lists the fi
   await page.waitForSelector("h2 .claim-contradicted .claim-live")
 
   assert.deepEqual(
-    await page.$$eval(".outline a", (links) => links.map((link) => link.textContent)),
+    await page.$$eval(".outline a:not(.outline-problem)", (links) =>
+      links.map((link) => link.textContent),
+    ),
     ["Ties", "Rate 81% this week"],
   )
   await page.close()

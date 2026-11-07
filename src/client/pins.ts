@@ -52,7 +52,7 @@ export function pinHeaders(root: ParentNode): void {
   }
 }
 
-/** Move `element`, placed level with the top of `table`, down with the table's pinned header. */
+/** Move `element`, placed level with the top of `table`'s header, down with the header as it pins. */
 export function follow(element: HTMLElement, table: HTMLTableElement): void {
   if (followers.get(element)?.table === table) {
     return
@@ -95,12 +95,12 @@ function measure(table: HTMLTableElement): void {
   const shift = 1 - ((top + scrollY + start) % 1)
   const [from, to] = [(start + shift) / height, (start + shift + span) / height]
   const gap = gapOf(table)
-  const lifted = `translateY(${span}px)`
-
-  setKeyframes(pin.header, [
+  const moved = [
     { offset: from, transform: "none" },
-    { offset: to, transform: lifted },
-  ])
+    { offset: to, transform: `translateY(${span}px)` },
+  ]
+
+  setKeyframes(pin.header, moved)
   // Lifted over the rows only while pinned: a positioned header draws its text differently at rest.
   setKeyframes(pin.shade, [
     { offset: from, "--pinned": "0", "--pin-content": '""', position: "static", zIndex: "auto" },
@@ -114,10 +114,7 @@ function measure(table: HTMLTableElement): void {
   ])
 
   for (const { animation } of [...followers.values()].filter((one) => one.table === table)) {
-    setKeyframes(animation, [
-      { offset: shift / height, transform: "none" },
-      { offset: to, transform: `translateY(${start + span}px)` },
-    ])
+    setKeyframes(animation, moved)
   }
 }
 

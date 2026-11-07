@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { after, test } from "node:test"
-import { Data } from "../src/server/data.ts"
+import { Data, urgently } from "../src/server/data.ts"
 import { impactOf } from "../src/server/impact.ts"
 import { Indexer } from "../src/server/indexer.ts"
 import { Model } from "../src/server/model.ts"
@@ -111,6 +111,48 @@ test("a dependency saved after a read, before its hash is kept, is named", async
       [["pumps.csv", "embeds"]],
     )
   } finally {
+    model.close()
+    await data.close()
+  }
+})
+
+test("a page a tab waits on gets its dependencies at once while the catch-up they wait on was started by work no tab waits on", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-impact-lane-")))
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), "folio-impact-lane-store-"))
+  fs.writeFileSync(path.join(root, "t.csv"), "a\n1\n")
+  fs.writeFileSync(path.join(root, "q.sql"), "select * from 't.csv'")
+  fs.writeFileSync(path.join(root, "page.md"), "# Page\n\n{table: q.sql}\n")
+  fs.writeFileSync(path.join(root, "other.md"), "# Other\n\n{table: q.sql}\n")
+  const model = new Model(root, store, indexer, () => {})
+  const data = new Data(root, store, 4000)
+  const impact = impactOf(model, data)
+  const slow = "select sum(hash(a.range + b.range)) from range(200000) a, range(200000) b"
+  const background: Promise<unknown>[] = []
+
+  try {
+    await model.start()
+    await impact.refresh()
+    background.push(...[1, 2].map(() => data.query(slow, root).catch((error: Error) => error)))
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const before = model.hashOf("other.md")
+    fs.writeFileSync(path.join(root, "other.md"), "# Other\n\nSaved again.\n\n{table: q.sql}\n")
+
+    while (model.hashOf("other.md") === before) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+
+    await model.settled()
+    void impact.dependents("t.csv")
+    const started = Date.now()
+    const found = await urgently(() => impact.dependencies("page.md"))
+
+    assert.deepEqual(
+      found.map(({ path: depended }) => depended),
+      ["q.sql", "t.csv"],
+    )
+    assert.ok(Date.now() - started < 2000, `the page waited ${Date.now() - started} ms`)
+  } finally {
+    await Promise.all(background)
     model.close()
     await data.close()
   }

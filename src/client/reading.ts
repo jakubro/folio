@@ -14,6 +14,7 @@ const SHOWN = 0.5
 export class Reading {
   onRead: (blocks: ReadBlock[]) => void = () => {}
   held: (block: HTMLElement) => boolean = () => false
+  hidden: (block: HTMLElement) => boolean = () => false
   embedsOf: (block: HTMLElement) => Record<string, string> = () => ({})
   /** Where in a block, as fractions of its height, the change it is marked for lies. */
   changedSpan: (block: HTMLElement) => [number, number] | undefined = () => undefined
@@ -31,6 +32,8 @@ export class Reading {
       addEventListener(type, () => this.#schedule(), { passive: true })
     }
 
+    document.addEventListener("folio:folds", () => this.#schedule())
+    document.addEventListener("toggle", () => this.#schedule(), true)
     document.addEventListener("visibilitychange", () => {
       for (const block of this.#onScreen) {
         this.#time(block)
@@ -88,7 +91,10 @@ export class Reading {
       const { top, bottom, height } = block.getBoundingClientRect()
       const visible = Math.min(bottom, innerHeight) - Math.max(top, 0)
       // A block taller than the window is on screen once it fills half of it.
-      const shown = visible > 0 && (visible >= height * SHOWN || visible >= innerHeight * SHOWN)
+      const shown =
+        !this.hidden(block) &&
+        visible > 0 &&
+        (visible >= height * SHOWN || visible >= innerHeight * SHOWN)
 
       if (shown && !this.#onScreen.has(block)) {
         this.#onScreen.add(block)
@@ -137,7 +143,9 @@ export class Reading {
         } = block.dataset
 
         // A timer firing long after it was due slept with its machine: nothing was on screen meanwhile.
-        if (Date.now() - due > DWELL_MS || this.held(block) || !this.#seenChange(block)) {
+        if (this.hidden(block)) {
+          this.#stop(block)
+        } else if (Date.now() - due > DWELL_MS || this.held(block) || !this.#seenChange(block)) {
           this.#time(block)
         } else if (source && id && version && block.isConnected) {
           const embeds = this.embedsOf(block)

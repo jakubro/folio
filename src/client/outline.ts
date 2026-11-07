@@ -1,6 +1,10 @@
-/** The outline beside every page: its headings, with the section being read highlighted. */
+/** The outline beside every page: its headings, the one being read highlighted, its problems. */
+
+import type { Problem } from "../server/health.ts"
 
 const PANELS = new WeakMap<HTMLElement, HTMLElement>()
+const PROBLEMS_SHOWN = 5
+const SCROLL_KEYS = new Set([" ", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"])
 
 /** A page drawing a side panel of its own shows it in place of its headings. */
 export function panelOf(article: HTMLElement, panel: HTMLElement): void {
@@ -11,16 +15,55 @@ export class Outline {
   readonly element = document.createElement("aside")
   readonly header = document.createElement("div")
   readonly footer = document.createElement("div")
+  readonly related = document.createElement("div")
+  readonly #problems = document.createElement("div")
   #headings: HTMLElement[] = []
+  #section: HTMLElement | undefined
   #links: HTMLAnchorElement[] = []
   #scheduled = false
+  #following = true
+  onSection: (heading: HTMLElement | undefined) => void = () => {}
 
   constructor() {
     this.element.className = "outline"
     this.element.setAttribute("aria-label", "Outline")
+    this.#problems.className = "outline-problems"
+    this.#problems.hidden = true
     window.addEventListener("scroll", () => this.#schedule(), { passive: true })
     window.addEventListener("resize", () => this.#schedule())
     new ResizeObserver(() => this.#schedule()).observe(document.body)
+    const stay = () => {
+      this.#following = false
+    }
+
+    for (const type of ["wheel", "touchmove"]) {
+      this.element.addEventListener(type, stay, { passive: true })
+    }
+
+    // A press on the panel itself past its content's width is a press on its scrollbar.
+    this.element.addEventListener("pointerdown", (event) => {
+      if (event.target === this.element && event.offsetX >= this.element.clientWidth) {
+        stay()
+      }
+    })
+    this.element.addEventListener("keydown", (event) => {
+      if (SCROLL_KEYS.has(event.key) && !(event.target as Element).closest("button")) {
+        stay()
+      }
+    })
+    this.element.addEventListener("click", (event) => {
+      const plain =
+        event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey
+
+      if (plain && (event.target as Element).closest("a[href]")) {
+        this.follow()
+      }
+    })
+  }
+
+  follow(): void {
+    this.#following = true
+    this.#schedule()
   }
 
   build(article: HTMLElement): void {
@@ -29,18 +72,28 @@ export class Outline {
     if (panel) {
       this.#headings = []
       this.#links = []
-      this.element.replaceChildren(this.header, panel, this.footer)
+      this.element.replaceChildren(this.header, panel, this.footer, this.related)
       return
     }
 
     this.#headings = [
-      ...article.querySelectorAll<HTMLElement>("h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]"),
+      ...article.querySelectorAll<HTMLElement>(
+        "h1[id], h2[id], h3[id], h4[id], h5[id], h6[id], summary[id][data-outline]",
+      ),
     ].filter((heading) => !folded(heading))
     this.#links = this.#headings.map((heading) => {
       const link = document.createElement("a")
+      const details = heading.matches("summary") ? heading.parentElement : null
       link.href = `#${encodeURIComponent(heading.id)}`
       link.textContent = ownText(heading)
-      link.className = `outline-${heading.tagName.toLowerCase()}`
+      link.className = `outline-${details ? `h${heading.dataset.outline}` : heading.tagName.toLowerCase()}`
+
+      if (details instanceof HTMLDetailsElement) {
+        link.addEventListener("click", () => {
+          details.open = true
+        })
+      }
+
       return link
     })
 
@@ -48,12 +101,59 @@ export class Outline {
       const empty = document.createElement("p")
       empty.className = "panel-empty"
       empty.textContent = "No headings"
-      this.element.replaceChildren(this.header, empty, this.footer)
+      this.element.replaceChildren(this.header, empty, this.#problems, this.footer, this.related)
     } else {
-      this.element.replaceChildren(this.header, ...this.#links, this.footer)
+      this.element.replaceChildren(
+        this.header,
+        ...this.#links,
+        this.#problems,
+        this.footer,
+        this.related,
+      )
     }
 
     this.#highlight()
+  }
+
+  showProblems(problems: Problem[], land: (problem: Problem) => void): void {
+    const links = problems.map((problem) => {
+      const link = document.createElement("a")
+      link.className = "outline-problem"
+      link.href = problem.anchor
+        ? `#${encodeURIComponent(problem.anchor)}`
+        : problem.block
+          ? `#^${encodeURIComponent(problem.block)}`
+          : `#L${problem.line}`
+      link.append(
+        Object.assign(document.createElement("span"), {
+          className: "outline-problem-line",
+          textContent: String(problem.line),
+        }),
+        ` ${problem.what}`,
+      )
+      link.addEventListener("click", (event) => {
+        event.preventDefault()
+        land(problem)
+      })
+      return link
+    })
+    const rest = links.slice(PROBLEMS_SHOWN)
+    const more = Object.assign(document.createElement("button"), {
+      type: "button",
+      className: "outline-problems-more",
+      textContent: `${rest.length} more`,
+    })
+
+    more.addEventListener("click", () => more.replaceWith(...rest))
+    this.#problems.hidden = links.length === 0
+    this.#problems.replaceChildren(
+      Object.assign(document.createElement("p"), {
+        className: "outline-problems-title",
+        textContent: "Problems",
+      }),
+      ...links.slice(0, PROBLEMS_SHOWN),
+      ...(rest.length > 0 ? [more] : []),
+    )
   }
 
   #schedule(): void {
@@ -90,16 +190,25 @@ export class Outline {
       link.classList.toggle("current", index === current)
     }
 
+    if (this.#headings[current] !== this.#section) {
+      this.#section = this.#headings[current]
+      this.onSection(this.#section)
+    }
+
     this.#reveal(this.#links[current])
   }
 
   /** Scrolls only the outline itself; scrollIntoView would also scroll the page being read. */
   #reveal(link: HTMLAnchorElement | undefined): void {
-    if (!link) {
+    if (!link || !this.#following) {
       return
     }
 
-    const top = link.offsetTop - this.element.offsetTop
+    const top =
+      link.getBoundingClientRect().top -
+      this.element.getBoundingClientRect().top -
+      this.element.clientTop +
+      this.element.scrollTop
     const bottom = top + link.offsetHeight
 
     if (top < this.element.scrollTop) {

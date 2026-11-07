@@ -9,16 +9,24 @@ import { pathToFileURL } from "node:url"
 import { modelStore } from "../src/server/model.ts"
 import { recordServing } from "../src/server/serving.ts"
 
-test("a malformed message gets a JSON-RPC error and the server stays up; a version folio does not speak is not echoed", async () => {
+test("a malformed message gets a JSON-RPC error and the server stays up; a version Folio does not speak is not echoed", async () => {
   const server = spawn(process.execPath, [
     new URL("../src/cli.ts", import.meta.url).pathname,
     "mcp",
     "--port",
     "1",
   ])
-  const replies: { id: unknown; result?: Record<string, unknown>; error?: { code: number } }[] = []
+  const replies: {
+    id: unknown
+    result?: Record<string, unknown>
+    error?: { code: number; message: string }
+  }[] = []
   const batches: unknown[][] = []
   let heard = ""
+  let said = ""
+  server.stderr.on("data", (chunk) => {
+    said += chunk
+  })
   server.stdout.on("data", (chunk) => {
     heard += chunk
     const lines = heard.split("\n")
@@ -81,7 +89,12 @@ test("a malformed message gets a JSON-RPC error and the server stays up; a versi
     assert.equal(byId(2)?.error?.code, -32602)
     assert.equal(byId(3)?.result?.protocolVersion, "2025-06-18")
     assert.equal(byId(4)?.result?.protocolVersion, "2025-03-26")
-    assert.equal(byId(6)?.error?.code, -32603)
+    assert.deepEqual(byId(6)?.error, {
+      code: -32603,
+      message:
+        "Internal error: folio mcp failed while answering this request. The reason is on its standard error, in the log your MCP client keeps.",
+    })
+    assert.match(said, /\btools\/call failed: URI malformed\n/)
     assert.equal((byId(9)?.result as { isError?: boolean } | undefined)?.isError, true)
     assert.deepEqual(
       batches.map((batch) => (batch as { id: unknown }[]).map(({ id }) => id)),
@@ -93,14 +106,17 @@ test("a malformed message gets a JSON-RPC error and the server stays up; a versi
     assert.deepEqual(byId(5)?.result, {})
     assert.equal(server.exitCode, null, "the server is still up")
 
-    const reference = fs.readFileSync(new URL("../docs/reference.md", import.meta.url), "utf8")
+    const reference = fs.readFileSync(
+      new URL("../docs/reference/command-line.md", import.meta.url),
+      "utf8",
+    )
     assert.match(reference, /It speaks MCP 2025-06-18, and 2025-03-26 or 2024-11-05/)
   } finally {
     server.kill()
   }
 })
 
-test("on standard error, folio mcp names the folio it reads, the agent, and every change in what answers there; standard output stays the protocol", async () => {
+test("on standard error, folio mcp names the Folio it reads, the agent, and every change in what answers there; standard output stays the protocol", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "folio-mcp-"))
   const socket = path.join(dir, "folio.sock")
   const serving = async (root: string) => {
@@ -168,12 +184,12 @@ test("on standard error, folio mcp names the folio it reads, the agent, and ever
     await new Promise((resolve) => server.once("exit", resolve))
 
     assert.deepEqual(lines(), [
-      `folio mcp reading the folio on ${socket}`,
+      `folio mcp reading the Folio on ${socket}`,
       "nothing answers there yet",
       "Test Agent 3 connected",
-      "a folio answers there now, serving /notes/a",
-      "that folio now serves /notes/b",
-      "that folio stopped answering",
+      "a Folio answers there now, serving /notes/a",
+      "that Folio now serves /notes/b",
+      "that Folio stopped answering",
       "Test Agent 3 left",
     ])
     assert.equal(server.exitCode, 0)
@@ -190,7 +206,7 @@ test("on standard error, folio mcp names the folio it reads, the agent, and ever
   }
 })
 
-test("the introduction routes to every tool within the 2,048 characters older Claude Code keeps; every tool has a title, all four hints and described, typed arguments", async () => {
+test("the introduction names the moments to call a tool and who the reader is before it routes to every tool, within the 4,096 characters Claude Code keeps; every tool has a title, all four hints and described, typed arguments", async () => {
   const replies = await exchange(
     ["--port", "1"],
     [
@@ -200,6 +216,10 @@ test("the introduction routes to every tool within the 2,048 characters older Cl
     ],
   )
   const { instructions } = replies[0].result as { instructions: string }
+  const [socketed] = await exchange(
+    ["--socket", path.join(os.tmpdir(), `${"s".repeat(90)}.sock`)],
+    [{ method: "initialize", params: { protocolVersion: "2025-06-18" } }],
+  )
   const { tools } = replies[1].result as {
     tools: {
       name: string
@@ -210,11 +230,43 @@ test("the introduction routes to every tool within the 2,048 characters older Cl
     }[]
   }
 
-  assert.ok(instructions.length <= 2048, `${instructions.length} characters`)
-  assert.equal(tools.length, 15)
+  for (const { length } of [
+    instructions,
+    (socketed.result as { instructions: string }).instructions,
+  ]) {
+    assert.ok(length < 4096, `${length} characters`)
+  }
+  assert.equal(tools.length, 16)
+
+  const routing = instructions.indexOf("Which tool answers what:")
+  const before = instructions.slice(0, routing)
+  const reader = before.split("\n\n").find((part) => part.startsWith("The reader is")) ?? ""
+  const moments = before.indexOf("Call them at these moments:")
+  assert.ok(moments >= 0 && moments < before.indexOf("The reader is"))
+  assert.match(before, /folio_query over folio\.links/)
+  assert.deepEqual(
+    before
+      .split("\n")
+      .filter((line) => line.startsWith("- "))
+      .map((line) => [line.slice(2, line.indexOf(":")), line.match(/folio_\w+/g)]),
+    [
+      ["Before editing, moving or deleting a file", ["folio_used_by", "folio_query"]],
+      ["After editing a document", ["folio_health"]],
+      ["Before writing a document of a kind", ["folio_kinds"]],
+      ["Before quoting a number from a data file in a document", ["folio_embed"]],
+    ],
+  )
+  assert.match(
+    reader,
+    /^The reader is the person reading the folder in their browser, usually the user you work for\. Call folio_presence, folio_reads, folio_changes, folio_needs and folio_stale only when the user's request is about what they see - this page, this paragraph - have read or must catch up on, or to fit a report to what they have not read yet; never for anything else\./,
+  )
+  assert.match(
+    reader,
+    /while the reader pauses sharing in Folio, they answer only \{paused: true, message\}/,
+  )
 
   for (const { name, title, description, inputSchema, annotations } of tools) {
-    assert.ok(instructions.includes(name), `${name} is routed to`)
+    assert.ok(instructions.slice(routing).includes(name), `${name} is routed to`)
     assert.ok(title.length > name.length && title !== name, name)
     assert.ok(description.length <= 2048, `${name}: ${description.length} characters`)
     assert.deepEqual(annotations, {
@@ -233,16 +285,82 @@ test("the introduction routes to every tool within the 2,048 characters older Cl
   const digest = tools.find(({ name }) => name === "folio_digest")
   assert.deepEqual(
     Object.values(digest?.inputSchema.properties ?? {}).map(({ type }) => type),
-    ["integer", "integer"],
+    ["string", "string"],
   )
 
   const unreached = replies[2].result as { content: { text: string }[]; isError: boolean }
   assert.equal(unreached.isError, true)
-  assert.match(unreached.content[0].text, /^No folio answers at http:\/\/localhost:1\/ \(/)
-  assert.match(unreached.content[0].text, /start one with `folio FOLDER`/)
+  assert.equal(
+    unreached.content[0].text,
+    "No Folio answers at http://localhost:1/ (connect ECONNREFUSED 127.0.0.1:1). These tools read a Folio serving the folder, and the user starts one: ask them to run `folio FOLDER`, or, when a Folio already serves it on another port or a socket, to start folio mcp with --port or --socket to match; then call again. Start no process yourself.",
+  )
+  assert.match(
+    instructions,
+    /\nA Folio must already be serving the folder, and the user starts it - as `folio FOLDER`, serving on http:\/\/localhost:8640\/ or the next free port - never you: a running Folio writes into the folder what its FOLIO\.md declares\. This server reads the Folio at http:\/\/localhost:1\/ \(--port or --socket chooses\)\. With none there, every call fails: ask the user to start one\./,
+  )
 })
 
-test("a period given as integers reaches folio as the digest's from and to", async () => {
+test("started by a Claude Code plugin, folio mcp names the plugin's Folio setting where it names --port or --socket; the setting, given as the argument, names a Folio by its address or socket, and empty finds one", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "folio-mcp-"))
+  const socket = path.join(dir, "folio.sock")
+  const notes = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-mcp-notes-")))
+  const onPort = await standIn(notes)
+  const onSocket = http.createServer((_request, response) => {
+    response.setHeader("Content-Type", "application/json")
+    response.end(JSON.stringify({ root: "/socketed" }))
+  })
+  await new Promise<void>((resolve) => onSocket.listen(socket, resolve))
+  const plugin = {
+    ...process.env,
+    CLAUDE_PLUGIN_ROOT: "/plugins/folio",
+    XDG_STATE_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "folio-mcp-state-")),
+  }
+  const initialize = { method: "initialize", params: { protocolVersion: "2025-06-18" } }
+  const documents = { method: "tools/call", params: { name: "folio_documents", arguments: {} } }
+
+  try {
+    const unreached = await exchange(
+      ["localhost:1"],
+      [initialize, { method: "tools/call", params: { name: "folio_health", arguments: {} } }],
+      plugin,
+    )
+    const found = await exchange([""], [initialize], plugin)
+    const address = await exchange([`localhost:${onPort.port}`], [documents], plugin)
+    const url = await exchange([`http://localhost:${onPort.port}/`], [documents], plugin)
+    const socketed = await exchange([socket], [documents], plugin)
+    const told = (reply: { result?: unknown }) =>
+      (reply.result as { instructions: string }).instructions
+
+    assert.match(
+      told(unreached[0]),
+      /\nA Folio must already be serving the folder, and the user starts it - as `folio FOLDER`, serving on http:\/\/localhost:8640\/ or the next free port - never you: a running Folio writes into the folder what its FOLIO\.md declares\. This server reads the Folio at http:\/\/localhost:1\/ \(the folio plugin's Folio setting chooses\)\. With none there, every call fails: ask the user to start one\./,
+    )
+    assert.deepEqual(unreached[1].result, {
+      content: [
+        {
+          type: "text",
+          text: "No Folio answers at http://localhost:1/ (connect ECONNREFUSED 127.0.0.1:1). These tools read a Folio serving the folder, and the user starts one: ask them to run `folio FOLDER`, or, when a Folio already serves it elsewhere, to set the folio plugin's Folio setting, in /config, to that Folio's address or socket; then call again. Start no process yourself.",
+        },
+      ],
+      isError: true,
+    })
+    assert.match(
+      told(found[0]),
+      /This server reads the Folio serving the nearest folder at or above one of your roots, or the folder it started in, else the Folio at http:\/\/localhost:8640\/ \(the folio plugin's Folio setting chooses one instead\)\./,
+    )
+    assert.ok(told(found[0]).length < 4096, `${told(found[0]).length} characters`)
+    assert.deepEqual(
+      [answered(address[0]), answered(url[0]), answered(socketed[0])],
+      [notes, notes, "/socketed"],
+    )
+  } finally {
+    await onPort.close()
+    onSocket.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("a period given as ISO times reaches Folio as the digest's from and to", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "folio-mcp-"))
   const socket = path.join(dir, "folio.sock")
   const asked: string[] = []
@@ -258,11 +376,143 @@ test("a period given as integers reaches folio as the digest's from and to", asy
       [
         {
           method: "tools/call",
-          params: { name: "folio_digest", arguments: { from: 1_000, to: 86_401_000 } },
+          params: {
+            name: "folio_digest",
+            arguments: { from: "2026-11-02", to: "2026-11-02T09:00:00+01:00" },
+          },
         },
       ],
     )
-    assert.ok(asked.includes("/?api=digest&from=1000&to=86401000"), asked.join("\n"))
+    assert.ok(
+      asked.includes("/?api=digest&from=2026-11-02&to=2026-11-02T09%3A00%3A00%2B01%3A00"),
+      asked.join("\n"),
+    )
+  } finally {
+    stand.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("the instructions name the folder the Folio serves; a tool's path outside it is refused naming it, and one under it reaches Folio", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "folio-mcp-"))
+  const socket = path.join(dir, "folio.sock")
+  const asked: string[] = []
+  const stand = http.createServer((request, response) => {
+    asked.push(request.url ?? "")
+    response.setHeader("Content-Type", "application/json")
+    response.end(JSON.stringify(request.url === "/?api" ? { root: "/notes" } : {}))
+  })
+  await new Promise<void>((resolve) => stand.listen(socket, resolve))
+
+  try {
+    const [initialized, outside, under, source] = await exchange(
+      ["--socket", socket],
+      [
+        { method: "initialize", params: { protocolVersion: "2025-06-18" } },
+        {
+          method: "tools/call",
+          params: { name: "folio_document", arguments: { path: "/etc/hosts" } },
+        },
+        {
+          method: "tools/call",
+          params: { name: "folio_document", arguments: { path: "/notes/plans/q3.md" } },
+        },
+        {
+          method: "tools/call",
+          params: {
+            name: "folio_provenance",
+            arguments: { path: "plans/q3.md", block: "3f9a1c2e", source: "/notesy/a.md" },
+          },
+        },
+      ],
+    )
+    const text = (reply: { result?: unknown }) =>
+      (reply.result as { content: { text: string }[] }).content[0].text
+
+    assert.match(
+      (initialized.result as { instructions: string }).instructions,
+      /\nThe served folder is \/notes\. Paths are relative to it, or absolute under it, with forward slashes/,
+    )
+    assert.equal(
+      text(outside),
+      "/etc/hosts is outside the served folder, /notes: a path is relative to it, or absolute under it.",
+    )
+    assert.equal(
+      text(source),
+      "/notesy/a.md is outside the served folder, /notes: a path is relative to it, or absolute under it.",
+    )
+    assert.equal(text(under), "{}")
+    assert.ok(asked.includes("/plans/q3.md?api=document"), asked.join("\n"))
+    assert.ok(
+      !asked.some((url) => url.includes("hosts") || url.includes("notesy")),
+      asked.join("\n"),
+    )
+  } finally {
+    stand.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("a list too long for one answer is cut to fit, saying how many entries each list left out and how to narrow; a short list, an answer with no list to cut and a query's rows pass whole", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "folio-mcp-"))
+  const socket = path.join(dir, "folio.sock")
+  const many = (count: number) =>
+    Array.from({ length: count }, (_, at) => ({ path: `notes/day-${at}.md`, kind: null }))
+  const answers: Record<string, unknown> = {
+    "/?api": { root: "/notes" },
+    "/?api=documents": { ready: true, documents: many(3000) },
+    "/small/?api=documents": { ready: true, documents: many(3) },
+    "/?api=digest": { from: "a", to: "b", documents: many(2000), values: many(3) },
+    "/notes/day-1.md?api=history&version=v1": {
+      path: "notes/day-1.md",
+      version: "v1",
+      text: "words ".repeat(5000),
+    },
+    "/?api=query&sql=select+1": { columns: [], rows: many(3000), total: 3000, partial: false },
+  }
+  const stand = http.createServer((request, response) => {
+    response.setHeader("Content-Type", "application/json")
+    response.end(JSON.stringify(answers[request.url ?? ""] ?? {}))
+  })
+  await new Promise<void>((resolve) => stand.listen(socket, resolve))
+
+  try {
+    const [whole, small, digest, version, query] = (
+      await exchange(
+        ["--socket", socket],
+        [
+          { method: "tools/call", params: { name: "folio_documents", arguments: {} } },
+          {
+            method: "tools/call",
+            params: { name: "folio_documents", arguments: { folder: "small" } },
+          },
+          { method: "tools/call", params: { name: "folio_digest", arguments: {} } },
+          {
+            method: "tools/call",
+            params: { name: "folio_history", arguments: { path: "notes/day-1.md", version: "v1" } },
+          },
+          { method: "tools/call", params: { name: "folio_query", arguments: { sql: "select 1" } } },
+        ],
+      )
+    ).map((reply) => (reply.result as { content: { text: string }[] }).content[0].text)
+    const cut = JSON.parse(whole)
+    const period = JSON.parse(digest)
+
+    assert.ok(whole.length <= 20_000, `${whole.length} characters`)
+    assert.equal(cut.documents.length + cut.omitted.documents, 3000)
+    assert.ok(cut.documents.length > 100, `${cut.documents.length} kept`)
+    assert.deepEqual(cut.documents[0], { path: "notes/day-0.md", kind: null })
+    assert.equal(
+      cut.narrow,
+      "Give folder, such as notes/, for only the documents under it, a deeper one for less.",
+    )
+    assert.equal(small, JSON.stringify(answers["/small/?api=documents"]))
+    assert.ok(digest.length <= 20_000, `${digest.length} characters`)
+    assert.equal(period.documents.length + period.omitted.documents, 2000)
+    assert.deepEqual([period.values.length, period.omitted.values], [3, undefined])
+    assert.equal(version, JSON.stringify(answers["/notes/day-1.md?api=history&version=v1"]))
+    assert.equal(period.narrow, "Give a shorter period with from and to.")
+    assert.equal(query, JSON.stringify(answers["/?api=query&sql=select+1"]))
   } finally {
     stand.close()
     fs.rmSync(dir, { recursive: true, force: true })
@@ -272,12 +522,13 @@ test("a period given as integers reaches folio as the digest's from and to", asy
 async function exchange(
   args: string[],
   requests: { method: string; params: object }[],
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ id: number; result?: unknown }[]> {
-  const server = spawn(process.execPath, [
-    new URL("../src/cli.ts", import.meta.url).pathname,
-    "mcp",
-    ...args,
-  ])
+  const server = spawn(
+    process.execPath,
+    [new URL("../src/cli.ts", import.meta.url).pathname, "mcp", ...args],
+    { env },
+  )
   let heard = ""
   server.stdout.on("data", (chunk) => {
     heard += chunk
@@ -303,7 +554,7 @@ async function exchange(
   }
 }
 
-test("an agent that leaves at once still hears what answers at folio's address before it leaves", async () => {
+test("an agent that leaves at once still hears what answers at Folio's address before it leaves", async () => {
   const server = spawn(process.execPath, [
     new URL("../src/cli.ts", import.meta.url).pathname,
     "mcp",
@@ -323,40 +574,62 @@ test("an agent that leaves at once still hears what answers at folio's address b
       .filter(Boolean)
       .map((line) => line.replace(/^\d\d:\d\d:\d\d /, "")),
     [
-      "folio mcp reading the folio at http://localhost:1/",
+      "folio mcp reading the Folio at http://localhost:1/",
       "nothing answers there yet",
       "the agent left",
     ],
   )
 })
 
-test("a program on folio's address that is no folio gets the same answer as no program at all", async () => {
+test("a program on Folio's address that is no Folio gets the same answer as no program at all, a page or a refusal of its own; a refusal with no type, as Node's parser gives, is Folio's", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "folio-mcp-"))
   const socket = path.join(dir, "other.sock")
+  let status = 200
   const other = http.createServer((_request, response) => {
+    response.statusCode = status
+
+    if (status === 431) {
+      response.end()
+      return
+    }
+
     response.setHeader("Content-Type", "text/html")
     response.end("<h1>Welcome</h1>")
   })
   await new Promise<void>((resolve) => other.listen(socket, resolve))
 
   try {
-    const [reply] = await exchange(
+    for (const answered of [200, 404]) {
+      status = answered
+      const [reply] = await exchange(
+        ["--socket", socket],
+        [{ method: "tools/call", params: { name: "folio_health", arguments: {} } }],
+      )
+      const { content, isError } = reply.result as { content: { text: string }[]; isError: boolean }
+      assert.equal(isError, true)
+      assert.match(
+        content[0].text,
+        /^No Folio answers on .*other\.sock \(what answers there is no Folio\)\./,
+        `${answered}`,
+      )
+    }
+
+    status = 431
+    const [refused] = await exchange(
       ["--socket", socket],
       [{ method: "tools/call", params: { name: "folio_health", arguments: {} } }],
     )
-    const { content, isError } = reply.result as { content: { text: string }[]; isError: boolean }
-    assert.equal(isError, true)
-    assert.match(
-      content[0].text,
-      /^No folio answers on .*other\.sock \(what answers there is no folio\)\./,
-    )
+    assert.deepEqual(refused.result, {
+      content: [{ type: "text", text: "Folio answered 431." }],
+      isError: true,
+    })
   } finally {
     other.close()
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
 
-test("given no port or socket, folio mcp reads the folio serving the nearest folder at or above one of the agent's roots, says which, and finds it again once it moves", async () => {
+test("given no port or socket, folio mcp reads the Folio serving the nearest folder at or above one of the agent's roots, says which, and finds it again once it moves", async () => {
   const env = {
     ...process.env,
     XDG_STATE_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "folio-mcp-state-")),
@@ -403,22 +676,22 @@ test("given no port or socket, folio mcp reads the folio serving the nearest fol
     assert.equal(answered(await agent.reply(4)), plans)
 
     await agent.end()
-    assert.ok(instructions.length <= 2048, `${instructions.length} characters`)
+    assert.ok(instructions.length < 4096, `${instructions.length} characters`)
     assert.match(
       instructions,
-      /reads the folio serving the nearest folder at or above one of your roots, or the folder it started in, else the folio at http:\/\/localhost:8640\//,
+      /reads the Folio serving the nearest folder at or above one of your roots, or the folder it started in, else the Folio at http:\/\/localhost:8640\//,
     )
     assert.deepEqual(agent.said(), [
-      "folio mcp reading the folio serving the agent's folder",
-      `found the folio at http://localhost:${stands[1].port}/`,
-      `that folio serves ${other}`,
+      "folio mcp reading the Folio serving the agent's folder",
+      `found the Folio at http://localhost:${stands[1].port}/`,
+      `that Folio serves ${other}`,
       "Root Agent 1 connected",
-      `found the folio at http://localhost:${stands[0].port}/`,
-      `that folio serves ${notes}`,
-      `found the folio at http://localhost:${stands[2].port}/`,
-      `that folio serves ${plans}`,
-      `found the folio at http://localhost:${stands[3].port}/`,
-      `that folio serves ${plans}`,
+      `found the Folio at http://localhost:${stands[0].port}/`,
+      `that Folio serves ${notes}`,
+      `found the Folio at http://localhost:${stands[2].port}/`,
+      `that Folio serves ${plans}`,
+      `found the Folio at http://localhost:${stands[3].port}/`,
+      `that Folio serves ${plans}`,
       "Root Agent 1 left",
     ])
   } finally {
@@ -427,7 +700,7 @@ test("given no port or socket, folio mcp reads the folio serving the nearest fol
   }
 })
 
-test("a client naming no roots: the folder folio mcp started in; a folio killed without stopping, or no folio, leaves 8640", async () => {
+test("a client naming no roots: the folder folio mcp started in; a Folio killed without stopping, or no Folio, leaves 8640", async () => {
   const env = {
     ...process.env,
     XDG_STATE_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "folio-mcp-state-")),
@@ -461,14 +734,14 @@ test("a client naming no roots: the folder folio mcp started in; a folio killed 
     await unserved.settled(2)
     await Promise.all([rooted.end(), unserved.end()])
     assert.deepEqual(rooted.said().slice(1, 3), [
-      `found the folio at http://localhost:${stands[0].port}/`,
-      `that folio serves ${notes}`,
+      `found the Folio at http://localhost:${stands[0].port}/`,
+      `that Folio serves ${notes}`,
     ])
     assert.equal(
       unserved.said()[1],
-      `no folio serves ${gone} or a folder above it; reading the folio at http://localhost:8640/`,
+      `no Folio serves ${gone} or a folder above it; reading the Folio at http://localhost:8640/`,
     )
-    assert.equal(stands[1].asked.length, 0, "the dead folio's port is never asked")
+    assert.equal(stands[1].asked.length, 0, "the dead Folio's port is never asked")
   } finally {
     await Promise.all([rooted.end(), unserved.end()])
     await Promise.all(stands.map((stand) => stand.close()))

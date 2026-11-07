@@ -10,6 +10,7 @@ import { check } from "./server/check.ts"
 import { Data } from "./server/data.ts"
 import { documentsOf } from "./server/documents.ts"
 import { Hub } from "./server/events.ts"
+import { guarded } from "./server/failures.ts"
 import { healthOf } from "./server/health.ts"
 import { createHandler, type Log, listen, listenFree } from "./server/http.ts"
 import { impactOf } from "./server/impact.ts"
@@ -17,9 +18,12 @@ import { Indexer } from "./server/indexer.ts"
 import { lsp } from "./server/lsp.ts"
 import { mcp } from "./server/mcp.ts"
 import { Model, modelStore } from "./server/model.ts"
+import { relatedOf } from "./server/related.ts"
 import { savedOf } from "./server/saved.ts"
 import { recordServing, servingAt } from "./server/serving.ts"
+import { shownChanges, shownNeeds, shownOf } from "./server/shown.ts"
 import { listenSocket } from "./server/socket.ts"
+import { flushStale } from "./server/stale.ts"
 import { helpText, painter, reading, terminal } from "./server/terminal.ts"
 
 let options: ReturnType<typeof parseOptions>
@@ -37,7 +41,7 @@ if (options.command === "help") {
 }
 
 if (options.command === "version") {
-  console.log(`folio ${version()}`)
+  console.log(`Folio ${version()}`)
   process.exit(0)
 }
 
@@ -57,12 +61,12 @@ try {
   fail((error as Error).message, 2)
 }
 
-/** A model of the folder in this process alone, from the store a folio serving it keeps. */
+/** A model of the folder in this process alone, from the store a Folio serving it keeps. */
 const standalone = (folder: string, log: Log = () => {}) => {
   const indexer = new Indexer(new URL("./index-worker.js", import.meta.url))
   const store = modelStore(folder)
   const model = new Model(folder, store, indexer, log)
-  const data = new Data(folder, store)
+  const data = guarded("data engine", new Data(folder, store))
   data.useBlocks((file, text) => model.blocksReady(file, text))
   data.useDocuments(documentsOf(model))
   return {
@@ -105,7 +109,7 @@ const hub = new Hub(root, build, log)
 const indexer = new Indexer(new URL("./index-worker.js", import.meta.url))
 const store = modelStore(root)
 const model = new Model(root, store, indexer, log)
-const data = new Data(root, store)
+const data = guarded("data engine", new Data(root, store))
 data.useBlocks((file, text) => model.blocksReady(file, text))
 data.useDocuments(documentsOf(model))
 hub.follow(model)
@@ -132,7 +136,7 @@ try {
 }
 
 const paint = painter(process.stdout)
-console.log(`${paint("bold", "folio")} serving ${root}`)
+console.log(`${paint("bold", "Folio")} serving ${root}`)
 console.log(`  at ${paint("cyan", `http://localhost:${port}/`)}${taken(options.port, port)}`)
 
 for (const socket of sockets) {
@@ -142,7 +146,7 @@ for (const socket of sockets) {
 try {
   recordServing(store, port)
 } catch (error) {
-  log(`folio check and folio mcp cannot find this folio: ${(error as Error).message}`, "warning")
+  log(`folio check and folio mcp cannot find this Folio: ${(error as Error).message}`, "warning")
 }
 
 output.progress(() => reading(model))
@@ -152,19 +156,28 @@ model
   .finally(() => output.progress(undefined))
   .then(() => {
     savedOf(model, data).start()
+    relatedOf(model).start()
+    // Worked out now, not when a page first asks, and kept for the next start.
+    void Promise.all([shownNeeds(model, data), shownChanges(model, data)]).catch((error: Error) =>
+      log(`what needs you: ${error.message}`),
+    )
     return impactOf(model, data).refresh()
   })
   .catch((error: Error) => log(`model: ${error.message}`))
 
-// A read recorded a moment before folio stops, and health worked out, are written before it exits.
+// A read recorded a moment before Folio stops, and health worked out, are written before it exits.
 for (const [signal, code] of [
   ["SIGINT", 130],
   ["SIGTERM", 143],
 ] as const) {
   process.once(signal, () => {
-    void Promise.all([model.reads.flush(), healthOf(model, data).flush()]).finally(() =>
-      process.exit(code),
-    )
+    void Promise.allSettled([
+      model.reads.flush(),
+      healthOf(model, data).flush(),
+      shownOf(model).flush(),
+      flushStale(model),
+      data.close(),
+    ]).finally(() => process.exit(code))
   })
 }
 

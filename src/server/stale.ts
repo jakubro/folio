@@ -24,8 +24,17 @@ export interface StaleState {
   watched: string[]
 }
 
+interface Kept {
+  times: Map<string, { hash: string; at: number }>
+  moved: boolean
+  writing: Promise<void>
+}
+
 const UNCHANGED_MS = 365 * 86_400_000
-const CHANGED = new WeakMap<Model, Map<string, { hash: string; at: number }>>()
+const READ_AT_ONCE = 32
+const KEPT_FILE = "stale.json"
+const KEPT_FORMAT = 1
+const KEPT = new WeakMap<Model, Promise<Kept>>()
 
 export async function staleOf(model: Model, data: Data, now = Date.now()): Promise<StaleState> {
   if (!model.ready) {
@@ -33,6 +42,7 @@ export async function staleOf(model: Model, data: Data, now = Date.now()): Promi
   }
 
   await model.reads.load()
+  const kept = await keptOf(model)
   const conventions = conventionsOf(model)
   const declaring = conventions
     .all()
@@ -43,12 +53,25 @@ export async function staleOf(model: Model, data: Data, now = Date.now()): Promi
   const documents: Outlived[] = []
   const watch = new Set<string>()
 
-  for (const urlPath of model.paths()) {
-    if (nearest(urlPath) || model.reads.get(urlPath) || model.linkedFrom(urlPath).length > 0) {
-      continue
-    }
+  const candidates = model
+    .paths()
+    .filter(
+      (urlPath) =>
+        !nearest(urlPath) && !model.reads.get(urlPath) && model.linkedFrom(urlPath).length === 0,
+    )
+  const times = new Map<string, number>()
+  let next = 0
 
-    const time = await changedAt(model, urlPath)
+  await Promise.all(
+    Array.from({ length: READ_AT_ONCE }, async () => {
+      for (let at = next++; at < candidates.length; at = next++) {
+        times.set(candidates[at], await changedAt(model, kept, candidates[at]))
+      }
+    }),
+  )
+
+  for (const urlPath of candidates) {
+    const time = times.get(urlPath) ?? 0
 
     if (time < now - UNCHANGED_MS) {
       documents.push({
@@ -70,13 +93,14 @@ export async function staleOf(model: Model, data: Data, now = Date.now()): Promi
 
   for (const declaration of declaring) {
     documents.push(
-      ...(await declared(model, data, declaration, nearest, watch)).filter(
+      ...(await declared(model, data, kept, declaration, nearest, watch)).filter(
         (outlived) => outlived.path === declaration.path || !used(outlived),
       ),
     )
   }
 
   documents.sort((a, b) => a.changed.localeCompare(b.changed) || a.path.localeCompare(b.path))
+  keep(model, kept)
 
   return {
     ready: true,
@@ -89,6 +113,7 @@ export async function staleOf(model: Model, data: Data, now = Date.now()): Promi
 async function declared(
   model: Model,
   data: Data,
+  kept: Kept,
   declaration: Declaration,
   nearest: (urlPath: string) => Declaration | undefined,
   watch: Set<string>,
@@ -103,7 +128,7 @@ async function declared(
     return [
       {
         path: declaration.path,
-        changed: new Date(await changedAt(model, declaration.path)).toISOString(),
+        changed: new Date(await changedAt(model, kept, declaration.path)).toISOString(),
         why: `The stale query cannot run: ${run.error ?? "it returns no path column."}`,
       },
     ]
@@ -116,7 +141,7 @@ async function declared(
   return Promise.all(
     named.map(async (urlPath) => ({
       path: urlPath,
-      changed: new Date(await changedAt(model, urlPath)).toISOString(),
+      changed: new Date(await changedAt(model, kept, urlPath)).toISOString(),
       why: `Named by the stale query of ${declaration.path}`,
     })),
   )
@@ -124,13 +149,11 @@ async function declared(
 
 /**
  * When the text the document holds now first appeared - committed, saved, or else the file's time, which
- * a checkout resets - kept while the text holds.
+ * a checkout resets - kept while the text holds, in the store too, so a restart reads no history for it.
  */
-async function changedAt(model: Model, urlPath: string): Promise<number> {
-  const held = CHANGED.get(model) ?? new Map<string, { hash: string; at: number }>()
-  CHANGED.set(model, held)
+async function changedAt(model: Model, kept: Kept, urlPath: string): Promise<number> {
   const hash = model.hashOf(urlPath) ?? ""
-  const known = held.get(urlPath)
+  const known = kept.times.get(urlPath)
 
   if (known?.hash === hash) {
     return known.at
@@ -141,6 +164,55 @@ async function changedAt(model: Model, urlPath: string): Promise<number> {
     newest?.at ??
     fs.statSync(path.join(model.root, urlPath), { throwIfNoEntry: false })?.mtimeMs ??
     0
-  held.set(urlPath, { hash, at })
+  kept.times.set(urlPath, { hash, at })
+  kept.moved = true
   return at
+}
+
+export async function flushStale(model: Model): Promise<void> {
+  await (await KEPT.get(model))?.writing
+}
+
+function keptOf(model: Model): Promise<Kept> {
+  let kept = KEPT.get(model)
+
+  if (!kept) {
+    kept = fs.promises
+      .readFile(path.join(model.store, KEPT_FILE), "utf8")
+      .then(
+        (text) =>
+          JSON.parse(text) as {
+            format?: number
+            times?: Record<string, { hash: string; at: number }>
+          },
+      )
+      .then(
+        (stored) =>
+          new Map(stored.format === KEPT_FORMAT ? Object.entries(stored.times ?? {}) : []),
+      )
+      .catch(() => new Map())
+      .then((times) => ({ times, moved: false, writing: Promise.resolve() }))
+    KEPT.set(model, kept)
+  }
+
+  return kept
+}
+
+function keep(model: Model, kept: Kept): void {
+  if (!kept.moved) {
+    return
+  }
+
+  kept.moved = false
+  const file = path.join(model.store, KEPT_FILE)
+  const times = Object.fromEntries(
+    [...kept.times].filter(([urlPath]) => model.hashOf(urlPath) !== undefined),
+  )
+  kept.writing = kept.writing
+    .then(async () => {
+      await fs.promises.mkdir(model.store, { recursive: true })
+      await fs.promises.writeFile(`${file}.tmp`, JSON.stringify({ format: KEPT_FORMAT, times }))
+      await fs.promises.rename(`${file}.tmp`, file)
+    })
+    .catch((error: Error) => model.log(`stale: cannot keep the documents' times: ${error.message}`))
 }

@@ -56,8 +56,8 @@ test("Diagram file, dark", async ({ page }) => {
 test("Expanded diagram", async ({ page }) => {
   await show(page, "README.md")
   await page.hover(".mermaid")
-  await page.click(".mermaid-expand")
-  await page.waitForSelector(".mermaid-zoom.visible svg")
+  await page.click(".mermaid .drawn-expand")
+  await page.waitForSelector(".viewer.visible svg")
   await page.mouse.move(0, 0)
   await expect(page).toHaveScreenshot("diagram-expanded.png")
 })
@@ -70,7 +70,7 @@ test("Folder listing, with its folder expanded in the tree", async ({ page }) =>
 test("Tree hidden", async ({ page }) => {
   await show(page, "calibration.md")
   await page.click('button[title="Show or hide the file tree"]')
-  await page.mouse.move(0, 400)
+  await page.mouse.move(700, 20)
   await whole(page, "tree-hidden.png")
 })
 
@@ -79,7 +79,7 @@ test("Panels hidden, full width", async ({ page }) => {
   await page.click('button[title="Show or hide the file tree"]')
   await page.click('button[title="Show or hide the outline"]')
   await page.click('button[title="Full width"]')
-  await page.mouse.move(0, 400)
+  await page.mouse.move(700, 20)
   await whole(page, "panels-hidden-full-width.png")
 })
 

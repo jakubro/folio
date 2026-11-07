@@ -1,4 +1,4 @@
-/** The redraw event of folio's output contract: after every redraw, which blocks appeared, changed and went. */
+/** The redraw event of Folio's output contract: after every redraw, which blocks appeared, changed and went. */
 
 export interface Redraw {
   page: string

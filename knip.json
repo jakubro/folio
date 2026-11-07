@@ -8,6 +8,7 @@
     "src/server/yaml-worker.ts",
     "src/server/sqlite-reader.ts",
     "src/server/draw-worker.ts",
+    "src/server/embed-worker.ts",
     "test/*.test.ts",
     "test/*-worker.ts",
     "e2e/*.test.ts"
@@ -18,6 +19,8 @@
     "@biomejs/biome",
     "@fontsource/arimo",
     "@fontsource/jetbrains-mono",
-    "katex"
+    "@huggingface/tokenizers",
+    "katex",
+    "onnxruntime-node"
   ]
 }

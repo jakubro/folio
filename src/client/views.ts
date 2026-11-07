@@ -1,4 +1,4 @@
-/** Views folio builds itself, each named by a query on an address rather than by a file. */
+/** Views Folio builds itself, each named by a query on an address rather than by a file. */
 
 import type { Need, NeedsState } from "../server/needs.ts"
 import type { StaleState } from "../server/stale.ts"
@@ -183,10 +183,7 @@ function catchUp({ documents }: Changes): HTMLElement {
   element.append(digests)
 
   for (const [period, held] of byPeriod(documents)) {
-    element.append(
-      Object.assign(document.createElement("h2"), { textContent: period }),
-      catchUpList(held),
-    )
+    element.append(section("h2", period), catchUpList(held))
   }
 
   if (documents.length === 0) {
@@ -257,10 +254,9 @@ function needsArticle({ ready, needs }: NeedsState): HTMLElement {
   if (!ready) {
     element.append(
       Object.assign(document.createElement("p"), {
-        textContent: "folio is still reading the folder.",
+        textContent: "Folio is still reading the folder.",
       }),
     )
-    return element
   }
 
   for (const source of Object.keys(SOURCES) as Need["source"][]) {
@@ -270,21 +266,18 @@ function needsArticle({ ready, needs }: NeedsState): HTMLElement {
       continue
     }
 
-    element.append(Object.assign(document.createElement("h2"), { textContent: SOURCES[source] }))
+    element.append(section("h2", SOURCES[source]))
 
     if (source === "changed") {
       for (const [period, held] of byPeriod(found)) {
-        element.append(
-          Object.assign(document.createElement("h3"), { textContent: period }),
-          needsList(source, held),
-        )
+        element.append(section("h3", period), needsList(source, held))
       }
     } else {
       element.append(needsList(source, found))
     }
   }
 
-  if (needs.length === 0) {
+  if (ready && needs.length === 0) {
     element.append(
       Object.assign(document.createElement("p"), { textContent: "Nothing needs you." }),
     )
@@ -330,8 +323,8 @@ function staleArticle({ ready, documents }: StaleState): HTMLElement {
     Object.assign(document.createElement("p"), {
       className: "history-of",
       textContent: ready
-        ? "Documents that have probably outlived their use. folio only lists them: archive or remove them by hand."
-        : "folio is still reading the folder.",
+        ? "Documents that have probably outlived their use. Folio only lists them: archive or remove them by hand."
+        : "Folio is still reading the folder.",
     }),
   )
 
@@ -464,6 +457,16 @@ function sharingSwitch(): HTMLElement {
     toggle,
   )
   return line
+}
+
+/** The outline lists it; `data-outline` also keeps it from folding as a document's heading. */
+function section(tag: "h2" | "h3", text: string): HTMLElement {
+  const heading = Object.assign(document.createElement(tag), {
+    textContent: text,
+    id: text.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+  })
+  heading.dataset.outline = tag[1]
+  return heading
 }
 
 function viewArticle(title: string): HTMLElement {

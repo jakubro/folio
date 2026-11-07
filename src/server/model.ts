@@ -6,6 +6,7 @@ import os from "node:os"
 import path from "node:path"
 import GithubSlugger from "github-slugger"
 import { type Block, titleOf, versionOf } from "./blocks.ts"
+import { guarded } from "./failures.ts"
 import {
   isDocument,
   isPruned,
@@ -54,7 +55,7 @@ export interface PageBlock {
   version: string
 }
 
-const FORMAT = 17
+const FORMAT = 19
 const DEBOUNCE_MS = 50
 const RETRY_MS = 10_000
 const EXCERPT = 100
@@ -91,6 +92,8 @@ export class Model {
   readonly #listeners = new Set<(changed?: readonly string[]) => void>()
   readonly #folderListeners = new Set<(dir: string) => void>()
   readonly #prepared = new Map<string, { hash: string; blocks: Block[] }>()
+  /** Documents of folders the walk leaves out, parsed when a tool asks about them; never part of the model. */
+  readonly #apart = new Map<string, Document>()
   readonly #preparing = new Set<string>()
   readonly #incoming = new Map<string, Set<string>>()
   readonly #outgoing = new Map<string, Set<string>>()
@@ -117,15 +120,16 @@ export class Model {
     this.#retryMs = retryMs
     this.root = root
     this.store = store
-    this.reads = new Reads(
-      store,
-      (urlPath) => this.#documents.get(urlPath)?.blocks,
-      log,
-      (urlPath, id) => this.#documents.get(urlPath)?.gone?.[id],
+    this.reads = guarded(
+      "read record",
+      new Reads(
+        store,
+        (urlPath) => this.#documents.get(urlPath)?.blocks,
+        log,
+        (urlPath, id) => this.#documents.get(urlPath)?.gone?.[id],
+      ),
     )
-    this.history = new History(root, store, log, (text, kind, previous) =>
-      indexer.split(text, kind, previous),
-    )
+    this.history = guarded("history", new History(root, store, log, indexer.beside))
   }
 
   /** Index the whole folder, reusing what the store holds for files unchanged since, then follow it. */
@@ -172,20 +176,60 @@ export class Model {
 
   /** A document's blocks, each with its identity, kind, lines and the start of its text. */
   inspect(urlPath: string): object | undefined {
-    const document = this.#documents.get(urlPath)
+    const document = this.#documents.get(urlPath) ?? this.#apart.get(urlPath)
+    const blocks = document?.blocks
+    const kind = document?.kind
 
-    return (
-      document && {
-        path: document.path,
-        kind: document.kind,
-        blocks: document.blocks.map(({ id, kind, lines, text }) => ({
-          id,
-          kind,
-          lines,
-          text: excerpt(text),
-        })),
+    if (!blocks || !isDocument(kind)) {
+      return undefined
+    }
+
+    return {
+      path: urlPath,
+      kind,
+      blocks: blocks.map(({ id, kind: blockKind, lines, text }) => ({
+        id,
+        kind: blockKind,
+        lines,
+        text: excerpt(text),
+      })),
+    }
+  }
+
+  /** Parse a document of a dot-folder or `node_modules` now, never into the model; `apart` then answers it. */
+  async readApart(urlPath: string): Promise<void> {
+    const target = urlPath.split("/").some(isPruned) ? renderable(this.#root, urlPath) : undefined
+
+    if (!target || !isDocument(target.kind)) {
+      return
+    }
+
+    const text = fs.readFileSync(target.file, "utf8")
+    const version = hash(text)
+    const previous = this.#apart.get(urlPath)
+
+    if (previous?.hash === version) {
+      return
+    }
+
+    try {
+      await this.#blocksFor(urlPath, target.kind, text)
+    } catch (error) {
+      if (error instanceof IndexerDown) {
+        return
       }
-    )
+
+      this.log(`model: cannot index ${urlPath}: ${(error as Error).message}`)
+      this.#apart.set(
+        urlPath,
+        this.#dated({ path: urlPath, kind: target.kind, hash: version, blocks: [] }, previous),
+      )
+    }
+  }
+
+  /** A document of a folder the walk leaves out, as `readApart` last parsed it. */
+  apart(urlPath: string): { hash: string; blocks: Block[] } | undefined {
+    return this.#apart.get(urlPath)
   }
 
   /** The other documents linking to a document. */
@@ -265,7 +309,7 @@ export class Model {
   blocksReady(file: string, text: string): Block[] | undefined {
     const urlPath = this.#urlPath(file)
     const version = hash(text)
-    const held = this.#documents.get(urlPath)
+    const held = this.#documents.get(urlPath) ?? this.#apart.get(urlPath)
     const prepared = this.#prepared.get(urlPath)
 
     if (held?.hash === version) {
@@ -486,9 +530,12 @@ export class Model {
     const version = hash(text)
 
     return this.#serially(urlPath, async () => {
+      const apart = urlPath.split("/").some(isPruned)
       const held = this.#documents.get(urlPath)
       // A moved document asked for before its new place is indexed keeps its ids; indexing moves the rest.
-      const known = held ?? (await this.#stored(urlPath)) ?? this.#movedTo(version)
+      const known =
+        (apart ? this.#apart.get(urlPath) : (held ?? (await this.#stored(urlPath)))) ??
+        this.#movedTo(version)
 
       if (known?.hash === version && known.kind === kind) {
         return known.blocks
@@ -500,7 +547,12 @@ export class Model {
 
       const split = await this.#indexer.split(text, kind, known?.blocks)
 
-      if (this.#documents.get(urlPath) === held && !urlPath.split("/").some(isPruned)) {
+      if (apart) {
+        this.#apart.set(
+          urlPath,
+          this.#dated({ path: urlPath, kind, hash: version, blocks: split }, known),
+        )
+      } else if (this.#documents.get(urlPath) === held) {
         this.#saved(urlPath, text, known)
         this.#put(this.#dated({ path: urlPath, kind, hash: version, blocks: split }, known))
         this.#notify([urlPath])
@@ -676,7 +728,8 @@ export class Model {
     const parts = new Map<string, string>()
 
     for (const { id, source } of page) {
-      const held = this.#documents.get(source) ?? this.#prepared.get(source)
+      const held =
+        this.#documents.get(source) ?? this.#apart.get(source) ?? this.#prepared.get(source)
       const block = held?.blocks.find((found) => found.id === id)
 
       if (block) {
@@ -751,7 +804,7 @@ export class Model {
 
   /**
    * Old saves thin once a day too, not only when their document is saved again; the first sweep
-   * waits a minute, so the pages opened as folio starts never compete with it.
+   * waits a minute, so the pages opened as Folio starts never compete with it.
    */
   #sweep(): void {
     const sweep = () =>
@@ -765,7 +818,7 @@ export class Model {
     this.#sweeping.unref()
   }
 
-  /** A save is kept from the moment folio first knew the document; the first walk knows them all. */
+  /** A save is kept from the moment Folio first knew the document; the first walk knows them all. */
   #saved(urlPath: string, text: string, known: Document | undefined): void {
     if (known ? known.hash !== "" : this.#ready) {
       void this.history.saved(urlPath, text, mtimeOf(path.join(this.#root, urlPath)))
@@ -881,7 +934,7 @@ export class Model {
 }
 
 /**
- * A document another format stored, one an upgrade cut short left or an older folio wrote since, lends its
+ * A document another format stored, one an upgrade cut short left or an older Folio wrote since, lends its
  * ids but is parsed again.
  */
 function current(stored: Stored | undefined): Document | undefined {

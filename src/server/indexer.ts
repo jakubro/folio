@@ -1,13 +1,13 @@
 /** Splits documents into blocks on a worker thread, so a long document never holds up a request. */
 
+import os from "node:os"
 import { Worker } from "node:worker_threads"
-import type { Block } from "./blocks.ts"
+import type { Block, Part } from "./blocks.ts"
 
-interface Request {
-  text: string
-  kind: "markdown" | "mermaid"
-  previous: Block[]
-}
+type Request = { previous: Block[] } & (
+  | { text: string; kind: "markdown" | "mermaid" }
+  | { parts: Part[] }
+)
 
 interface Reply {
   ready?: true
@@ -23,6 +23,7 @@ interface Waiting {
 }
 
 const IDLE_MS = 10_000
+const BESIDE = Math.min(4, Math.max(1, os.availableParallelism() >> 1))
 
 /** No worker could answer: one died before it listened, or the indexer was closed. The text may parse fine. */
 export class IndexerDown extends Error {}
@@ -35,6 +36,7 @@ export class Indexer {
   #idle: NodeJS.Timeout | undefined
   #closed = false
   #next = 0
+  #beside: Indexers | undefined
 
   constructor(script: URL, idleMs = IDLE_MS) {
     this.#script = script
@@ -46,14 +48,23 @@ export class Indexer {
     return this.#worker !== undefined
   }
 
-  split(text: string, kind: "markdown" | "mermaid", previous: Block[] = []): Promise<Block[]> {
-    if (this.#closed) {
-      return Promise.reject(new IndexerDown("indexer closed"))
-    }
+  get pending(): number {
+    return this.#waiting.size
+  }
 
-    return new Promise((resolve, reject) => {
-      this.#send(++this.#next, { request: { text, kind, previous }, resolve, reject })
-    })
+  /** Threads of their own, closed with this one: work run there never waits behind a document's split. */
+  get beside(): Indexers {
+    this.#beside ??= new Indexers(this.#script, this.#idleMs)
+    return this.#beside
+  }
+
+  split(text: string, kind: "markdown" | "mermaid", previous: Block[] = []): Promise<Block[]> {
+    return this.#ask({ text, kind, previous })
+  }
+
+  /** Give parsed blocks the identities a split with `previous` gives; an `id` left on a part outlives it. */
+  identify(parts: Part[], previous: Block[]): Promise<Block[]> {
+    return this.#ask({ parts, previous })
   }
 
   async close(): Promise<void> {
@@ -63,7 +74,17 @@ export class Indexer {
     this.#worker = undefined
     clearTimeout(this.#idle)
     this.#reject(new IndexerDown("indexer closed"))
-    await worker?.terminate()
+    await Promise.all([worker?.terminate(), this.#beside?.close()])
+  }
+
+  #ask(request: Request): Promise<Block[]> {
+    if (this.#closed) {
+      return Promise.reject(new IndexerDown("indexer closed"))
+    }
+
+    return new Promise((resolve, reject) => {
+      this.#send(++this.#next, { request, resolve, reject })
+    })
   }
 
   #send(id: number, waiting: Waiting): void {
@@ -145,5 +166,30 @@ export class Indexer {
     }
 
     this.#waiting.clear()
+  }
+}
+
+/** Requests run side by side, each on the least busy thread, so answers come in no fixed order. */
+export class Indexers {
+  readonly #all: Indexer[]
+
+  constructor(script: URL, idleMs = IDLE_MS, count = BESIDE) {
+    this.#all = Array.from({ length: count }, () => new Indexer(script, idleMs))
+  }
+
+  split(text: string, kind: "markdown" | "mermaid", previous: Block[] = []): Promise<Block[]> {
+    return this.#least().split(text, kind, previous)
+  }
+
+  identify(parts: Part[], previous: Block[]): Promise<Block[]> {
+    return this.#least().identify(parts, previous)
+  }
+
+  async close(): Promise<void> {
+    await Promise.all(this.#all.map((indexer) => indexer.close()))
+  }
+
+  #least(): Indexer {
+    return this.#all.reduce((least, indexer) => (indexer.pending < least.pending ? indexer : least))
   }
 }

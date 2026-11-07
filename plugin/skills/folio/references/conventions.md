@@ -1,6 +1,6 @@
 # Declaring a folder's conventions in FOLIO.md
 
-A file named `FOLIO.md`, in capitals, declares what a folder's documents are and the rules they keep. folio reads it for its folder and everything below it, turns each kind of document into a table any query reads, and checks every rule as the folder changes. Declare a kind for every document shape that recurs - stations, visits, decisions, incidents, tickets - and a rule for every promise those documents should keep.
+A file named `FOLIO.md`, in capitals, declares what a folder's documents are and the rules they keep. Folio reads it for its folder and everything below it, turns each kind of document into a table any query reads, and checks every rule as the folder changes. Declare a kind for every document shape that recurs - stations, visits, decisions, incidents, tickets - and a rule for every promise those documents should keep.
 
 ## The file
 
@@ -47,10 +47,11 @@ Each fence is a YAML map of these sections:
 | `kinds` | Map of names to `where` and `fields` | Places documents in a kind and reads typed fields from them; each kind is the table `kind.<name>` |
 | `rules` | Map of names to `query`, `message` and `severity` | A query that should return no row; each row it returns is a violation listed in health |
 | `health` | List of `where` with `skip`, `error` or both | What health leaves out, and which problems fail `folio check` |
-| `attention` | Map of names to `query` and `message` | Rows listed under *Needing attention* on folio's front page |
+| `attention` | Map of names to `query` and `message` | Rows listed under *Needing attention* on Folio's front page |
 | `stale` | Map holding a `query` | Which documents have outlived their use |
-| `save` | List of `where` | The documents folio may write saved views into |
-| `digests` | List of `path` and `period` | Digest documents folio writes and keeps current |
+| `save` | List of `where` | The documents Folio may write saved views into |
+| `related` | List of `where` | The documents whose blocks Folio relates by meaning |
+| `digests` | List of `path` and `period` | Digest documents Folio writes and keeps current |
 
 **YAML to quote** - a pattern starting with `*` (`'**'`, `'*.md'`), which YAML reads as an alias; a message starting with `{`, which YAML reads as a map; and anything holding ` #`, which starts a comment.
 
@@ -149,7 +150,7 @@ health:
 ```
 
 - Each entry names `where` - path patterns - and `skip`, `error` or both: `all`, or kinds of check among `figure`, `link`, `include`, `loop`, `diagram`, `chart`, `query`, `data`, `declaration`, `field`, `rule` and `view`.
-- **skip** leaves those problems of the documents it places out of the health view; the documents are still served, indexed and queried.
+- **skip** leaves those problems of the documents it places out of the health view; the documents are still served, indexed and queried. `skip: all` also keeps their attention rows, and the errors of attention queries declared among them, off Folio's front page.
 - **error** makes those problems errors, which fail `folio check`. With no such entry, only violations of rules whose severity is `error` fail it - declare the rest to make `folio check` a gate for every kind of breakage.
 - Deeper declarations add entries for their own folders.
 
@@ -162,7 +163,7 @@ attention:
     message: Calibration due since {calibrated}
 ```
 
-Every row the query returns needs the reader: folio's front page lists it under *Needing attention* at the row's `path`, its message filled from the row's columns. A query that cannot run, or returns no `path`, is listed among the errors.
+Every row the query returns needs the reader: Folio's front page lists it under *Needing attention* at the row's `path`, its message filled from the row's columns. A query that cannot run, or returns no `path`, is listed among the errors.
 
 ## Stale
 
@@ -181,7 +182,16 @@ save:
   - where: reports/*.md
 ```
 
-Names the documents folio may write saved views into: the regions between `<!-- folio view: REF -->` and `<!-- /folio view -->` that each document marks, as [the skill](../SKILL.md) shows. Apart from the digest documents `digests` declares, folio writes nowhere else.
+Names the documents Folio may write saved views into: the regions between `<!-- folio view: REF -->` and `<!-- /folio view -->` that each document marks, as [the skill](../SKILL.md) shows. Apart from the digest documents `digests` declares, Folio writes nowhere else.
+
+## Related
+
+```yaml folio
+related:
+  - where: '**/*.md'
+```
+
+Names the documents whose blocks Folio relates by meaning, with a small embedding model it downloads once to the reader's machine: the outline then lists under Linked from the blocks of other placed documents closest to what is read, and `folio_related` answers the same. A document relates only to the other documents its own declaration places; a short line, a heading, code and a block repeated word for word across documents are never related. With no `related` entry, nothing is downloaded.
 
 ## Digests
 
@@ -195,12 +205,12 @@ digests:
 
 - **path** - a markdown file relative to the declaration's folder. `{day}` names the day, as `2026-10-15`, and `{week}` the ISO week, as `2026-W42`, so each period gets a document of its own and earlier ones stay as last written; a path naming neither is one document that moves on to each new period.
 - **period** - `day` or `week`, by the local calendar.
-- folio creates the document with a title and a region marked `<!-- folio view: digest -->`, and keeps the region current: each document created, changed or removed in the period, grouped by folder and linked, and each embedded value that moved, as before -> after.
+- Folio creates the document with a title and a region marked `<!-- folio view: digest -->`, and keeps the region current: each document created, changed or removed in the period, grouped by folder and linked, and each embedded value that moved, as before -> after.
 - A path under a dot-folder or `node_modules`, or leading out of the served folder, is listed as a problem. With no `digests` entry, no digest is written.
 
 ## Check a declaration
 
-- A fence that is not YAML, is not a map, names a section other than the seven or gives one the wrong shape is listed in health under *Declarations that cannot be read*, at its line, and left out; the file's other fences still apply.
+- A fence that is not YAML, is not a map, names a section the table above does not list or gives one the wrong shape is listed in health under *Declarations that cannot be read*, at its line, and left out; the file's other fences still apply.
 - `?conventions` on a path, or the `folio_kinds` tool, shows the declarations applying there in the order they layer, and the document's kind and the value of each field:
 
 ```sh

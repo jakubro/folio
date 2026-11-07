@@ -236,15 +236,28 @@ test("a page asked for before the first walk reaches it takes the ids the store 
   second.close()
 })
 
-test("a page served from a pruned folder is placed but never joins the model", async () => {
+test("a page served from a pruned folder is placed but never joins the model, and is read apart with the ids it was placed with", async () => {
   const model = await started()
   const placed = await ready(model, expand(root, path.join(root, ".drafts/hidden.md")).instances)
+  const ids = () =>
+    (model.inspect(".drafts/hidden.md") as { blocks: { id: string }[] }).blocks.map(({ id }) => id)
 
   assert.deepEqual(
     placed.map(({ kind, source }) => [kind, source]),
     [["heading", ".drafts/hidden.md"]],
   )
-  assert.equal(model.inspect(".drafts/hidden.md"), undefined)
+  assert.deepEqual(
+    ids(),
+    placed.map(({ id }) => id),
+  )
+
+  await model.readApart(".drafts/hidden.md")
+  assert.ok(!model.paths().includes(".drafts/hidden.md"))
+  assert.equal(model.held(".drafts/hidden.md"), undefined)
+  assert.deepEqual(
+    ids(),
+    placed.map(({ id }) => id),
+  )
   model.close()
 })
 
@@ -320,7 +333,7 @@ test("a store of an older format is parsed again, keeping every block's id", asy
     view(second, "older/doc.md").blocks.map((block) => block.id),
     edited.blocks.map((block) => block.id),
   )
-  assert.equal(JSON.parse(fs.readFileSync(marker, "utf8")).format, 17)
+  assert.equal(JSON.parse(fs.readFileSync(marker, "utf8")).format, 19)
   second.close()
 })
 
@@ -456,7 +469,7 @@ test("a page whose worker went down gets its block sources once a worker answers
   model.close()
 })
 
-test("holds where a document has text its page reads no link in, for exactly the text it indexed", async () => {
+test("holds where a document has text markdown reads no link in, for exactly the text it indexed", async () => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-model-literals-")))
   const text = "# Doc\n\nIntro\n| `a` | b |\n| c | d |\n\nSee `e` and <!-- f -->.\n"
   fs.writeFileSync(path.join(folder, "doc.md"), text)
@@ -483,7 +496,7 @@ test("holds where a document has text its page reads no link in, for exactly the
   model.close()
 })
 
-test("a document an older folio stored is parsed again, though the folder is marked current", async () => {
+test("a document an older Folio stored is parsed again, though the folder is marked current", async () => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-model-older-")))
   const kept = fs.mkdtempSync(path.join(os.tmpdir(), "folio-model-older-store-"))
   const text = "# Doc\n\nSee `a` here.\n"
@@ -510,6 +523,42 @@ test("a document an older folio stored is parsed again, though the folder is mar
       .flatMap(({ literals = [] }) => literals)
       .map(({ start, end }) => text.slice(start, end)),
     ["`a`"],
+  )
+  second.close()
+})
+
+test("a store written before frontmatter links counted is parsed again, so they list under the page's links", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-model-front-")))
+  const kept = fs.mkdtempSync(path.join(os.tmpdir(), "folio-model-front-store-"))
+  fs.writeFileSync(path.join(folder, "target.md"), "# Target")
+  fs.writeFileSync(path.join(folder, "ticket.md"), '---\nparent: "[T](./target.md)"\n---\n# Ticket')
+  const first = new Model(folder, kept, indexer, () => {})
+  models.push(first)
+  await first.start()
+  await first.flush()
+  first.close()
+  const marker = path.join(kept, "folder.json")
+  const documents = path.join(kept, "documents")
+  fs.writeFileSync(
+    marker,
+    JSON.stringify({ ...JSON.parse(fs.readFileSync(marker, "utf8")), format: 17 }),
+  )
+
+  for (const name of fs.readdirSync(documents)) {
+    const stored = JSON.parse(fs.readFileSync(path.join(documents, name), "utf8"))
+    stored.format = 17
+    stored.blocks = stored.blocks.map(({ links: _, ...block }: { links?: unknown }) => block)
+    fs.writeFileSync(path.join(documents, name), JSON.stringify(stored))
+  }
+
+  const second = new Model(folder, kept, indexer, () => {})
+  models.push(second)
+  await second.start()
+  const page = await ready(second, expand(folder, path.join(folder, "target.md")).instances)
+
+  assert.deepEqual(
+    second.backlinks("target.md", page).map(({ source, context }) => [source, context]),
+    [["ticket.md", "parent: T"]],
   )
   second.close()
 })
@@ -955,7 +1004,7 @@ test("a moved document keeps its blocks' ids, what was read of it and its histor
   again.close()
 })
 
-test("a moved document asked for at its new place before folio indexes it keeps its ids and read record", async () => {
+test("a moved document asked for at its new place before Folio indexes it keeps its ids and read record", async () => {
   const model = await started()
   write({ "early/a.md": "# Early\n\nThe valve opens." })
   await until(model, "early/a.md", () => true)
@@ -974,5 +1023,24 @@ test("a moved document asked for at its new place before folio indexes it keeps 
     read.blocks.map((block) => block.id),
   )
   assert.equal(model.reads.get("early/b.md")?.blocks[paragraph.id]?.version, versionOf(paragraph))
+  model.close()
+})
+
+test("a link in another document's frontmatter lists it under the page's links, by its key and value", async () => {
+  write({
+    "front/target.md": "# Target",
+    "front/ticket.md": '---\ndependencies: ["[T](./target.md)"]\n---\n# Ticket',
+  })
+  const model = await started()
+  const page = await ready(model, expand(root, path.join(root, "front/target.md")).instances)
+
+  assert.deepEqual(model.backlinks("front/target.md", page), [
+    {
+      source: "front/ticket.md",
+      block: view(model, "front/ticket.md").blocks[0].id,
+      context: "dependencies: T",
+      title: "Ticket",
+    },
+  ])
   model.close()
 })

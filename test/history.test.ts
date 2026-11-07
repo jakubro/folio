@@ -4,14 +4,17 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { type Block, blocks } from "../src/server/blocks.ts"
-import { blobId, History } from "../src/server/history.ts"
+import { type Block, blocks, identify, type Part } from "../src/server/blocks.ts"
+import { blobId, History, type Splitter } from "../src/server/history.ts"
 
 const DAY = 86_400_000
-const split = async (text: string, kind: "markdown" | "mermaid", previous: Block[] = []) =>
-  blocks(text, kind, previous)
+const split: Splitter = {
+  split: async (text: string, kind: "markdown" | "mermaid", previous: Block[] = []) =>
+    blocks(text, kind, previous),
+  identify: async (parts: Part[], previous: Block[]) => identify(parts, previous),
+}
 
-test("a save and a commit of the same text are one version; git's history and folio's merge by time", async () => {
+test("a save and a commit of the same text are one version; git's history and Folio's merge by time", async () => {
   const { root, history, commit } = setup()
   const file = path.join(root, "notes/log.md")
 
@@ -126,6 +129,116 @@ test("versions compare block by block; a block's past follows its identity back 
     past.map(({ text }) => text),
     ["The north pump runs at night and dawn.", "The north pump runs at night."],
   )
+})
+
+test("a block's past is worked out once: another block, a second ask and a save read back what was kept", async () => {
+  const { root } = setup()
+  const texts = [
+    "# Log\n\nThe pump starts.\n\nThe valve opens.\n",
+    "# Log\n\nThe pump starts at dawn.\n\nThe valve opens.\n",
+    "# Log\n\nThe pump starts at dawn.\n\nThe valve opens slowly.\n\nA gauge reads.\n",
+  ]
+  const asked = { split: 0, identify: 0 }
+  const counting: Splitter = {
+    split: async (text, kind, previous) => {
+      asked.split++
+      return split.split(text, kind, previous)
+    },
+    identify: async (parts, previous) => {
+      asked.identify++
+      return split.identify(parts, previous)
+    },
+  }
+  const history = new History(
+    root,
+    fs.mkdtempSync(path.join(os.tmpdir(), "folio-history-")),
+    () => {},
+    counting,
+  )
+
+  for (const [index, text] of texts.entries()) {
+    await history.saved("log.md", text, (index + 1) * 1000)
+  }
+
+  fs.writeFileSync(path.join(root, "log.md"), texts[2])
+  const current = blocks(
+    texts[2],
+    "markdown",
+    blocks(texts[1], "markdown", blocks(texts[0], "markdown")),
+  )
+  const pump = current[1].id
+  const valve = current[2].id
+
+  await history.prepare("log.md", current)
+  const prepared = { ...asked }
+  const pumped = await history.block("log.md", pump, current)
+  const valved = await history.block("log.md", valve, current)
+
+  assert.deepEqual(prepared, { split: 3, identify: 3 })
+  assert.deepEqual(asked, prepared, "asking after the preparation split again")
+  assert.deepEqual(
+    pumped.map(({ text }) => text),
+    ["The pump starts at dawn.", "The pump starts."],
+  )
+  assert.deepEqual(
+    valved.map(({ text }) => text),
+    ["The valve opens slowly.", "The valve opens."],
+  )
+
+  const saved =
+    "# Log\n\nThe pump starts at dawn, loudly.\n\nThe valve opens slowly.\n\nA gauge reads.\n"
+  fs.writeFileSync(path.join(root, "log.md"), saved)
+  await history.saved("log.md", saved, 4000)
+  const now = blocks(saved, "markdown", current)
+
+  assert.deepEqual(
+    (await history.block("log.md", pump, now)).map(({ text }) => text),
+    ["The pump starts at dawn, loudly.", "The pump starts at dawn.", "The pump starts."],
+  )
+  assert.equal(asked.split, 4, "a save parsed more than its own version")
+})
+
+test("the versions of a block's past are parsed side by side, and a failure is not kept", async () => {
+  const { root } = setup()
+  let waiting = 0
+  let most = 0
+  let fail = true
+  const parallel: Splitter = {
+    split: async (text, kind, previous) => {
+      most = Math.max(most, ++waiting)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      waiting--
+      return split.split(text, kind, previous)
+    },
+    identify: async (parts, previous) => {
+      if (fail) {
+        fail = false
+        throw new Error("the indexer stopped")
+      }
+
+      return split.identify(parts, previous)
+    },
+  }
+  const history = new History(
+    root,
+    fs.mkdtempSync(path.join(os.tmpdir(), "folio-history-")),
+    () => {},
+    parallel,
+  )
+
+  for (let version = 1; version <= 4; version++) {
+    await history.saved("tank.md", `# Tank\n\nLevel ${version}.\n`, version * 1000)
+  }
+
+  fs.writeFileSync(path.join(root, "tank.md"), "# Tank\n\nLevel 4.\n")
+  const current = blocks("# Tank\n\nLevel 4.\n", "markdown")
+
+  await assert.rejects(history.block("tank.md", current[1].id, current), /stopped/)
+  assert.deepEqual(
+    (await history.block("tank.md", current[1].id, current)).map(({ text }) => text),
+    ["Level 4.", "Level 3.", "Level 2.", "Level 1."],
+  )
+  assert.equal(most, 4)
 })
 
 test("an embed's results are kept when they change", async () => {

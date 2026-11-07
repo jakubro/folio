@@ -93,13 +93,13 @@ test("a progress line wider than the terminal is cut short of its edge, so clear
   const output = terminal(out, false)
 
   output.progress(
-    "waiting for the folio at http://localhost:8640/, reading the folder: 693 documents",
+    "waiting for the Folio at http://localhost:8640/, reading the folder: 693 documents",
   )
   output.progress(undefined)
 
   const [line] = written().split("\r\x1b[2K").filter(Boolean).map(stripVTControlCharacters)
   assert.equal(line.length, 39, line)
-  assert.match(line, /^\S+ waiting for the folio at http:\/\/local$/)
+  assert.match(line, /^\S+ waiting for the Folio at http:\/\/local$/)
 })
 
 test("a piped progress line prints nothing", async () => {
@@ -123,7 +123,7 @@ test("help pages lay their rows in columns, plain when piped", () => {
     text,
     /\nExit codes\n {2}0 {2}No problem is an error\n {2}1 {2}A problem is an error\n/,
   )
-  assert.match(text, /\n {2}-p, --port N {3}Ask the folio serving FOLDER on this port/)
+  assert.match(text, /\n {2}-p, --port N {3}Ask the Folio serving FOLDER on this port/)
   assert.match(text, /\n {2}--socket PATH {2}Ask/)
 })
 

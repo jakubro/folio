@@ -1,4 +1,4 @@
-# folio development tasks
+# Folio development tasks
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
@@ -24,7 +24,7 @@ install:
 
 # Run the unit tests; ARGS narrows to files
 test *ARGS="test/*.test.ts":
-    nice -n 19 {{ RUN_CAPPED }} 10 6144 131072 -- node --test {{ ARGS }} 2>&1 | tee /tmp/folio--test.log
+    nice -n 19 {{ RUN_CAPPED }} 10 7168 131072 -- node --test {{ ARGS }} 2>&1 | tee /tmp/folio--test.log
 
 # Run every documented behaviour in headless Chromium against the built command
 e2e: build
@@ -33,12 +33,11 @@ e2e: build
 
 # Compare every page against its recorded image, naming each one that changed
 snapshots: build
-    nice -n 19 {{ RUN_CAPPED }} 15 8192 131072 -- npx playwright test 2>&1 | tee /tmp/folio--snapshots.log
+    nice -n 19 scripts/pictures.sh 2>&1 | tee /tmp/folio--snapshots.log
 
 # Re-record every page's image after an intended change to how it looks
 update-snapshots: build
-    nice -n 19 {{ RUN_CAPPED }} 15 8192 131072 -- \
-        npx playwright test --update-snapshots=all 2>&1 | tee /tmp/folio--update-snapshots.log
+    nice -n 19 scripts/pictures.sh --update-snapshots=all 2>&1 | tee /tmp/folio--update-snapshots.log
 
 # Build the documentation site from docs/ into site/dist/, failing on any broken link
 [working-directory('site')]

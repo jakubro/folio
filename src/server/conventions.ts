@@ -5,7 +5,8 @@
 
 import fs from "node:fs"
 import path from "node:path"
-import { isMap, isSeq, parseDocument } from "yaml"
+import { isMap, isSeq, parseDocument, visit } from "yaml"
+import { guarded } from "./failures.ts"
 import { isPruned } from "./files.ts"
 import {
   type Field,
@@ -28,8 +29,9 @@ export interface Declaration {
   kinds: Record<string, KindDefinition>
   rules: Record<string, RuleDefinition>
   health: HealthScope[]
-  /** Where folio writes the views marked in documents back into them. */
+  /** Where Folio writes the views marked in documents back into them. */
   save: { where: RegExp[] }[]
+  related: { where: RegExp[] }[]
   /** Queries whose rows need the reader: each row's `path`, its message filled from the row. */
   attention: Record<string, AttentionDefinition>
   /** A query naming the documents below the folder that have outlived their use, by `path`. */
@@ -102,6 +104,7 @@ const SECTIONS: Record<string, "map" | "list"> = {
   rules: "map",
   health: "list",
   save: "list",
+  related: "list",
   digests: "list",
   attention: "map",
   stale: "map",
@@ -118,7 +121,7 @@ export function conventionsOf(model: Model): Conventions {
   let conventions = CONVENTIONS.get(model)
 
   if (!conventions) {
-    conventions = new Conventions(model)
+    conventions = guarded("declarations", new Conventions(model))
     CONVENTIONS.set(model, conventions)
   }
 
@@ -165,7 +168,7 @@ export class Conventions {
    */
   describe(urlPath: string): Described {
     const declarations = this.applying(urlPath).map((declaration) => declaration.path)
-    const found = this.document(urlPath)
+    const found = this.document(urlPath, true)
 
     return found
       ? {
@@ -183,8 +186,8 @@ export class Conventions {
    * A document's kind - the first kind placing it, nearest declaration first - and its fields, ids a
    * link names resolved to the document of that kind holding them; with every value that did not fit.
    */
-  document(urlPath: string): Document | undefined {
-    const read = this.#unresolved(urlPath)
+  document(urlPath: string, apart = false): Document | undefined {
+    const read = this.#unresolved(urlPath, apart)
 
     if (!read || read.references.length === 0) {
       return read
@@ -321,8 +324,9 @@ export class Conventions {
   }
 
   /** Fields as read from the document alone, kept while its text and every declaration applying to it hold. */
-  #unresolved(urlPath: string): Document | undefined {
-    const hash = this.#model.hashOf(urlPath)
+  #unresolved(urlPath: string, apart = false): Document | undefined {
+    const hash =
+      this.#model.hashOf(urlPath) ?? (apart ? this.#model.apart(urlPath)?.hash : undefined)
     const applying = this.applying(urlPath)
     const key = [hash, ...applying.map((declaration) => this.#model.hashOf(declaration.path))].join(
       "\0",
@@ -344,7 +348,11 @@ export class Conventions {
     const read = kind && {
       kind: kind.name,
       declaredIn: kind.from.path,
-      ...readFields(urlPath, this.#model.held(urlPath) ?? [], kind.definition.fields),
+      ...readFields(
+        urlPath,
+        this.#model.held(urlPath) ?? (apart ? this.#model.apart(urlPath)?.blocks : undefined) ?? [],
+        kind.definition.fields,
+      ),
     }
 
     this.#fields.set(urlPath, { key, read })
@@ -426,6 +434,13 @@ export class Conventions {
     )
   }
 
+  skipsAll(urlPath: string): boolean {
+    return this.layered(urlPath).health.some(
+      ({ definition, from }) =>
+        definition.skip === "all" && within(definition.where, from.folder, urlPath),
+    )
+  }
+
   /** Whether a problem of a kind of check counts as an error at a path, as a health entry declares. */
   errs(urlPath: string, kind: string): boolean {
     return this.layered(urlPath).health.some(
@@ -435,11 +450,23 @@ export class Conventions {
     )
   }
 
-  /** Whether a declaration asks folio to write the views marked in a document into it. */
+  /** Whether a declaration asks Folio to write the views marked in a document into it. */
   saves(urlPath: string): boolean {
     return this.applying(urlPath).some((declaration) =>
       declaration.save.some(({ where }) => within(where, declaration.folder, urlPath)),
     )
+  }
+
+  relates(urlPath: string): boolean {
+    return this.relatedBy(urlPath).length > 0
+  }
+
+  relatedBy(urlPath: string): string[] {
+    return this.applying(urlPath)
+      .filter((declaration) =>
+        declaration.related.some(({ where }) => within(where, declaration.folder, urlPath)),
+      )
+      .map((declaration) => declaration.path)
   }
 
   /** Every digest the folder's declarations ask for. */
@@ -479,6 +506,7 @@ function read(urlPath: string, model: Model): Declaration {
     rules: {},
     health: [],
     save: [],
+    related: [],
     digests: [],
     attention: {},
     problems: [],
@@ -513,7 +541,16 @@ function read(urlPath: string, model: Model): Declaration {
       continue
     }
 
-    const value = parsed.toJS() as Record<string, unknown>
+    let value: Record<string, unknown>
+
+    // An alias whose anchor is never set parses without an error and fails only here.
+    try {
+      value = parsed.toJS() as Record<string, unknown>
+    } catch (error) {
+      at(aliasLine(parsed, body), `The declaration cannot be read: ${(error as Error).message}`)
+      continue
+    }
+
     const wrong = Object.keys(value).find((key) => !Object.hasOwn(SECTIONS, key))
 
     if (wrong !== undefined) {
@@ -587,10 +624,24 @@ function read(urlPath: string, model: Model): Declaration {
       if (!places || Object.keys(rest).length > 0 || typeof entry !== "object") {
         at(
           fenceLineOf(parsed, body, ["save", String(index)]),
-          "A save entry is a map with where: the documents whose marked views folio writes.",
+          "A save entry is a map with where: the documents whose marked views Folio writes.",
         )
       } else {
         declaration.save.push({ where: places })
+      }
+    }
+
+    for (const [index, entry] of ((value.related as unknown[] | undefined) ?? []).entries()) {
+      const { where, ...rest } = (entry ?? {}) as Record<string, unknown>
+      const places = patternsOf(where)
+
+      if (!places || Object.keys(rest).length > 0 || typeof entry !== "object") {
+        at(
+          fenceLineOf(parsed, body, ["related", String(index)]),
+          "A related entry is a map with where: the documents whose blocks Folio relates by meaning.",
+        )
+      } else {
+        declaration.related.push({ where: places })
       }
     }
 
@@ -705,6 +756,21 @@ function fenceLineOf(
     offset = (pair?.key as { range?: [number, number] } | undefined)?.range?.[0] ?? offset
     node = pair?.value
   }
+
+  return body.slice(0, offset).split("\n").length
+}
+
+function aliasLine(parsed: ReturnType<typeof parseDocument>, body: string): number {
+  let offset = 0
+
+  visit(parsed, {
+    Alias(_, node) {
+      if (node.resolve(parsed) === undefined) {
+        offset = node.range?.[0] ?? 0
+        return visit.BREAK
+      }
+    },
+  })
 
   return body.slice(0, offset).split("\n").length
 }

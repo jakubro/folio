@@ -3,7 +3,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import type { Page } from "playwright"
-import { base, context, open, sourced, write } from "./harness.ts"
+import { base, context, open, root, sourced, write } from "./harness.ts"
 
 const RUNS = Array.from({ length: 120 }, (_, i) => `${i + 1},${(i * 37) % 120}`)
 
@@ -110,7 +110,7 @@ async function copyBlock(page: Page, selector: string): Promise<string> {
   return clipboard(page)
 }
 
-test("Copy a document, Included text, Table embed, Value embed, Query, Chart and diagram, Frontmatter, folio's additions: a document copies as the page shows it", async () => {
+test("Copy a document, Included text, Table embed, Value embed, Query, Chart and diagram, Frontmatter, Folio's additions: a document copies as the page shows it", async () => {
   const page = await report()
   await page.click(".copy-document")
   const copied = await clipboard(page)
@@ -381,4 +381,90 @@ test("Unreferenced footnote, Copy during a save: the footnotes copy only the not
   await page.close()
   assert.equal(block, "Omega paragraph.")
   assert.equal(document, "# Redraw\n\nAlpha paragraph.\n\nOmega paragraph.")
+})
+
+test("Relative, Absolute, Tooltip, Folder, Data file, As written, Another page, The served folder, Folio's own pages, The rest of the bar: a page's path copies from the top bar", async () => {
+  await report().then((page) => page.close())
+  write({ "copies/notes é 2.md": "# Notes" })
+  const page = await context.newPage()
+  const copied = async (shift = false) => {
+    await page.click(".copy-path", shift ? { modifiers: ["Shift"] } : {})
+    return clipboard(page)
+  }
+  const both = async () => [await copied(), await copied(true)]
+  const seen: Record<string, unknown> = {}
+
+  await page.goto(`${base}/copies/report.md`)
+  await page.waitForSelector(".markdown-body > *")
+  seen.bar = await page.$$eval(".bar > *", (items) =>
+    items.slice(0, 6).map((item) => item.className),
+  )
+  seen.relative = await copied()
+  seen.check = await page.$eval(".copy-path", (button) => button.classList.contains("copied"))
+  seen.absolute = await copied(true)
+  seen.tooltip = await page.getAttribute(".copy-path", "title")
+  await page.goto(`${base}/copies/`)
+  await page.waitForSelector(".markdown-body > *")
+  seen.folder = await both()
+  await page.click('.listing a:has-text("report.md")')
+  await page.waitForFunction(() => location.pathname.endsWith("/report.md"))
+  await page.waitForSelector(".markdown-body > h1")
+  seen.anotherPage = await both()
+  await page.goto(`${base}/copies/sales.csv`)
+  await page.waitForSelector(".data-page table")
+  seen.dataFile = await both()
+  await page.goto(`${base}/copies/${encodeURIComponent("notes é 2.md")}`)
+  await page.waitForSelector(".markdown-body > *")
+  seen.asWritten = await both()
+  await page.goto(`${base}/?files`)
+  await page.waitForSelector(".markdown-body > *")
+  seen.servedFolder = await both()
+
+  let release = () => {}
+  const released = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await page.route(/\?health-data/, async (route) => {
+    await released
+    await route.continue()
+  })
+  await page.goto(`${base}/?health`, { waitUntil: "domcontentloaded" })
+  await page.waitForSelector(".copy-path", { state: "attached" })
+  seen.ownWhileLoading = await page.locator(".copy-path").isHidden()
+  release()
+  await page.waitForSelector(".markdown-body > *")
+  await page.unrouteAll({ behavior: "wait" })
+
+  for (const address of ["", "?health", "?catch-up", "copies/report.md?history"]) {
+    await page.goto(`${base}/${address}`)
+    await page.waitForSelector(".markdown-body > *")
+    seen[`own:${address}`] = await page.locator(".copy-path").isHidden()
+  }
+
+  await page.close()
+
+  assert.deepEqual(seen, {
+    relative: "copies/report.md",
+    check: true,
+    absolute: `${root}/copies/report.md`,
+    tooltip: "Copy the path in the folder; Shift+click: the absolute path",
+    bar: [
+      "icon-button",
+      "icon-button",
+      "icon-button",
+      "breadcrumbs",
+      "icon-button copy-path",
+      "spacer",
+    ],
+    folder: ["copies", `${root}/copies`],
+    anotherPage: ["copies/report.md", `${root}/copies/report.md`],
+    dataFile: ["copies/sales.csv", `${root}/copies/sales.csv`],
+    asWritten: ["copies/notes é 2.md", `${root}/copies/notes é 2.md`],
+    servedFolder: [".", root],
+    ownWhileLoading: true,
+    "own:": true,
+    "own:?health": true,
+    "own:?catch-up": true,
+    "own:copies/report.md?history": true,
+  })
 })

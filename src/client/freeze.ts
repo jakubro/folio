@@ -30,7 +30,7 @@ export async function freeze(
     }
   }
 
-  // A link folio marked as pointing at something changed goes back to how its author wrote it.
+  // A link Folio marked as pointing at something changed goes back to how its author wrote it.
   for (const link of copy.querySelectorAll<HTMLElement>(".link-changed, .link-gone")) {
     link.classList.remove("link-changed", "link-gone")
     link.title = link.dataset.folioTitle ?? ""
@@ -84,6 +84,7 @@ export async function freeze(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(name)}</title>
+${(document.querySelector('link[rel="icon"]') as HTMLLinkElement).outerHTML}
 <style>${offline(style)}</style>
 </head>
 <body>

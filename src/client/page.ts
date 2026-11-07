@@ -1,18 +1,20 @@
 /** The page: lays out toolbar, tree, content and outline, then renders the file or folder this address names. */
 
 import type { DataPage } from "../server/data.ts"
+import type { HealthState, Problem } from "../server/health.ts"
 import { Backlinks } from "./backlinks.ts"
 import { BlockLinks, fragmentOf, landOn } from "./blocklinks.ts"
 import { copyButton } from "./copy.ts"
 import { reconcile } from "./drawings.ts"
 import { embedVersions, redrawEmbeds } from "./embeds.ts"
-import { blocksOf, foldable, reveal, unfoldAll } from "./folds.ts"
+import { blocksOf, foldable, foldedUnder, reveal, unfoldAll } from "./folds.ts"
 import { button, ICONS } from "./icons.ts"
 import { type Change, Live, type Subscription } from "./live.ts"
 import { blockMarkdown, copies, documentMarkdown } from "./markdown.ts"
 import { type Marked, Marks } from "./marks.ts"
 import { Outline } from "./outline.ts"
 import { type Content, fetchPage, type Kind, kindOf, type LinksState, Prerender } from "./pages.ts"
+import { hold, keep, type Place } from "./place.ts"
 import {
   dataShown,
   fullWidth,
@@ -28,13 +30,23 @@ import {
 import { Provenance } from "./provenance.ts"
 import { Reading } from "./reading.ts"
 import { announce, blocksIn, type Redraw, sameBlock } from "./redraws.ts"
-import { drawBlocks, keyOf, markup, moveSource, render, type Sources } from "./render.ts"
+import { Related } from "./related.ts"
+import {
+  cornerImages,
+  drawBlocks,
+  keyOf,
+  markup,
+  moveSource,
+  render,
+  type Sources,
+} from "./render.ts"
 import type { Picked } from "./stats.ts"
-import { TableViews, type View } from "./tableviews.ts"
+import { asking, TableViews, type View } from "./tableviews.ts"
 import { type Entry, fetchListing, href, iconFor, Tree } from "./tree.ts"
 import { unmarked } from "./unresolved.ts"
 import { UsedBy } from "./usedby.ts"
 import { type Changes, fetchChanges, loadView, sharing, type ViewPage, viewOf } from "./views.ts"
+import { keepAddedWhole } from "./words.ts"
 import { closeExpanded } from "./zoom.ts"
 
 type Step = "previous" | "next"
@@ -43,6 +55,7 @@ interface Destination {
   pathname: string
   kind: Kind
   text: string
+  title?: string | null
   sources: Sources
   links?: LinksState
   read?: Marked
@@ -59,6 +72,7 @@ let viewName = document.documentElement.hasAttribute("data-missing")
 let kind: Kind | "view" = viewName ? "view" : (kindOf(urlPath) ?? "markdown")
 let folderPath = urlPath.replace(/\/$/, "")
 const rootName = document.documentElement.dataset.root ?? ""
+const rootFolder = document.documentElement.dataset.folder ?? ""
 const build = document.documentElement.dataset.build
 const TAB = crypto.randomUUID()
 const SAVE_SCROLL_MS = 200
@@ -68,6 +82,8 @@ const LOOK_MS = 250
 /** Embeds drawn close together are subscribed to in one message. */
 const EMBEDDED_MS = 50
 const COUNTING_MS = 1000
+/** For this long after a live redraw, late content - images, embeds, statistics - cannot move what is read. */
+const SETTLE_MS = 2000
 const SCROLL_KEYS = new Set([" ", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"])
 const STEP_KEYS: Record<string, Step> = { ArrowLeft: "previous", ArrowRight: "next" }
 const PANEL_KEYS: Record<string, Panel> = { ArrowLeft: "tree", ArrowRight: "outline" }
@@ -79,6 +95,7 @@ const tree = new Tree(urlPath)
 const outline = new Outline()
 let article = document.createElement("article")
 let text = ""
+let title: string | null = null
 const NO_SOURCES: Sources = { blocks: [], layout: { instances: [], owners: [] } }
 let sources = NO_SOURCES
 let links: LinksState | undefined
@@ -92,6 +109,7 @@ let pointed: HTMLElement | null = null
 let looking: ReturnType<typeof setTimeout> | undefined
 let told = ""
 let changes: Changes | undefined
+let problems: HealthState | undefined
 let images = new Map<string, string | null>()
 const live = new Live(subscription, (change) => changed(change).catch(() => live.retry()), rebuilt)
 const prerender = new Prerender(theme)
@@ -110,8 +128,10 @@ let viewWritten = 0
 /** The browser scrolls the block a click last landed in with the arrow keys, so they stay its own. */
 let scroller: Element | undefined
 let pressedControl = false
+/** Counts the reader's own scrolls and presses, so a place kept across an awaited redraw never undoes one. */
+let interactions = 0
 
-// The browser restores a position before the content has rendered, so folio keeps its own.
+// The browser restores a position before the content has rendered, so Folio keeps its own.
 history.scrollRestoration = "manual"
 
 bar.className = "bar"
@@ -120,7 +140,9 @@ article.className = "markdown-body"
 main.append(article)
 const blockLinks = new BlockLinks(main)
 const backlinks = new Backlinks(main, outline.footer)
+const related = new Related(main, outline.related)
 const tables = new TableViews(main)
+keepAddedWhole(document.body)
 const reading = new Reading()
 const marks = new Marks(main, outline.header)
 const usedBy = new UsedBy(main)
@@ -158,6 +180,12 @@ const steps: Record<Step, HTMLButtonElement> = {
   previous: button(ICONS.left, "Previous page (←)"),
   next: button(ICONS.right, "Next page (→)"),
 }
+const pathCopy = copyButton(
+  (event) => pathOf(event.shiftKey),
+  "Copy the path in the folder; Shift+click: the absolute path",
+  "copy-path",
+)
+pathCopy.hidden = kind === "view"
 const spacer = document.createElement("div")
 spacer.className = "spacer"
 let crumbs = breadcrumbs()
@@ -166,6 +194,7 @@ bar.append(
   steps.previous,
   steps.next,
   crumbs,
+  pathCopy,
   spacer,
   historyLink,
   catchUpLink,
@@ -200,11 +229,14 @@ document.addEventListener("folio:digested", (event) => {
 })
 document.addEventListener("folio:redraw", showMarks)
 document.addEventListener("folio:redraw", () => provenance.flag(article))
-blockLinks.onProvenance = (block) => void provenance.open(block)
+blockLinks.onProvenance = (block, button) => void provenance.open(block, button)
+blockLinks.onVersions = (block, button) => void provenance.versions(block, button)
+outline.onSection = (heading) => related.section(heading)
 blockLinks.copies = copies
 blockLinks.copyOf = (block) =>
   blockMarkdown(shownText(), shownBlocks(), block, (table) => tables.viewed(table))
 reading.held = (block) => marks.holding(block)
+reading.hidden = (block) => foldedUnder(block) !== undefined
 reading.embedsOf = (block) => embedVersions(marks.subjectOf(block) ?? block)
 reading.changedSpan = (block) => marks.changedSpan(block)
 reading.onRead = (blocks) => {
@@ -227,7 +259,7 @@ reading.onRead = (blocks) => {
     live.send({ type: "read", page: urlPath, blocks: read })
   }
 
-  marks.cleared(blocks)
+  marks.markRead(blocks)
   tables.refold(article)
 }
 
@@ -262,7 +294,7 @@ toggles.theme.addEventListener("click", () => {
   showPrefs()
 
   if (kind !== "data") {
-    void draw()
+    void draw(false, true)
   }
 })
 
@@ -287,14 +319,17 @@ tree.onChange = () => {
   tree.mark(changedPaths())
   void live.resubscribe()
 }
-void tree.load()
+void tree.load((history.state as { tree?: number } | null)?.tree)
 void showChanges()
+void showProblems()
 await load()
 showTitle()
 showHistoryLink()
 await draw()
 land()
 void showSteps()
+// Saved only once landed: a place saved while the page still draws is restored over its fragment.
+tree.element.addEventListener("scroll", rememberScroll, { passive: true })
 addEventListener("scroll", rememberScroll, { passive: true })
 addEventListener("pagehide", saveScroll)
 
@@ -308,6 +343,7 @@ for (const type of ["wheel", "pointerdown", "touchstart", "keydown"]) {
     (event) => {
       if (type !== "keydown" || SCROLL_KEYS.has((event as KeyboardEvent).key)) {
         restoring = undefined
+        interactions++
       }
     },
     { passive: true },
@@ -329,7 +365,13 @@ addEventListener("keydown", (event) => {
     if (!event.repeat) {
       togglePanel(panel)
     }
-  } else if (direction && !modified && !event.defaultPrevented && !scroller?.isConnected) {
+  } else if (
+    direction &&
+    !modified &&
+    !event.defaultPrevented &&
+    !scroller?.isConnected &&
+    !inField(event.target)
+  ) {
     event.preventDefault()
     queueStep(direction)
   }
@@ -361,9 +403,10 @@ document.addEventListener("folio:filter", (event) => {
   void load().then(async (current) => current && draw())
 })
 document.addEventListener("folio:sort", (event) => {
-  const { column, descending } = (event as CustomEvent<{ column: string; descending: boolean }>)
-    .detail
-  tables.sort(event.target as HTMLTableElement, column, descending)
+  const { column, descending, adding } = (
+    event as CustomEvent<{ column: string; descending: boolean; adding: boolean }>
+  ).detail
+  tables.sort(event.target as HTMLTableElement, column, descending, adding)
 })
 document.addEventListener("folio:tables", (event) => {
   if (article.contains(event.target as Node)) {
@@ -438,10 +481,78 @@ async function showChanges(): Promise<void> {
   changes = (await fetchChanges()) ?? changes
   const count = changes?.documents.length ?? 0
 
-  catchUpLink.dataset.count = count > 0 ? String(count) : ""
   catchUpLink.title = `Catch up: ${count} ${count === 1 ? "document" : "documents"} changed since you read them`
   tree.mark(changedPaths())
   live.resubscribe()
+}
+
+async function showProblems(): Promise<void> {
+  const response = await fetch("/?health-data")
+  markProblems(response.ok ? await response.json() : undefined)
+}
+
+function markProblems(state: HealthState | undefined): void {
+  problems = state ?? problems
+  const counts = new Map<string, number>()
+
+  for (const { path } of problems?.problems ?? []) {
+    counts.set(path, (counts.get(path) ?? 0) + 1)
+  }
+
+  tree.markProblems(counts)
+  showOwnProblems()
+  live.resubscribe()
+}
+
+function showOwnProblems(): void {
+  const own =
+    kind === "markdown" || kind === "mermaid"
+      ? (problems?.problems ?? [])
+          .filter(({ path }) => path === urlPath)
+          .sort((a, b) => a.line - b.line)
+      : []
+
+  outline.showProblems(own, landProblem)
+}
+
+function landProblem({ anchor, block, line, opens }: Problem): void {
+  if (opens && opens !== urlPath) {
+    const target = anchor
+      ? `#${encodeURIComponent(anchor)}`
+      : block
+        ? `#^${encodeURIComponent(block)}`
+        : ""
+    void go(new URL(`${href(opens)}${target}`, location.href), "push")
+    return
+  }
+
+  const marked = anchor ? document.getElementById(anchor) : null
+  const holding = !marked && block ? blockLinks.find(`#^${encodeURIComponent(block)}`) : null
+  const target =
+    marked ??
+    holding ??
+    [
+      ...article.querySelectorAll<HTMLElement>(
+        `[data-folio-source="${CSS.escape(urlPath)}"][data-folio-lines]`,
+      ),
+    ].find((element) => {
+      const [first, last] = (element.dataset.folioLines ?? "").split("-").map(Number)
+      return first <= line && line <= last
+    })
+
+  history.replaceState(
+    { ...history.state, scroll: undefined },
+    "",
+    marked && anchor
+      ? `#${encodeURIComponent(anchor)}`
+      : holding && block
+        ? `#^${encodeURIComponent(block)}`
+        : location.pathname + location.search,
+  )
+
+  if (target) {
+    landOn(target)
+  }
 }
 
 function changedPaths(): Set<string> {
@@ -563,6 +674,7 @@ async function load(resuming = false): Promise<boolean> {
 
   document.documentElement.classList.toggle("missing", response.status === 404)
   text = content?.text ?? text
+  title = content ? content.title : title
   sources = content ?? sources
   links = content?.links ?? links
   marked = content?.read ?? marked
@@ -570,8 +682,11 @@ async function load(resuming = false): Promise<boolean> {
   return true
 }
 
-/** Renders off-page, then swaps in place: the scroll position, tree and outline state all survive. */
-async function draw(resuming = false): Promise<void> {
+/**
+ * Renders off-page, then swaps in place: the tree and outline state survive, and the scroll position - by what
+ * is read when the redraw is live or a theme's, by its pixels when the reader changed what the page shows.
+ */
+async function draw(resuming = false, live = resuming): Promise<void> {
   const shown = urlPath
   const token = ++redraws
   const next =
@@ -582,11 +697,45 @@ async function draw(resuming = false): Promise<void> {
         : kind === "data"
           ? await dataDrawn(resuming)
           : await render(text, sources, kind, theme())
-  const y = scrollY
 
   if (shown === urlPath && token === redraws) {
-    await swap(next, () => scrollTo(0, y))
+    const y = scrollY
+    const place = live ? hold(article, readingLine()) : undefined
+    await swap(next, () => (place ? keepWhenServed(place, next, y) : scrollTo(0, y)))
   }
+}
+
+/** A served table is drawn as written until its sorted or filtered rows land, so pixels hold it till then. */
+function keepWhenServed(place: Place, next: HTMLElement, y: number): void {
+  const pending = asking(next)
+  const seen = interactions
+
+  if (!pending) {
+    keepSettled(place, next)
+    return
+  }
+
+  scrollTo(0, y)
+  void pending.then(() => {
+    if (article === next && seen === interactions) {
+      keepSettled(place, next)
+    }
+  })
+}
+
+function keepSettled(place: Place, element: HTMLElement): void {
+  const seen = interactions
+  const observer = new ResizeObserver(() => {
+    if (article === element && seen === interactions) {
+      keep(place, element)
+    } else {
+      observer.disconnect()
+    }
+  })
+
+  keep(place, element)
+  observer.observe(element)
+  setTimeout(() => observer.disconnect(), SETTLE_MS)
 }
 
 async function dataDrawn(resuming: boolean): Promise<HTMLElement> {
@@ -626,6 +775,7 @@ async function update(): Promise<void> {
   }
 
   if (DRAWN.get(article) !== drawing) {
+    keepOpen(blocksOf(shown), [...next.childNodes], kept)
     patch([...next.childNodes].map((node) => kept.get(node) ?? node))
     DRAWN.set(article, drawing)
   } else if (held.renamed.size > 0) {
@@ -633,6 +783,8 @@ async function update(): Promise<void> {
   }
 
   reconcile(article)
+  // A kept image at the top level loses its corner, a node of its own the patch does not keep.
+  cornerImages([article])
 
   unannounced = parsing ? held : undefined
 
@@ -692,8 +844,7 @@ function sourceOf(node: Node): string | null {
 }
 
 function patch(blocks: Node[]): void {
-  const anchor = readingBlock(blocks)
-  const top = anchor?.getBoundingClientRect().top
+  const place = hold(article, readingLine())
   const wanted = new Set(blocks)
   unfoldAll(article)
 
@@ -713,23 +864,44 @@ function patch(blocks: Node[]): void {
   tables.attach(article, urlPath)
   outline.build(article)
   provenance.flag(article)
+  keepSettled(place, article)
+}
 
-  if (anchor && top !== undefined) {
-    scrollBy(0, anchor.getBoundingClientRect().top - top)
+function keepOpen(current: Node[], next: Node[], kept: Map<Node, Node>): void {
+  const keeping = new Set(kept.values())
+  const replaced = current.filter((node) => !keeping.has(node))
+
+  for (const [at, fresh] of next.entries()) {
+    // Drawn before its file was parsed, a block has no id yet, so it pairs by its last kept neighbour.
+    const above = next.slice(0, at).findLast((node) => kept.has(node))
+    const from = above ? current.indexOf(kept.get(above) as Node) + 1 : 0
+    const old = kept.has(fresh)
+      ? undefined
+      : (replaced.find((node) => sameBlock(node, fresh)) ??
+        current
+          .slice(from)
+          .find((node) => replaced.includes(node) && node.nodeName === fresh.nodeName))
+
+    if (old instanceof Element && fresh instanceof Element) {
+      const before = detailsIn(old)
+      const after = detailsIn(fresh)
+
+      for (const [at, details] of after.entries()) {
+        details.open = before[at]?.open ?? details.open
+      }
+    }
   }
 }
 
-function readingBlock(kept: Node[]): Element | undefined {
-  const line = bar.getBoundingClientRect().bottom
-  const keeping = new Set(kept)
+function detailsIn(block: Element): HTMLDetailsElement[] {
+  return [
+    ...(block instanceof HTMLDetailsElement ? [block] : []),
+    ...block.querySelectorAll("details"),
+  ]
+}
 
-  return blocksOf(article).find(
-    (node): node is Element =>
-      node instanceof Element &&
-      keeping.has(node) &&
-      node.getClientRects().length > 0 &&
-      node.getBoundingClientRect().bottom > line,
-  )
+function readingLine(): number {
+  return bar.getBoundingClientRect().bottom
 }
 
 async function swap(next: HTMLElement, position: () => void): Promise<void> {
@@ -745,6 +917,7 @@ async function swap(next: HTMLElement, position: () => void): Promise<void> {
   provenance.flag(article)
   backlinks.show(kind === "folder" || kind === "view" ? undefined : urlPath, links)
   void usedBy.show(kind === "folder" || kind === "view" ? undefined : urlPath)
+  related.show(kind === "markdown" ? urlPath : undefined, article)
 
   if (version?.endsWith("-partial")) {
     unannounced = { before, cause: "load", renamed: new Set() }
@@ -760,7 +933,7 @@ async function swap(next: HTMLElement, position: () => void): Promise<void> {
   }
 }
 
-/** Plain clicks to another page or folder, or on a heading's mark, are folio's; the rest stay the browser's. */
+/** Plain clicks to another page or folder, or on a heading's mark, are Folio's; the rest stay the browser's. */
 function follow(event: MouseEvent): void {
   const link = (event.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null
   const url = link && URL.canParse(link.href) && new URL(link.href)
@@ -818,7 +991,7 @@ function returned(): void {
   }
 }
 
-/** The old content stays until the new is ready; what folio cannot show in place loads as a new page. */
+/** The old content stays until the new is ready; what Folio cannot show in place loads as a new page. */
 async function go(url: URL, mode: "push" | "replace" | "pop"): Promise<void> {
   const token = ++navigation
   const next = await destination(url).catch(() => undefined)
@@ -847,6 +1020,7 @@ async function go(url: URL, mode: "push" | "replace" | "pop"): Promise<void> {
   shownView = undefined
   folderPath = urlPath.replace(/\/$/, "")
   text = next.text
+  title = next.title ?? null
   sources = next.sources
   links = next.links
   marked = next.read
@@ -865,7 +1039,9 @@ async function go(url: URL, mode: "push" | "replace" | "pop"): Promise<void> {
   crumbs = trail
   void tree.show(urlPath)
   void showSteps()
+  outline.follow()
   await swap(next.article ?? listingArticle(), land)
+  showOwnProblems()
 
   if (next.article && kind !== "data" && next.article.dataset.theme !== theme()) {
     void draw()
@@ -963,6 +1139,7 @@ async function changed(change: Change): Promise<void> {
       if (await load(true)) {
         await update()
         showMarks()
+        showTitle()
       }
     })()
     pageUpdating = updating.catch(() => {})
@@ -977,34 +1154,54 @@ async function changed(change: Change): Promise<void> {
     await showChanges()
 
     if (kind === "view" && viewName === "catch-up" && (await load())) {
-      await draw()
+      await draw(false, true)
     }
   }
 
   if (change.kind === "stale" && kind === "view" && viewName === "stale" && (await load())) {
-    await draw()
+    await draw(false, true)
   }
 
   if (change.kind === "needs" && kind === "view" && viewName === "needs" && (await load())) {
-    await draw()
+    await draw(false, true)
   }
 
   if (change.kind === "health" && kind === "view" && viewName === "health") {
-    const { updateHealth } = await import("./health.ts")
-    version = (await updateHealth()) ?? version
+    const { updateHealth, heldHealth } = await import("./health.ts")
+    version =
+      (await updateHealth((redraw) => {
+        const place = hold(article, readingLine())
+        redraw()
+        keep(place, article)
+      })) ?? version
+    outline.build(article)
+    markProblems(heldHealth())
     live.resubscribe()
+  } else if (change.kind === "health") {
+    await showProblems()
   }
 
   if (change.kind === "embed" && kind !== "folder" && kind !== "data" && kind !== "view") {
     // A page update told just before may replace the embed, and draws it at its version itself.
     await pageUpdating
     const shown = article
+    const place = hold(article, readingLine())
+    const seen = interactions
     await Promise.all(redrawEmbeds(article, change.path, theme(), change.version))
 
     if (shown === article) {
       tables.attach(article, urlPath)
+
+      if (seen === interactions) {
+        keepSettled(place, article)
+      }
+
       live.resubscribe()
     }
+  }
+
+  if (change.kind === "related" && change.path === urlPath) {
+    related.refresh()
   }
 
   if (change.kind === "links" && change.path === urlPath) {
@@ -1080,6 +1277,10 @@ function sidewaysScroller(target: Element): Element | undefined {
   return undefined
 }
 
+function inField(target: EventTarget | null): boolean {
+  return target instanceof HTMLInputElement && target.type !== "checkbox"
+}
+
 function subscription(): Subscription {
   const folders: Record<string, string | null> = tree.folders()
 
@@ -1098,9 +1299,12 @@ function subscription(): Subscription {
     folders,
     withData: dataShown(),
     links: textual ? { [urlPath]: backlinks.version } : {},
+    related: kind === "markdown" ? { [urlPath]: related.version } : {},
     reads: textual ? { [urlPath]: marks.version } : {},
     changes: { "": changes?.version ?? null },
-    health: kind === "view" && viewName === "health" ? { "": version } : {},
+    health: {
+      "": kind === "view" && viewName === "health" ? version : (problems?.version ?? null),
+    },
     needs: kind === "view" && viewName === "needs" ? { "": version } : {},
     stale: kind === "view" && viewName === "stale" ? { "": version } : {},
   }
@@ -1188,12 +1392,23 @@ function showHistoryLink(): void {
 
   historyLink.setAttribute("aria-disabled", String(!textual))
   toggles.copy.hidden = !textual
+  pathCopy.hidden = kind === "view"
 
   if (textual) {
     historyLink.href = `${href(urlPath)}?history`
   } else {
     historyLink.removeAttribute("href")
   }
+}
+
+function pathOf(absolute: boolean): string {
+  const relative = kind === "folder" ? folderPath || "." : urlPath
+
+  return !absolute
+    ? relative
+    : relative === "."
+      ? rootFolder
+      : `${rootFolder.replace(/\/$/, "")}/${relative}`
 }
 
 function shownBlocks(): Element[] {
@@ -1217,7 +1432,9 @@ function showTitle(): void {
       ? shownView?.title
       : kind === "folder"
         ? folderPath.split("/").pop() || rootName
-        : urlPath.split("/").pop()) ?? "folio"
+        : title && (kind === "markdown" || kind === "mermaid")
+          ? `${title} | ${urlPath.split("/").pop()}`
+          : urlPath.split("/").pop()) ?? "Folio"
 }
 
 function breadcrumbs(): HTMLElement {
@@ -1301,7 +1518,7 @@ function saveScroll(): void {
     return
   }
 
-  history.replaceState({ ...history.state, scroll: scrollY }, "")
+  history.replaceState({ ...history.state, scroll: scrollY, tree: tree.element.scrollTop }, "")
 }
 
 function pickedOf(address: { search: string }): Picked | undefined {

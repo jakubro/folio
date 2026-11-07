@@ -2,6 +2,7 @@
 
 import * as L from "leaflet"
 import leafletStyles from "leaflet/dist/leaflet.css"
+import type { Live } from "./zoom.ts"
 
 type Topology = Parameters<typeof import("topojson-client")["feature"]>[0]
 type FeatureCollection = GeoJSON.FeatureCollection
@@ -32,7 +33,7 @@ export async function mapOf(
   source: string,
   format: "geojson" | "topojson",
   owner: Document,
-): Promise<HTMLElement> {
+): Promise<{ figure: HTMLElement; live: Live }> {
   const geo = format === "topojson" ? await topology(json(source)) : shapes(json(source))
   let layer: L.GeoJSON
 
@@ -53,10 +54,13 @@ export async function mapOf(
   const figure = owner.createElement("div")
   const canvas = figure.appendChild(owner.createElement("div"))
   const tiles = figure.appendChild(owner.createElement("button"))
+  let map: L.Map | undefined
+  let full = false
+  let grown = 0
   const shown = new IntersectionObserver((entries) => {
     if (entries.some((entry) => entry.isIntersecting)) {
       shown.disconnect()
-      draw(canvas, layer, source, tiles)
+      map = draw(canvas, layer, source, tiles, full)
     }
   })
 
@@ -67,11 +71,31 @@ export async function mapOf(
   tiles.textContent = "Load map"
   tiles.hidden = TILED.has(source)
   shown.observe(canvas)
-  return figure
+  return {
+    figure,
+    live: {
+      parts: [canvas, tiles],
+      moved: (intoViewer) => {
+        full = intoViewer
+
+        if (map) {
+          const step = reframe(map, intoViewer ? undefined : -grown)
+          grown = intoViewer ? step : 0
+          map.scrollWheelZoom[intoViewer ? "enable" : "disable"]()
+        }
+      },
+    },
+  }
 }
 
-function draw(canvas: HTMLElement, layer: L.GeoJSON, source: string, tiles: HTMLElement): void {
-  const map = L.map(canvas, { scrollWheelZoom: false, minZoom: 1, maxZoom: 19 })
+function draw(
+  canvas: HTMLElement,
+  layer: L.GeoJSON,
+  source: string,
+  tiles: HTMLElement,
+  wheel: boolean,
+): L.Map {
+  const map = L.map(canvas, { scrollWheelZoom: wheel, minZoom: 1, maxZoom: 19 })
   const accent = getComputedStyle(canvas).getPropertyValue("--accent").trim()
   const bounds = layer.getBounds()
   const load = () => {
@@ -103,6 +127,24 @@ function draw(canvas: HTMLElement, layer: L.GeoJSON, source: string, tiles: HTML
     TILED.add(source)
     load()
   })
+
+  return map
+}
+
+/** Zoom levels are in pixels: log2 of the frame's growth, unrounded, keeps what it showed filling it. */
+function reframe(map: L.Map, step?: number): number {
+  const was = map.getSize()
+  map.invalidateSize()
+  const now = map.getSize()
+  const zoom = map.getZoom()
+  const snap = map.options.zoomSnap
+
+  map.options.zoomSnap = 0
+  map.setView(map.getCenter(), zoom + (step ?? Math.log2(Math.min(now.x / was.x, now.y / was.y))), {
+    animate: false,
+  })
+  map.options.zoomSnap = snap
+  return map.getZoom() - zoom
 }
 
 function json(source: string): unknown {

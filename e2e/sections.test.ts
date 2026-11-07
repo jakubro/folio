@@ -1,4 +1,4 @@
-/** Headless Chromium run of folio's documented behaviour: frontmatter, collapsible blocks, anchors and folds. */
+/** Headless Chromium run of Folio's documented behaviour: frontmatter, collapsible blocks, anchors and folds. */
 
 import assert from "node:assert/strict"
 import { test } from "node:test"
@@ -16,19 +16,33 @@ import {
   write,
 } from "./harness.ts"
 
-test("Scalar frontmatter, Nested values, Outline: frontmatter shows as a key/value table above the body", async () => {
+test("Scalar frontmatter, Nested values, Outline: frontmatter shows as a key/value table at the page's end", async () => {
   write({
     "cards/card.md":
       "---\ntitle: Folio\nstatus: draft\ntags: [a, b]\nowner:\n  name: X\n---\n# Body\n\nText.\n\n## Section\n",
   })
   const page = await open("cards/card.md")
   const facts = await page.evaluate(() => ({
-    first: document.querySelector(".markdown-body > :first-child")?.className,
-    rows: [...document.querySelectorAll(".markdown-body .frontmatter tr")].map((row) => [
-      row.querySelector("th")?.textContent,
-      row.querySelector("td pre code.language-yaml.hljs")?.textContent ??
-        row.querySelector("td")?.textContent,
-    ]),
+    first: document.querySelector(".markdown-body > :first-child")?.tagName,
+    last: document.querySelector(".markdown-body > :last-child")?.className,
+    title: document.querySelector(".markdown-body > .frontmatter")?.previousElementSibling
+      ?.textContent,
+    rows: [...document.querySelectorAll(".markdown-body > .frontmatter > tbody > tr")].map(
+      (row) => {
+        const cell = row.querySelector("td") as HTMLElement
+        const items = [...cell.querySelectorAll(":scope > ul > li")]
+        const pairs = [...cell.querySelectorAll(":scope > table > tbody > tr")]
+
+        return [
+          row.querySelector("th")?.textContent,
+          items.length > 0
+            ? items.map((item) => item.textContent)
+            : pairs.length > 0
+              ? pairs.map((pair) => [...pair.children].map((part) => part.textContent))
+              : cell.textContent,
+        ]
+      },
+    ),
     rules: document.querySelectorAll(".markdown-body hr").length,
     headings: [...document.querySelectorAll(".markdown-body :is(h1, h2)")].map(
       (h) => h.textContent,
@@ -37,17 +51,125 @@ test("Scalar frontmatter, Nested values, Outline: frontmatter shows as a key/val
   }))
 
   assert.deepEqual(facts, {
-    first: "frontmatter",
+    first: "H1",
+    last: "frontmatter",
+    title: "Metadata",
     rows: [
       ["title", "Folio"],
       ["status", "draft"],
-      ["tags", "[a, b]"],
-      ["owner", "name: X"],
+      ["tags", ["a", "b"]],
+      ["owner", [["name", "X"]]],
     ],
     rules: 0,
-    headings: ["Body", "Section"],
+    headings: ["Body", "Section", "Metadata"],
     outline: ["Body", "Section"],
   })
+  await page.close()
+})
+
+test("A link as the value, Links in a list or a map, Linked from: a link in frontmatter works like a link in the page", async () => {
+  write({
+    "fronted/active/t1.md":
+      '---\nparent: "[T2](./t2.md)"\ndependencies: ["[T3](../done/t3.md)"]\nplain: no link\n---\n# T1\n',
+    "fronted/active/t2.md": "# T2\n",
+    "fronted/done/t3.md": "# T3\n",
+  })
+  const page = await open("fronted/active/t1.md")
+  const anchors = () =>
+    page.$$eval(".markdown-body .frontmatter a[href]", (found) =>
+      found.map((link) => [link.getAttribute("href"), link.textContent]),
+    )
+  await page.waitForFunction(
+    () => document.querySelectorAll(".markdown-body .frontmatter a[href]").length === 2,
+  )
+
+  assert.deepEqual(await anchors(), [
+    ["./t2.md", "T2"],
+    ["../done/t3.md", "T3"],
+  ])
+  assert.equal(
+    await page.$eval(".frontmatter tr:last-child td", (cell) => cell.textContent),
+    "no link",
+  )
+
+  await page.click('.frontmatter a[href="./t2.md"]')
+  await page.waitForURL(/\/fronted\/active\/t2\.md$/)
+  await page.waitForFunction(
+    () => document.querySelector(".markdown-body h1")?.textContent === "T2",
+  )
+
+  await page.goto(`${base}/fronted/active/t1.md`)
+  await page.waitForSelector('.frontmatter a[href="../done/t3.md"]')
+  await page.click('.frontmatter a[href="../done/t3.md"]')
+  await page.waitForURL(/\/fronted\/done\/t3\.md$/)
+  await page.waitForSelector(".backlinks li")
+
+  assert.deepEqual(
+    await page.$$eval(".backlinks li", (items) =>
+      items.map((item) => [
+        item.querySelector("a")?.textContent,
+        item.querySelector(".backlink-context")?.textContent,
+      ]),
+    ),
+    [["T1", "dependencies: T3"]],
+  )
+  await page.close()
+})
+
+test("Content first, Metadata, No frontmatter, Still a block, Folding, Outline and anchors: a page's frontmatter shows at its end, under Metadata", async () => {
+  write({
+    "meta/card.md":
+      "---\nstatus: draft\nowner: Ada\n---\n# Card\n\nIntro.\n\n## Metadata\n\nThe document's own section.\n\n## Last\n\nLast words.\n",
+    "meta/plain.md": "# Plain\n\nNo frontmatter here.\n",
+  })
+  const page = await open("meta/card.md")
+  const facts = await page.evaluate(() => {
+    const body = document.querySelector(".markdown-body") as HTMLElement
+    const title = body.querySelector(".metadata-title") as HTMLElement
+    return {
+      first: body.firstElementChild?.tagName,
+      last: [...body.children].slice(-2).map((element) => element.className),
+      titleId: title.id,
+      rule: getComputedStyle(title).borderTopStyle,
+      size: getComputedStyle(title).fontSize,
+      block: Boolean((body.querySelector(".frontmatter") as HTMLElement).dataset.folioId),
+      anchor: document.getElementById("metadata")?.textContent?.trim(),
+      outline: [...document.querySelectorAll(".outline a")].map((link) => link.textContent),
+    }
+  })
+
+  assert.deepEqual(facts, {
+    first: "H1",
+    last: ["metadata-title", "frontmatter"],
+    titleId: "",
+    rule: "solid",
+    size: "16px",
+    block: true,
+    anchor: "Metadata",
+    outline: ["Card", "Metadata", "Last"],
+  })
+
+  await page.hover("h2#last")
+  await page.click("h2#last .fold-toggle")
+  assert.equal(await page.$eval(".metadata-title", (title) => title.checkVisibility()), true)
+  await page.click("h2#last .fold-toggle")
+
+  await page.waitForTimeout(2000)
+  write({
+    "meta/card.md":
+      "---\nstatus: done\nowner: Ada\n---\n# Card\n\nIntro.\n\n## Metadata\n\nThe document's own section.\n\n## Last\n\nLast words.\n",
+  })
+  await page.waitForFunction(() =>
+    document.querySelector(".markdown-body .frontmatter")?.textContent?.includes("done"),
+  )
+  await page.waitForSelector(".read-mark.mark-changed")
+  const id = await page.$eval(".frontmatter", (table) => (table as HTMLElement).dataset.folioId)
+  await page.goto(`${base}/meta/card.md#^${id}`)
+  await page.waitForSelector(".markdown-body > .frontmatter.landed")
+
+  await page.goto(`${base}/meta/plain.md`)
+  await page.waitForSelector(".markdown-body h1")
+  assert.equal(await page.locator(".metadata-title").count(), 0)
   await page.close()
 })
 
@@ -55,7 +177,7 @@ test("Malformed YAML: the block shows as highlighted YAML and the body renders",
   write({ "cards/broken.md": "---\ntitle: [unclosed\n---\n# Body\n\nText.\n" })
   const page = await open("cards/broken.md")
   const facts = await page.evaluate(() => ({
-    block: document.querySelector(".markdown-body > pre:first-child > code.language-yaml.hljs")
+    block: document.querySelector(".markdown-body > pre:last-child > code.language-yaml.hljs")
       ?.textContent,
     tables: document.querySelectorAll(".markdown-body table").length,
     body: document.querySelector(".markdown-body h1")?.textContent,

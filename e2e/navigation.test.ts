@@ -1,4 +1,4 @@
-/** Headless Chromium run of folio's documented behaviour: opening pages, scroll positions, back and forward. */
+/** Headless Chromium run of Folio's documented behaviour: opening pages, scroll positions, back and forward. */
 
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -47,6 +47,71 @@ test("Heading: an address naming a heading opens with it just below the toolbar"
   )
 
   assert.ok(gap >= 0 && gap <= 16, `heading sits ${gap} px below the toolbar`)
+  await page.close()
+})
+
+test("Heading, long page, Block, long page, GitHub's form, Reload: a page drawn after its tree has scrolled lands on its fragment", async () => {
+  writeShelf()
+  let paragraphs: { id: string }[] = []
+  await waitFor(async () => {
+    const { blocks } = await (await context.request.get(`${base}/shelf/page-59.md?page`)).json()
+    paragraphs = (blocks as { id: string; kind: string }[]).filter(
+      ({ kind }) => kind === "paragraph",
+    )
+    return paragraphs.length > 150
+  })
+  const block = paragraphs[150]
+  const gaps: [string, number][] = []
+  const opened = async (hash: string) => {
+    const page = await context.newPage()
+
+    // The page arrives long after the tree has scrolled to its file, as a long page's drawing does.
+    await page.route("**/shelf/page-59.md?page", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      await route.continue()
+    })
+    await page.goto(`${base}/shelf/page-59.md${hash}`)
+    await landed(page)
+    return page
+  }
+
+  for (const [how, hash, selector] of [
+    ["heading", "#part-3", "#part-3"],
+    ["block", `#^${block.id}`, `[data-folio-id="${block.id}"]`],
+    ["user-content", "#user-content-part-3", "#part-3"],
+  ]) {
+    const page = await opened(hash)
+    await page.waitForSelector(selector)
+    await page.waitForTimeout(300)
+    gaps.push([
+      how,
+      await page.$eval(
+        selector,
+        (target) =>
+          target.getBoundingClientRect().top -
+          (document.querySelector(".bar") as Element).getBoundingClientRect().bottom,
+      ),
+    ])
+    await page.close()
+  }
+
+  const page = await opened("#part-3")
+  await page.evaluate(() => scrollTo(0, 1500))
+  await page.waitForTimeout(400)
+  await page.reload()
+  await landed(page)
+  await page.waitForTimeout(300)
+
+  assert.deepEqual(
+    gaps.map(([how, px]) => [how, px >= 0 && px <= 16]),
+    [
+      ["heading", true],
+      ["block", true],
+      ["user-content", true],
+    ],
+    JSON.stringify(gaps),
+  )
+  assert.equal(await page.evaluate(() => scrollY), 1500, "reload")
   await page.close()
 })
 
@@ -220,10 +285,12 @@ test("Follow a link and Frame follows: content, tree, listing and breadcrumb lin
   await page.waitForFunction(
     () => document.querySelector(".markdown-body h1")?.textContent === "Page 58",
   )
+  // A page swapped in before Folio has read its file is titled once it has.
+  await page.waitForFunction(() => document.title === "Page 58 | page-58.md")
   assert.deepEqual(await frameOf(page), {
     kept: true,
     url: `${base}/shelf/page-58.md`,
-    title: "page-58.md",
+    title: "Page 58 | page-58.md",
     crumbs: [path.basename(root), "shelf", "page-58.md"],
     current: "page-58.md",
     outline: "Page 58",
@@ -306,7 +373,7 @@ test("Landing: back and forward between followed links keep the frame and each p
   await page.close()
 })
 
-test("External link and Followed link: an outside link opens a new tab, a missing page shows folio's not-found page, and Back returns", async () => {
+test("External link and Followed link: an outside link opens a new tab, a missing page shows Folio's not-found page, and Back returns", async () => {
   writeShelf()
   await context.route("https://example.com/**", (route) => route.fulfill({ body: "outside" }))
   const page = await open("notes/guide.md")
@@ -336,7 +403,7 @@ test("External link and Followed link: an outside link opens a new tab, a missin
   await Promise.all([page.close(), shelf.close()])
 })
 
-test("Missing document, folder, file folio does not serve and Nothing known: folio's window says only that nothing is there, with a 404", async () => {
+test("Missing document, folder, file Folio does not serve and Nothing known: Folio's window says only that nothing is there, with a 404", async () => {
   for (const [address, named] of [
     ["notes/gone.md", "/notes/gone.md"],
     ["nope/", "/nope/"],
@@ -446,7 +513,7 @@ test("Saved later: the not-found page becomes the document once one is saved at 
   write({ "notes/later.md": "# Later\n\nSaved after all." })
   await page.waitForSelector(".markdown-body > h1:text('Later')")
   assert.equal(await page.evaluate(() => (window as { kept?: boolean }).kept), true)
-  assert.equal(await page.title(), "later.md")
+  assert.equal(await page.title(), "Later | later.md")
   assert.equal(await page.textContent(".markdown-body > p"), "Saved after all.")
   await page.close()
 })
@@ -502,7 +569,9 @@ test("Live updates: after following a link only the new page's saves update it; 
 test("Prepared ahead: resting the pointer on a page link fetches that page before the click", async () => {
   writeShelf()
   const page = await settled("shelf/page-40.md")
-  const fetched = page.waitForRequest(`${base}/shelf/page-39.md?page`, { timeout: 2000 })
+  const fetched = page.waitForRequest(`${base}/shelf/page-39.md?page&ahead`, {
+    timeout: 2000,
+  })
 
   await page.hover('.markdown-body a[href="page-39.md"]')
   await fetched
@@ -521,7 +590,7 @@ test("Prepared ahead: the page rendered while the pointer rested is the one show
   const id = (selector: string) =>
     page.$eval(selector, (svg) => Number(svg.id.replace("diagram-", "")))
   const shown = await id(".mermaid > svg")
-  const fetched = page.waitForRequest(`${base}/ahead/b.md?page`)
+  const fetched = page.waitForRequest(`${base}/ahead/b.md?page&ahead`)
 
   await page.hover('.markdown-body a[href="b.md"]')
   await fetched
@@ -654,6 +723,183 @@ async function notFound(page: Page) {
     framed: Boolean(document.querySelector(".bar") && document.querySelector(".tree")),
   }))
 }
+
+test("One h1, No h1, Several h1s, Markup, Renamed, Everything else: a document's tab reads its title, then its file name", async () => {
+  write({
+    "tabs/one.md": "# The **north** station\n\nText.",
+    "tabs/none.md": "Just text.",
+    "tabs/two.md": "# One\n\n# Two",
+    "tabs/rows.csv": "a,b\n1,2\n",
+    ".drafts/hidden.md": "# Hidden\n\nKept out of the model.",
+  })
+  const page = await open("tabs/one.md")
+  const titled = (expected: string) =>
+    waitFor(async () => (await page.title()) === expected).then(async () =>
+      assert.equal(await page.title(), expected),
+    )
+
+  await titled("The north station | one.md")
+  write({ "tabs/one.md": "# The south station\n\nText." })
+  await titled("The south station | one.md")
+
+  for (const [address, expected] of [
+    ["tabs/none.md", "none.md"],
+    ["tabs/two.md", "two.md"],
+    ["tabs/rows.csv", "rows.csv"],
+    ["tabs/", "tabs"],
+    ["", "What needs you"],
+    ["tabs/one.md?history", "History of one.md"],
+    [".drafts/hidden.md", "Hidden | hidden.md"],
+  ]) {
+    await page.goto(`${base}/${address}`)
+    await page.waitForSelector(".markdown-body > *")
+    await titled(expected)
+  }
+
+  await page.close()
+})
+
+test("Never shown, Back to a deep page, Reload, Move with its row in view, Move with its row out of view: the tree appears in one step and scrolls only when it must", async () => {
+  write({
+    "tiers/a/b/c/d/deep.md": "# Deep\n\nFive folders down.\n",
+    ...Object.fromEntries(
+      Array.from({ length: 40 }, (_, i) => [
+        `trail/t-${String(i).padStart(2, "0")}.md`,
+        `# Trail ${i}\n\n[Previous](t-${String(Math.max(i - 1, 0)).padStart(2, "0")}.md)\n`,
+      ]),
+    ),
+  })
+  const page = await context.newPage()
+  await page.addInitScript(() => {
+    new MutationObserver(() => {
+      const tree = document.querySelector(".tree")
+      const shown = window as { firstLists?: number }
+
+      if (tree?.querySelector(":scope > ul") && shown.firstLists === undefined) {
+        shown.firstLists = tree.querySelectorAll("ul").length
+      }
+    }).observe(document, { childList: true, subtree: true })
+  })
+  const tree = () =>
+    page.evaluate(() => {
+      const panel = document.querySelector(".tree") as HTMLElement
+      const box = panel.getBoundingClientRect()
+      const row = (panel.querySelector(".current") as Element).getBoundingClientRect()
+      return {
+        first: (window as { firstLists?: number }).firstLists,
+        lists: panel.querySelectorAll("ul").length,
+        scrolled: panel.scrollTop,
+        inside: row.top >= box.top && row.bottom <= box.bottom,
+      }
+    })
+  const scrollTree = async (to: number) => {
+    await page.$eval(".tree", (panel, top) => panel.scrollTo(0, top), to)
+    await page.waitForTimeout(400)
+    return page.$eval(".tree", (panel) => panel.scrollTop)
+  }
+
+  await page.goto(`${base}/tiers/a/b/c/d/deep.md`)
+  await landed(page)
+  const fresh = await tree()
+  assert.equal(fresh.first, fresh.lists, "every open folder appears with the root")
+  assert.equal(fresh.lists, 6)
+  assert.ok(fresh.inside)
+
+  await page.click('.tree li[data-path="trail"] > .tree-row')
+  await page.waitForSelector('.tree li[data-path="trail/t-30.md"]')
+  const left = await scrollTree(600)
+  await page.click(".health-link")
+  await page.waitForURL(`${base}/?health`)
+  await page.goBack()
+  await landed(page)
+  const back = await tree()
+  assert.equal(back.first, back.lists, "back: one step")
+  assert.equal(back.scrolled, left, "back: scrolled where it was")
+
+  const before = await scrollTree(300)
+  await page.reload()
+  await landed(page)
+  assert.equal((await tree()).scrolled, before, "reload: scrolled where it was")
+
+  await page.goto(`${base}/trail/t-39.md`)
+  await landed(page)
+  const centred = await tree()
+  assert.ok(centred.inside && centred.scrolled > 0, "a page never shown centres its file")
+  await page.click(".markdown-body a >> text=Previous")
+  await page.waitForFunction(
+    () => document.querySelector(".markdown-body h1")?.textContent === "Trail 38",
+  )
+  await page.waitForTimeout(300)
+  assert.equal((await tree()).scrolled, centred.scrolled, "its row in view, the tree stays still")
+
+  await scrollTree(0)
+  await page.click(".markdown-body a >> text=Previous")
+  await page.waitForFunction(
+    () => document.querySelector(".markdown-body h1")?.textContent === "Trail 37",
+  )
+  await page.waitForTimeout(300)
+  const moved = await tree()
+  assert.ok(moved.scrolled > 0 && moved.inside, "its row out of view, the tree brings it in")
+  await page.close()
+})
+
+test("Top, Scrolled, Press, Not pointing, Keyboard: the tree's data button stays in its corner as the tree scrolls", async () => {
+  write(
+    Object.fromEntries(
+      Array.from({ length: 50 }, (_, i) => [
+        `corner/c-${String(i).padStart(2, "0")}.md`,
+        `# C ${i}\n`,
+      ]),
+    ),
+  )
+  const page = await open("corner/c-00.md")
+  const corner = () =>
+    page.$eval(".tree-data", (button) => {
+      const box = button.getBoundingClientRect()
+      const tree = (document.querySelector(".tree") as HTMLElement).getBoundingClientRect()
+      return {
+        top: Math.round(box.top - tree.top),
+        right: Math.round(tree.right - box.right),
+        shown: getComputedStyle(button).opacity,
+        pressed: button.getAttribute("aria-pressed"),
+      }
+    })
+
+  await page.hover(".tree")
+  await page.$eval(".tree", (panel) => panel.scrollTo(0, 0))
+  const top = await corner()
+  await page.$eval(".tree", (panel) => panel.scrollTo(0, 600))
+  await page.waitForTimeout(100)
+  const scrolled = await corner()
+  assert.ok((await page.$eval(".tree", (panel) => panel.scrollTop)) > 0)
+  assert.deepEqual(
+    { top: scrolled.top, right: scrolled.right, shown: scrolled.shown },
+    { top: top.top, right: top.right, shown: "1" },
+  )
+
+  await page.click(".tree-data")
+  const pressed = await corner()
+  assert.notEqual(pressed.pressed, scrolled.pressed)
+  assert.equal(pressed.top, top.top)
+  await page.click(".tree-data")
+
+  await page.mouse.move(700, 400)
+  assert.equal((await corner()).shown, "0")
+  await page.evaluate(() => {
+    const focusable = [
+      ...document.querySelectorAll<HTMLElement>("a[href], button, input, [tabindex]"),
+    ].filter((element) => element.tabIndex >= 0 && element.getClientRects().length > 0)
+    const at = focusable.indexOf(document.querySelector(".tree-data") as HTMLElement)
+    focusable[at + 1].dataset.next = ""
+  })
+  await page.focus("[data-next]")
+  await page.keyboard.press("Shift+Tab")
+  assert.deepEqual(
+    { top: (await corner()).top, shown: (await corner()).shown },
+    { top: top.top, shown: "1" },
+  )
+  await page.close()
+})
 
 /** Long pages in a folder long enough that its last files sit below the tree panel's fold. */
 function writeShelf(): void {

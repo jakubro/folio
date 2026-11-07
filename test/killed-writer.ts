@@ -1,5 +1,5 @@
 /**
- * A folio that writes its saved views, killed the moment it is about to rename a written file into place,
+ * A Folio that writes its saved views, killed the moment it is about to rename a written file into place,
  * or, told `in-place`, halfway through writing a document over in place.
  */
 

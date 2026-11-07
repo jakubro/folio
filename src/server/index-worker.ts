@@ -1,18 +1,24 @@
-/** The indexer's worker thread: answers each document's text with its blocks. */
+/** The indexer's worker thread: splits a text into blocks, or gives parsed blocks their identities. */
 
 import { parentPort } from "node:worker_threads"
-import { type Block, blocks } from "./blocks.ts"
+import { type Block, blocks, identify, type Part } from "./blocks.ts"
 
-interface Request {
-  id: number
-  text: string
-  kind: "markdown" | "mermaid"
-  previous: Block[]
-}
+type Request = { id: number; previous: Block[] } & (
+  | { text: string; kind: "markdown" | "mermaid" }
+  | { parts: Part[] }
+)
 
-parentPort?.on("message", ({ id, text, kind, previous }: Request) => {
+parentPort?.on("message", (request: Request) => {
+  const { id, previous } = request
+
   try {
-    parentPort?.postMessage({ id, blocks: blocks(text, kind, previous) })
+    parentPort?.postMessage({
+      id,
+      blocks:
+        "parts" in request
+          ? identify(request.parts, previous)
+          : blocks(request.text, request.kind, previous),
+    })
   } catch (error) {
     parentPort?.postMessage({ id, error: (error as Error).message })
   }

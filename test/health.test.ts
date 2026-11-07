@@ -211,7 +211,7 @@ test("a restart reuses the last results of documents unchanged since, and checks
   }
 })
 
-test("a document removed while folio was stopped breaks the links to it on the next start", async () => {
+test("a document removed while Folio was stopped breaks the links to it on the next start", async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-health-")))
   const store = fs.mkdtempSync(path.join(os.tmpdir(), "folio-health-store-"))
   fs.writeFileSync(path.join(root, "linker.md"), "# Linker\n\nSee [target](target.md).\n")
@@ -589,6 +589,71 @@ test("a change runs again only the rules and queries reading the tables it moved
     fs.rmSync(path.join(root, "parts/gear-2.md"))
     await until(async () =>
       (await health.state()).problems.some(({ what }) => what === "fits: gear-2 names no part"),
+    )
+  } finally {
+    model.close()
+    await data.close()
+  }
+})
+
+test("a result kept before frontmatter links were checked is checked again on the next start", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-health-")))
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), "folio-health-store-"))
+  fs.writeFileSync(path.join(root, "a.md"), '---\nparent: "[B](./b.md)"\n---\n# A\n')
+  const start = async () => {
+    const model = new Model(root, store, indexer, () => {})
+    const data = new Data(root, store)
+    await model.start()
+    return { model, data, health: healthOf(model, data) }
+  }
+  const first = await start()
+
+  try {
+    await first.health.state()
+    await first.health.flush()
+  } finally {
+    first.model.close()
+    await first.data.close()
+  }
+
+  const kept = path.join(store, "health")
+
+  for (const name of fs.readdirSync(kept)) {
+    const stored = JSON.parse(fs.readFileSync(path.join(kept, name), "utf8"))
+    stored.format = 3
+    stored.check = { ...stored.check, problems: [], links: [] }
+    fs.writeFileSync(path.join(kept, name), JSON.stringify(stored))
+  }
+
+  const second = await start()
+
+  try {
+    assert.deepEqual(
+      (await second.health.state()).problems.map(({ path: at, kind, line }) => [at, kind, line]),
+      [["a.md", "link", 2]],
+    )
+  } finally {
+    second.model.close()
+    await second.data.close()
+  }
+})
+
+test("a link in frontmatter to a file not there is a broken link at its line, and one that is there no problem", async () => {
+  const { model, data, health } = await served({
+    "notes/a.md":
+      '---\ntitle: A\ndependencies:\n  - id: "[B](./b.md)"\n  - id: "[C](../closed/c.md)"\n---\n# A\n',
+    "notes/b.md": "# B\n",
+  })
+
+  try {
+    assert.deepEqual(
+      (await health.state()).problems.map(({ kind, path: at, line, what }) => [
+        kind,
+        at,
+        line,
+        what,
+      ]),
+      [["link", "notes/a.md", 5, "Links to closed/c.md, which is not there"]],
     )
   } finally {
     model.close()

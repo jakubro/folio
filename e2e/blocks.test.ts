@@ -1,4 +1,4 @@
-/** Headless Chromium run of folio's documented behaviour: block sources, block links, backlinks and includes. */
+/** Headless Chromium run of Folio's documented behaviour: block sources, block links, backlinks and includes. */
 
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
@@ -16,6 +16,7 @@ import {
   landed,
   open,
   output,
+  root,
   until,
   visible,
   waitFor,
@@ -497,6 +498,359 @@ test("Get a link, Follow it, Block moved, Block reworded, Block gone, Heading li
   await page.close()
 })
 
+test("From a lower line, Past a narrow table, Far right, Left margin, Down a margin, Heading, On the block: a block's controls show anywhere level with it", async () => {
+  const long = Array.from({ length: 40 }, (_, i) => `Word ${i} of a paragraph that wraps.`).join(
+    " ",
+  )
+  write({
+    "level/doc.md": `# Level\n\n${long}\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n## Section\n\nUnder the section.\n`,
+  })
+  const page = await open("level/doc.md")
+  await page.setViewportSize({ width: 2200, height: 900 })
+  const boxOf = (selector: string) =>
+    page.$eval(selector, (element) => {
+      const { left, right, top, bottom } = element.getBoundingClientRect()
+      return { left, right, top, bottom, middle: (top + bottom) / 2 }
+    })
+  const idOf = (selector: string) =>
+    page.$eval(selector, (block) => `#^${(block as HTMLElement).dataset.folioId}`)
+  const linked = () =>
+    page.$eval(".block-link", (mark) =>
+      (mark as HTMLAnchorElement).hidden ? null : (mark as HTMLAnchorElement).hash,
+    )
+  const offered = () => page.isVisible(".block-provenance")
+  const main = await boxOf("main")
+  const paragraph = await boxOf(".markdown-body > p >> nth=0")
+  const table = await boxOf(".markdown-body > table")
+  const heading = await boxOf(".markdown-body > h2")
+  const last = await boxOf('.markdown-body > p:has-text("Under the section.")')
+  const third = paragraph.top + 50
+
+  assert.ok(paragraph.bottom - paragraph.top > 60, "the paragraph has a third line")
+  assert.ok(table.right + 40 < paragraph.right, "the table is narrower than the page")
+
+  await page.mouse.move(paragraph.left + 10, paragraph.top + 5)
+  assert.equal(await linked(), await idOf(".markdown-body > p >> nth=0"), "on the block")
+
+  await page.mouse.move(paragraph.left + 10, third)
+  await page.mouse.move(paragraph.right + 60, third, { steps: 10 })
+  assert.equal(await linked(), await idOf(".markdown-body > p >> nth=0"), "from a lower line")
+  const why = await boxOf(".block-provenance")
+  await page.mouse.move(why.left + 12, why.middle, { steps: 10 })
+  await page.mouse.down()
+  await page.mouse.up()
+  await page.waitForSelector(".provenance-panel:not([hidden]) .provenance-line")
+  assert.match(
+    (await page.textContent(".provenance-panel .provenance-line")) ?? "",
+    /^level\/doc\.md lines 3-3, /,
+  )
+  await page.keyboard.press("Escape")
+
+  await page.mouse.move(table.right + 40, table.middle)
+  assert.equal(await linked(), await idOf(".markdown-body > table"), "past a narrow table")
+
+  await page.mouse.move(main.right - 5, paragraph.top + 5)
+  assert.equal(await linked(), await idOf(".markdown-body > p >> nth=0"), "far right")
+
+  for (const [box, selector] of [
+    [paragraph, ".markdown-body > p >> nth=0"],
+    [table, ".markdown-body > table"],
+    [last, '.markdown-body > p:has-text("Under the section.")'],
+  ] as const) {
+    await page.mouse.move(main.right - 5, box.middle, { steps: 5 })
+    assert.equal(await linked(), await idOf(selector), `down a margin: ${selector}`)
+  }
+
+  await page.mouse.move(main.left + 5, third)
+  assert.equal(await linked(), await idOf(".markdown-body > p >> nth=0"), "left margin")
+
+  for (const x of [main.left + 5, main.right - 5]) {
+    await page.mouse.move(x, heading.middle)
+    assert.deepEqual(
+      await page.$eval(".markdown-body > h2", (h2) =>
+        [".fold-toggle", ".heading-link"].map(
+          (control) => getComputedStyle(h2.querySelector(control) as Element).opacity,
+        ),
+      ),
+      ["1", "1"],
+      `heading at x ${x}`,
+    )
+    assert.equal(await offered(), true)
+    assert.equal(await linked(), null)
+  }
+
+  await page.mouse.move(main.right - 5, last.bottom + 40)
+  assert.equal(await offered(), false, "below every block")
+
+  await page.mouse.move(paragraph.left + 10, paragraph.top + 5)
+  await page.keyboard.press("Alt+ArrowLeft")
+  await page.waitForFunction(
+    (left) =>
+      (document.querySelector(".markdown-body") as Element).getBoundingClientRect().left !== left,
+    paragraph.left,
+  )
+  await page.mouse.move(paragraph.left + 12, paragraph.top + 6)
+  assert.deepEqual(
+    await page.evaluate(() => [
+      Math.round(
+        (document.querySelector(".block-link") as HTMLElement).getBoundingClientRect().right,
+      ),
+      Math.round(
+        (document.querySelector(".markdown-body") as Element).getBoundingClientRect().left,
+      ),
+    ]),
+    await page.evaluate(() => {
+      const left = Math.round(
+        (document.querySelector(".markdown-body") as Element).getBoundingClientRect().left,
+      )
+      return [left, left]
+    }),
+    "the mark follows the page when it moves under a resting pointer",
+  )
+  await page.keyboard.press("Alt+ArrowLeft")
+  await page.waitForSelector(".tree .current")
+  await page.close()
+})
+
+test("h1, h2, h3, h4 to h6, Two lines, Warning, Other blocks: a heading's buttons start at the top of its first line", async () => {
+  const wrapping =
+    "A heading long enough to wrap onto a second line of the page, and then a few more words"
+  write({
+    "slots/rates.csv": "arm,pct\nA,0.816\n",
+    "slots/doc.md": `# One\n\nText.\n\n## Two\n\nText.\n\n### Three\n\nText.\n\n#### Four\n\nText.\n\n## ${wrapping}\n\nText.\n\n## Rate <data value="rates.csv#0.pct">81%</data> now\n\nPara <data value="rates.csv#0.pct">81%</data> too.\n`,
+  })
+  const page = await open("slots/doc.md")
+  const near = (px: number) => Math.round(px) || 0
+  await page.waitForFunction(
+    () => document.querySelectorAll(".problem-flag:not([hidden])").length === 2,
+  )
+  const boxOf = (selector: string) =>
+    page.$eval(selector, (element) => {
+      const { top, bottom } = element.getBoundingClientRect()
+      const rule = bottom - Number.parseFloat(getComputedStyle(element).borderBottomWidth)
+      return { top, bottom, rule }
+    })
+  const slots = async (selector: string) => {
+    await page.hover(selector)
+    const block = await boxOf(selector)
+    const why = await boxOf(".block-provenance")
+    const copy = await boxOf(".block-copy")
+    return {
+      why: near(why.top - block.top),
+      copy: near(copy.top - why.bottom),
+      clear: copy.bottom <= block.rule,
+      crossing: near(copy.bottom - block.rule),
+    }
+  }
+
+  for (const level of ["h1", "h2"]) {
+    const { why, copy, clear } = await slots(`.markdown-body > ${level} >> nth=0`)
+    assert.deepEqual({ why, copy, clear }, { why: 0, copy: 0, clear: true }, level)
+  }
+
+  const three = await slots(".markdown-body > h3")
+  assert.deepEqual([three.why, three.copy], [0, 0], "h3")
+  assert.ok(three.crossing <= 7, `h3 crosses its rule by ${three.crossing} px`)
+
+  const four = await slots(".markdown-body > h4")
+  assert.deepEqual([four.why, four.copy], [0, 0], "h4")
+
+  const long = `.markdown-body > h2:has-text("${wrapping}")`
+  const lines = await boxOf(long)
+  assert.ok(lines.bottom - lines.top > 60, "the heading wraps")
+  assert.deepEqual((({ why, copy }) => ({ why, copy }))(await slots(long)), { why: 0, copy: 0 })
+
+  const signed = async (selector: string) => {
+    await page.hover(selector)
+    const block = await boxOf(selector)
+    const why = await boxOf(".block-provenance")
+    const sign = await page.evaluate((selector) => {
+      const { folioId } = (document.querySelector(selector) as HTMLElement).dataset
+      return [...document.querySelectorAll<HTMLElement>(".problem-flag")]
+        .find((flag) => flag.dataset.folioId === folioId)
+        ?.getBoundingClientRect().top
+    }, selector)
+    return {
+      sign: sign === undefined ? "no sign" : near(sign - why.top),
+      why: near(why.top - block.top),
+    }
+  }
+  assert.deepEqual(await signed(".markdown-body > h2:last-of-type"), { sign: 0, why: 0 })
+  const para = await signed(".markdown-body > p:last-of-type")
+  assert.ok(
+    para.sign === 0 && para.why > 0,
+    "a paragraph's sign stays in its info button's place, below the clock",
+  )
+
+  await page.hover(".markdown-body > p >> nth=0")
+  const paragraph = await boxOf(".markdown-body > p >> nth=0")
+  const clock = await boxOf(".block-history")
+  const why = await boxOf(".block-provenance")
+  const copy = await boxOf(".block-copy")
+  assert.deepEqual(
+    [clock.top - paragraph.top, why.top - paragraph.top - (copy.top - why.top)].map(near),
+    [0, 0],
+    "other blocks",
+  )
+  await page.close()
+})
+
+test("Open, Few versions, No history, Absent, The page, A version, New tab, One at a time, Close: a block's clock opens its latest versions in a popup", async () => {
+  // Folio may or may not keep a new file's first text; a first save changing only another block hides which.
+  const start = async (file: string, text: string, later: string[]) => {
+    write({ [file]: `# Past\n\n${text}\n\nSteady text.\n` })
+    const page = await open(file)
+
+    for (const [index, next] of [text, ...later].entries()) {
+      write({ [file]: `# Past\n\n${next}\n\nSteady text, saved ${index}.\n` })
+      await waitText(page, `Steady text, saved ${index}.`)
+    }
+
+    return page
+  }
+  const page = await start(
+    "past/five.md",
+    "The pump runs 1 hour.",
+    [2, 3, 4, 5].map((hours) => `The pump runs ${hours} hours.`),
+  )
+  const paragraph = ".markdown-body > p >> nth=0"
+  const clock = async () => {
+    await page.hover(paragraph, { position: { x: 5, y: 5 } })
+    await page.click(".block-history")
+  }
+  const shown = () =>
+    page.$eval(".provenance-panel", (panel) =>
+      (panel as HTMLElement).hidden
+        ? null
+        : {
+            title: panel.querySelector(".mark-panel-title")?.textContent,
+            texts: [...panel.querySelectorAll(".history-block li")].map(
+              (item) => item.querySelector("pre, p")?.textContent,
+            ),
+            added: [...panel.querySelectorAll(".history-block li ins")].map(
+              (ins) => ins.textContent,
+            ),
+            all: [...panel.querySelectorAll("a")].at(-1)?.textContent,
+          },
+    )
+
+  await clock()
+  await page.waitForSelector(".provenance-panel:not([hidden]) .history-block")
+  assert.deepEqual(await shown(), {
+    title: "This block's past versions",
+    texts: ["The pump runs 5 hours.", "The pump runs 4 hours.", "The pump runs 3 hours."],
+    added: ["5", "4", "3"],
+    all: "All 5 versions",
+  })
+  assert.equal(new URL(page.url()).search, "", "open: the page stays")
+
+  await clock()
+  assert.equal(await shown(), null, "close: the clock again")
+  await clock()
+  await page.waitForSelector(".provenance-panel:not([hidden]) .history-block")
+  await page.keyboard.press("Escape")
+  assert.equal(await shown(), null, "close: Escape")
+  await clock()
+  await page.waitForSelector(".provenance-panel:not([hidden]) .history-block")
+  await page.click(".provenance-panel .mark-panel-close")
+  assert.equal(await shown(), null, "close: its button")
+
+  await page.hover(paragraph, { position: { x: 5, y: 5 } })
+  await page.click(".block-provenance")
+  await page.waitForSelector(".provenance-panel:not([hidden]) .provenance-line")
+  await clock()
+  await page.waitForSelector(".provenance-panel:not([hidden]) .history-block")
+  assert.equal(await page.locator(".mark-panel:not([hidden])").count(), 1)
+  assert.equal(await page.locator(".provenance-panel .provenance-line").count(), 0)
+  await page.hover(paragraph, { position: { x: 5, y: 5 } })
+  await page.click(".block-provenance")
+  await page.waitForSelector(".provenance-panel:not([hidden]) .provenance-line")
+  assert.equal(await page.locator(".provenance-panel .history-block").count(), 0, "one at a time")
+  await page.keyboard.press("Escape")
+
+  const id = await page.getAttribute(paragraph, "data-folio-id")
+  for (const button of ["left", "middle"] as const) {
+    await page.hover(paragraph, { position: { x: 5, y: 5 } })
+    const [tab] = await Promise.all([
+      context.waitForEvent("page"),
+      page.click(".block-history", {
+        button,
+        modifiers: button === "left" ? ["ControlOrMeta"] : [],
+      }),
+    ])
+    await tab.waitForLoadState()
+    assert.equal(
+      decodeURIComponent(new URL(tab.url()).search),
+      `?history&block=${id}`,
+      `new tab: ${button}`,
+    )
+    await tab.close()
+  }
+  assert.equal(await shown(), null, "a click for a new tab opens no popup")
+
+  await clock()
+  await page.waitForSelector(".provenance-panel:not([hidden]) .history-block")
+  await Promise.all([
+    page.waitForURL(/\?history&at=/),
+    page.click(".provenance-panel .history-block li >> nth=1 >> a"),
+  ])
+  await page.waitForSelector(".history-banner")
+  assert.match(
+    (await page.textContent(".markdown-body")) ?? "",
+    /The pump runs 4 hours\./,
+    "a version",
+  )
+  await page.goBack()
+  await page.waitForSelector(paragraph)
+  await clock()
+  await page.waitForSelector(".provenance-panel:not([hidden]) .history-block")
+  await Promise.all([page.waitForURL(/\?history&block=/), page.click("text=All 5 versions")])
+  await page.waitForSelector(".history-block li")
+  assert.equal(await page.locator(".history-block li").count(), 5, "the page")
+  await page.close()
+
+  const two = await start("past/two.md", "The gate opens at six.", ["The gate opens at seven."])
+  await two.hover(".markdown-body > p >> nth=0")
+  await two.click(".block-history")
+  await two.waitForSelector(".provenance-panel:not([hidden]) .history-block")
+  assert.deepEqual(
+    await two.$$eval(".provenance-panel .history-block li pre", (found) =>
+      found.map((pre) => pre.textContent),
+    ),
+    ["The gate opens at seven.", "The gate opens at six."],
+  )
+  assert.equal(await two.textContent(".provenance-panel p:last-child a"), "All 2 versions")
+  await two.close()
+
+  const gone = await start("past/gone.md", "The valve leaks.", [])
+  write({ "past/gone.md": "# Past\n\nSteady text, removed.\n" })
+  await waitText(gone, "Steady text, removed.")
+  write({ "past/gone.md": "# Past\n\nThe valve leaks.\n\nSteady text, back.\n" })
+  await waitText(gone, "Steady text, back.")
+  await gone.hover(".markdown-body > p >> nth=0")
+  await gone.click(".block-history")
+  await gone.waitForSelector(".provenance-panel:not([hidden]) .history-block")
+  assert.deepEqual(
+    await gone.$$eval(".provenance-panel .history-block li", (found) =>
+      found.slice(0, 2).map((item) => item.querySelector("pre, p")?.textContent),
+    ),
+    ["The valve leaks.", "Not in the document."],
+    "absent",
+  )
+
+  await gone.keyboard.press("Escape")
+  await gone.route(/[?&]block-history=/, (route) => route.fulfill({ json: { versions: [] } }))
+  await gone.hover(".markdown-body > p >> nth=0")
+  await gone.click(".block-history")
+  await gone.waitForSelector(".provenance-panel:not([hidden]) .markdown-body p")
+  assert.deepEqual(
+    await gone.$eval(".provenance-panel .markdown-body", (body) => body.textContent),
+    "No history for this block.",
+    "no history",
+  )
+  await gone.close()
+})
+
 test("See incoming links, Into a section, Follow back, New link, No links: a page shows what links to it", async () => {
   const filler = Array.from({ length: 30 }, (_, i) => `Filler ${i + 1}.`).join("\n\n")
   write({
@@ -549,6 +903,153 @@ test("See incoming links, Into a section, Follow back, New link, No links: a pag
   await page.close()
 })
 
+test("Beside the button, No room below, Size, At once, Scrolling, Warning sign, Outside: the ⓘ and the clock open at once in a pop-up beside their button", async () => {
+  const table = (run: number) =>
+    [
+      "| Station | Notes | Run |",
+      "|---|---|---|",
+      ...Array.from(
+        { length: 40 },
+        (_, i) => `| Station ${i + 1} | ${"Wind and rain gauged at dawn. ".repeat(4)} | ${run} |`,
+      ),
+    ].join("\n")
+  const paragraphs = Array.from({ length: 30 }, (_, i) => `Paragraph ${i + 1} reads the gauges.`)
+  const doc = (run: number) =>
+    `# Pop-ups\n\nRate <data value="rates.csv#0.pct">81%</data> today.\n\n${paragraphs.join("\n\n")}\n\n${table(run)}\n\nRun ${run}.\n`
+  write({ "popup/rates.csv": "arm,pct\nA,0.816\n", "popup/doc.md": doc(1) })
+  const page = await open("popup/doc.md")
+
+  for (const run of [2, 3]) {
+    write({ "popup/doc.md": doc(run) })
+    await waitText(page, `Run ${run}.`)
+  }
+
+  const box = (selector: string) =>
+    page.$eval(selector, (element) => element.getBoundingClientRect().toJSON() as DOMRect)
+  const popup = () =>
+    page.$eval(".provenance-panel", async (panel) => {
+      await document.fonts.ready
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      const { top, bottom, left, right, width, height } = panel.getBoundingClientRect()
+      const middle = document.elementFromPoint(left + width / 2, top + height / 2)
+      return {
+        top,
+        bottom,
+        left,
+        right,
+        width,
+        height,
+        over: panel.contains(middle),
+        scrolls: panel.scrollHeight > panel.clientHeight,
+      }
+    })
+  const click = async (block: string, button: string) => {
+    await page.hover(block, { position: { x: 5, y: 5 } })
+    const at = await box(button)
+    await page.click(button)
+    return at
+  }
+  const near = (a: number, b: number) => Math.abs(a - b) <= 1
+
+  const paragraph = ".markdown-body > p >> nth=3"
+  const why = await click(paragraph, ".block-provenance")
+  await page.waitForSelector(".provenance-panel:not([hidden]) .provenance-line")
+  const beside = await popup()
+  assert.ok(
+    beside.right <= why.left && why.left - beside.right <= 8 && near(beside.top, why.top),
+    `beside: ${JSON.stringify({ beside, why })}`,
+  )
+  assert.ok(beside.over && beside.width <= 600, JSON.stringify(beside))
+
+  const before = await box(paragraph)
+  await page.mouse.wheel(0, 100)
+  await page.waitForTimeout(300)
+  const moved = await popup()
+  const after = await box(paragraph)
+  assert.ok(
+    after.top < before.top && near(moved.top - beside.top, after.top - before.top),
+    `scrolling: ${JSON.stringify({ before: before.top, after: after.top, beside, moved })}`,
+  )
+  await page.click(".markdown-body h1", { position: { x: 5, y: 5 } })
+  assert.ok(await page.isVisible(".provenance-panel"), "outside: a click elsewhere leaves it open")
+  await page.keyboard.press("Escape")
+
+  const last = `.markdown-body > p >> nth=${paragraphs.length}`
+  await page.$eval(last, (element) =>
+    scrollBy(0, element.getBoundingClientRect().top - (innerHeight - 40)),
+  )
+  await page.waitForTimeout(300)
+  const clock = await click(last, ".block-history")
+  await page.waitForSelector(".provenance-panel:not([hidden]) .history-block")
+  const above = await popup()
+  assert.ok(
+    near(above.bottom, clock.bottom) &&
+      above.bottom <= (await page.evaluate(() => innerHeight)) &&
+      above.right <= clock.left,
+    `no room below: ${JSON.stringify({ above, clock })}`,
+  )
+  await page.keyboard.press("Escape")
+
+  await click(".markdown-body table", ".block-history")
+  await page.waitForSelector(".provenance-panel:not([hidden]) .history-block")
+  const size = await popup()
+  const half = (await page.evaluate(() => innerHeight)) / 2
+  assert.ok(size.width <= 600 && size.height <= half + 1 && size.scrolls, JSON.stringify(size))
+  await page.keyboard.press("Escape")
+
+  await page.route(
+    (url) => url.searchParams.has("block-history"),
+    async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      await route.continue()
+    },
+  )
+  const waited = ".markdown-body > p >> nth=5"
+  const asked = await click(waited, ".block-history")
+  const askedFrom = (await box(waited)).top
+  await page.waitForSelector(".provenance-panel:not([hidden]) .panel-waiting .spinner", {
+    timeout: 500,
+  })
+  assert.equal(
+    await page.textContent(".provenance-panel .panel-waiting"),
+    "Reading this block's past versions",
+  )
+  await page.evaluate(() => scrollBy(0, 2000))
+  await page.waitForSelector(".provenance-panel:not([hidden]) .history-block")
+  assert.equal(await page.locator(".provenance-panel .panel-waiting").count(), 0)
+  await page.evaluate(() => scrollBy(0, -2000))
+  const answered = await popup()
+  assert.ok(
+    near(answered.top - (await box(waited)).top, asked.top - askedFrom),
+    `scrolled while waiting: ${JSON.stringify({ answered, asked, askedFrom })}`,
+  )
+  await page.unrouteAll()
+  await page.keyboard.press("Escape")
+
+  await page.route(
+    (url) => url.searchParams.has("provenance"),
+    (route) => route.abort(),
+  )
+  await click(waited, ".block-provenance")
+  await page.waitForSelector(".provenance-panel:not([hidden]) .provenance-line")
+  assert.equal(await page.locator(".provenance-panel .panel-waiting").count(), 0, "failed ask")
+  await page.unrouteAll()
+  await page.keyboard.press("Escape")
+
+  await page.evaluate(() => scrollTo(0, 0))
+  await page.waitForSelector(".problem-flag:not([hidden])")
+  await page.waitForTimeout(300)
+  const flag = await box(".problem-flag")
+  await page.click(".problem-flag")
+  await page.waitForSelector(".provenance-panel:not([hidden]) .provenance-line")
+  const warned = await popup()
+  assert.ok(
+    warned.right <= flag.left && near(warned.top, flag.top),
+    `warning sign: ${JSON.stringify({ warned, flag })}`,
+  )
+  await page.close()
+})
+
 test("One h1, Path on hover, No h1, Several h1s, Markup, An included h1, Renamed: Linked from names a document by its title", async () => {
   write({
     "titled/target.md": "# Target\n\nBody.",
@@ -577,6 +1078,12 @@ test("One h1, Path on hover, No h1, Several h1s, Markup, An included h1, Renamed
     ["The north station", "titled/plan.md"],
     ["twice.md", "titled/twice.md"],
   ])
+  assert.deepEqual(
+    await page.$$eval(".backlinks li", (items) =>
+      items.map((item) => item.querySelector(".backlink-file")?.textContent ?? null),
+    ),
+    [null, null, " plan.md", null],
+  )
 
   write({ "titled/plan.md": "# South station\n\nSee [the target](target.md)." })
   await page.waitForFunction(() =>
@@ -586,6 +1093,91 @@ test("One h1, Path on hover, No h1, Several h1s, Markup, An included h1, Renamed
   )
   assert.deepEqual((await names(".backlinks li > a"))[2], ["South station", "titled/plan.md"])
   assert.deepEqual((await names(".outline-backlinks a"))[2], ["South station", "titled/plan.md"])
+
+  fs.renameSync(path.join(root, "titled/plan.md"), path.join(root, "titled/south.md"))
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".backlinks .backlink-file")].some(
+      (file) => file.textContent === " south.md",
+    ),
+  )
+  assert.deepEqual(
+    await page.$$eval(".backlinks li", (items) =>
+      items.map((item) => [
+        item.querySelector("a")?.textContent,
+        item.querySelector(".backlink-file")?.textContent ?? null,
+      ]),
+    ),
+    [
+      ["titled/included.md", null],
+      ["titled/notes/plain.md", null],
+      ["South station", " south.md"],
+      ["titled/twice.md", null],
+    ],
+  )
+  await page.close()
+})
+
+test("File name, A part, Both themes, No h1, The rest: Linked from shows the file name and part small and faint", async () => {
+  write({
+    "faint/target.md": "# Target\n\n## Section\n\nBody.",
+    "faint/plan.md": "# Plan\n\nSee [the section](target.md#section).",
+    "faint/plain.md": "See [the target](target.md) too.",
+  })
+  const page = await open("faint/target.md")
+  await page.waitForFunction(() => document.querySelectorAll(".backlinks li").length === 2)
+  const looks = () =>
+    page.$eval(".backlinks", (list) => {
+      const luminance = (colour: string) => {
+        const [r, g, b] = (colour.match(/[\d.]+/g) ?? []).slice(0, 3).map((channel) => {
+          const c = Number(channel) / 255
+          return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+        })
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+      }
+      const background = luminance(getComputedStyle(document.body).backgroundColor)
+      const contrast = (element: Element | null) => {
+        const own = luminance(getComputedStyle(element as Element).color)
+        return (Math.max(own, background) + 0.05) / (Math.min(own, background) + 0.05)
+      }
+      const size = (element: Element | null) => getComputedStyle(element as Element).fontSize
+      const planned = [...list.querySelectorAll("li")].find((item) =>
+        item.querySelector(".backlink-file"),
+      ) as Element
+      const plain = [...list.querySelectorAll("li")].find(
+        (item) => !item.querySelector(".backlink-file"),
+      ) as Element
+
+      return {
+        title: [planned.querySelector("a")?.textContent, size(planned.querySelector("a"))],
+        file: [
+          planned.querySelector(".backlink-file")?.textContent,
+          size(planned.querySelector(".backlink-file")),
+        ],
+        part: [
+          planned.querySelector(".backlink-part")?.textContent,
+          size(planned.querySelector(".backlink-part")),
+        ],
+        fainter:
+          contrast(planned.querySelector(".backlink-file")) <
+            contrast(planned.querySelector(".backlink-context")) &&
+          contrast(planned.querySelector(".backlink-part")) <
+            contrast(planned.querySelector(".backlink-context")),
+        plain: [plain.querySelector("a")?.textContent, plain.querySelector(".backlink-file")],
+      }
+    })
+  const expected = {
+    title: ["Plan", "16px"],
+    file: [" plan.md", "12px"],
+    part: [" → Section", "12px"],
+    fainter: true,
+    plain: ["faint/plain.md", null],
+  }
+
+  assert.deepEqual(await looks(), expected, "light")
+  await page.click('button[title="Switch theme"]')
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "dark")
+  assert.deepEqual(await looks(), expected, "dark")
+  await page.click('button[title="Switch theme"]')
   await page.close()
 })
 
@@ -744,7 +1336,7 @@ test("Headings, Many changes: the outline and folds follow an update; a rewrite 
   await fresh.close()
 })
 
-test("Start, Unopened change, Blocks, Identity through edits, Pruned folders: folio keeps a model of the whole folder", async () => {
+test("Start, Unopened change, Blocks, Identity through edits, Pruned folders: Folio keeps a model of the whole folder", async () => {
   const doc = (paragraph: string) =>
     `# Pumps\n\n${paragraph}\n\n- intake\n- outlet\n\n| a |\n|---|\n| 1 |\n\n\`\`\`mermaid\ngraph LR\n  A --> B\n\`\`\`\n\n> quoted`
   write({
@@ -789,7 +1381,7 @@ test("Start, Unopened change, Blocks, Identity through edits, Pruned folders: fo
   await page.close()
 })
 
-test("Survive a publish: a tab open while folio restarts on a new build reloads into it and keeps drawing", async () => {
+test("Survive a publish: a tab open while Folio restarts on a new build reloads into it and keeps drawing", async () => {
   const dist = fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-dist-"))
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-publish-")))
   const publishPort = await freePort()

@@ -3,7 +3,12 @@
  * diagrams, with heading anchors for the outline and deep links.
  */
 
-import type { ElementContent, Nodes as HastNodes, Root as HastRoot } from "hast"
+import type {
+  ElementContent,
+  Element as HastElement,
+  Nodes as HastNodes,
+  Root as HastRoot,
+} from "hast"
 import { toString as textOf } from "hast-util-to-string"
 import type { Nodes as MdastNodes, Root as MdastRoot } from "mdast"
 import rehypeSanitize from "rehype-sanitize"
@@ -22,12 +27,14 @@ import { backticks } from "./backticks.ts"
 import { copyButton } from "./copy.ts"
 import { withSource } from "./drawings.ts"
 import { drawEmbeds, markEmbeds } from "./embeds.ts"
+import { isFold } from "./folds.ts"
 import { ICONS } from "./icons.ts"
 import { byteOrderMark, moveSpan, type Span, setSpan, sitesIn } from "./markdown.ts"
 import { SCHEMA } from "./schema.ts"
 import { table, tables } from "./tables.ts"
 import { MARKED, markers, shown, spelledIn, unmarked, unmarkedAddress } from "./unresolved.ts"
-import { expandable } from "./zoom.ts"
+import { keepWhole } from "./words.ts"
+import { expandDrawing, expandLive, imageCorner } from "./zoom.ts"
 
 export type Theme = "light" | "dark"
 type Rgb = [number, number, number]
@@ -62,6 +69,7 @@ const SOURCE_ATTRIBUTES = [
   "data-folio-lines",
   "data-folio-version",
 ]
+const SOURCED = "[data-folio-source]"
 
 const DIAGRAM_FONT =
   '"Arimo", "KaTeX_Main", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'
@@ -157,6 +165,7 @@ export async function markup(
   }
 
   markIncludes(element)
+  keepWhole(element)
 
   for (const node of element.childNodes) {
     KEYS.set(node, node instanceof Element ? keyed(node) : `${node.nodeType}:${node.textContent}`)
@@ -170,10 +179,74 @@ export async function markup(
  * identity changed. A rendering still parsing keeps the id of a block that stays in the same file.
  */
 export function moveSource(from: Element, to: Element, parsing: boolean): boolean {
+  moveSpan(from, to)
+  // Either side may lack the inner blocks' sources - one drawn while parsing - so they pair by place.
+  const places = new Set([
+    ...[...from.querySelectorAll(SOURCED)].map((block) => placeIn(block, from)),
+    ...[...to.querySelectorAll(SOURCED)].map((block) => placeIn(block, to)),
+  ])
+  const pairs: [Element, Element][] = [[from, to]]
+
+  for (const place of places) {
+    const fresh = atPlace(from, place)
+    const kept = atPlace(to, place)
+
+    if (fresh && kept) {
+      pairs.push([fresh, kept])
+    }
+  }
+
+  return pairs
+    .map(([fresh, kept], at) =>
+      at > 0 && parsing && !fresh.hasAttribute("data-folio-source")
+        ? false
+        : moveAttributes(fresh, kept, parsing),
+    )
+    .includes(true)
+}
+
+function placeIn(block: Element, top: Element): string {
+  const steps: number[] = []
+
+  for (let node = block; node !== top; ) {
+    let parent = node.parentElement
+
+    while (parent && parent !== top && isFold(parent)) {
+      parent = parent.parentElement
+    }
+
+    if (!parent) {
+      break
+    }
+
+    steps.unshift(drawnChildren(parent).indexOf(node))
+    node = parent
+  }
+
+  return steps.join("/")
+}
+
+function atPlace(top: Element, place: string): Element | undefined {
+  let node: Element | undefined = top
+
+  for (const step of place ? place.split("/").map(Number) : []) {
+    node = node && drawnChildren(node)[step]
+  }
+
+  return node
+}
+
+/** A kept block holds what the page adds to it - folded sections, image corners - and a fresh one does not. */
+function drawnChildren(element: Element): Element[] {
+  return [...element.children].flatMap((child) =>
+    isFold(child) ? drawnChildren(child) : child.matches(".image-toolbar") ? [] : [child],
+  )
+}
+
+function moveAttributes(from: Element, to: Element, parsing: boolean): boolean {
   const identity = () =>
     `${to.getAttribute("data-folio-id")}\0${to.getAttribute("data-folio-source")}`
   const was = identity()
-  moveSpan(from, to)
   const keep =
     parsing &&
     !from.hasAttribute("data-folio-id") &&
@@ -230,6 +303,8 @@ export async function drawBlocks(
       title.insertAdjacentHTML("afterbegin", ICONS[`alert_${kind as keyof typeof ALERTS}`])
     }
   }
+
+  cornerImages(blocks)
 
   for (const code of within(blocks, "pre > code")) {
     const pre = code.parentElement as HTMLElement
@@ -303,7 +378,7 @@ export async function drawBlocks(
             figure.prepend(shown)
           }
         },
-        [expandable(figure)],
+        [expandDrawing("diagram", () => figure.querySelector(":scope > svg"))],
       )
 
       if (KEYS.has(pre)) {
@@ -312,6 +387,17 @@ export async function drawBlocks(
     } catch (error) {
       pre.classList.add("diagram-failed")
       pre.setAttribute("title", (error as Error).message)
+    }
+  }
+}
+
+/** Give each image outside a link its expand corner, once, however often it runs over the same blocks. */
+export function cornerImages(blocks: Node[]): void {
+  for (const image of within<HTMLImageElement>(blocks, "img")) {
+    const shown = image.closest("picture") ?? image
+
+    if (!image.closest("a[href]") && !shown.nextElementSibling?.matches(".image-toolbar")) {
+      shown.after(imageCorner(image))
     }
   }
 }
@@ -336,7 +422,7 @@ async function drawMaps(blocks: Node[], owner: Document): Promise<void> {
     }
 
     try {
-      const figure = await mapOf(
+      const { figure, live } = await mapOf(
         written,
         fence.classList.contains("language-topojson") ? "topojson" : "geojson",
         owner,
@@ -346,6 +432,7 @@ async function drawMaps(blocks: Node[], owner: Document): Promise<void> {
         figure,
         () => written,
         () => {},
+        [expandLive("map", figure, live)],
       )
     } catch (error) {
       failedIn(pre, `Map failed to draw - ${(error as Error).message}`, owner)
@@ -385,12 +472,13 @@ async function drawModels(blocks: Node[], owner: Document): Promise<void> {
     models ??= await import("./models.ts")
 
     try {
-      const figure = models.modelOf(written, owner)
+      const { figure, live } = models.modelOf(written, owner)
       replaceFence(pre, figure)
       withSource(
         figure,
         () => written,
         () => {},
+        [expandLive("model", figure, live)],
       )
     } catch (error) {
       failedIn(pre, `Model failed to draw - ${(error as Error).message}`, owner)
@@ -488,16 +576,17 @@ async function markdownHtml(
     }
 
     if (node.type === "element" && found) {
-      Object.assign(node.properties, {
-        dataFolioId: found.id,
-        dataFolioSource: found.source,
-        dataFolioLines: found.lines && `${found.lines[0]}-${found.lines[1]}`,
-        dataFolioVersion: found.version,
-      })
+      sourced(node, found)
+
+      // rehype-raw nests the blocks written between an HTML tag and its closing tag inside its element.
+      if (node.properties.dataFootnotes === undefined && holdsOthers(sources, found)) {
+        sourcedWithin(node, sources, found)
+      }
     }
   }
 
   keepMathBlocks(hast as HastRoot)
+  frontmatterLast(hast as HastRoot, mdast as MdastRoot)
   const spans = placed(hast as HastRoot, mdast as MdastRoot, text)
   const [katex, highlight] = await Promise.all([
     some(hast, isMath) ? import("rehype-katex") : undefined,
@@ -517,6 +606,33 @@ async function markdownHtml(
   }
 
   return { html: html.stringify((await html.run(hast as HastRoot, text)) as HastRoot), spans }
+}
+
+/** Found by its line, as raw HTML rebuilds the tree; run after slugging, so the title has no id. */
+function frontmatterLast(hast: HastRoot, mdast: MdastRoot): void {
+  const yaml = mdast.children[0]
+  const line = yaml?.type === "yaml" ? yaml.position?.start.line : undefined
+  const at = hast.children.findIndex(
+    (node) => node.type === "element" && node.position?.start.line === line,
+  )
+
+  if (line === undefined || at < 0) {
+    return
+  }
+
+  const following = hast.children[at + 1]
+  const taken = hast.children.splice(
+    at,
+    following?.type === "text" && following.value === "\n" ? 2 : 1,
+  )
+  const title: HastElement = {
+    type: "element",
+    tagName: "h2",
+    properties: { className: ["metadata-title"] },
+    children: [{ type: "text", value: "Metadata" }],
+  }
+
+  hast.children.push({ type: "text", value: "\n" }, title, { type: "text", value: "\n" }, taken[0])
 }
 
 /** Each top-level element's span, numbered on the element: parsing the HTML may regroup the tree's elements. */
@@ -837,12 +953,49 @@ function setSource(element: Element, found: Source | undefined): void {
   }
 }
 
+function sourced(node: HastElement, found: Source): void {
+  Object.assign(node.properties, {
+    dataFolioId: found.id,
+    dataFolioSource: found.source,
+    dataFolioLines: found.lines && `${found.lines[0]}-${found.lines[1]}`,
+    dataFolioVersion: found.version,
+  })
+}
+
+function sourcedWithin(element: HastElement, sources: Sources, outer: Source): void {
+  for (const child of element.children) {
+    if (child.type !== "element") {
+      continue
+    }
+
+    const found =
+      child.position && sourceOf(sources, child.position.start.line, child.position.end.line)
+
+    if (found?.id && found.id !== outer.id) {
+      sourced(child, found)
+
+      if (holdsOthers(sources, found)) {
+        sourcedWithin(child, sources, found)
+      }
+    } else {
+      sourcedWithin(child, sources, outer)
+    }
+  }
+}
+
+function holdsOthers(sources: Sources, found: Source): boolean {
+  const own = sources.blocks.find((block) => block.source === found.source && block.id === found.id)
+  return own !== undefined && found.lines !== undefined && found.lines[1] > own.lines[1]
+}
+
 /** A block that only moved keeps its key, so an update leaves it in place. */
 function keyed(element: Element): string {
   const bare = element.cloneNode(true) as Element
 
-  for (const name of SOURCE_ATTRIBUTES) {
-    bare.removeAttribute(name)
+  for (const block of [bare, ...bare.querySelectorAll(SOURCED)]) {
+    for (const name of SOURCE_ATTRIBUTES) {
+      block.removeAttribute(name)
+    }
   }
 
   return bare.outerHTML

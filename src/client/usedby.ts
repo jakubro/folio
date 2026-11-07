@@ -32,7 +32,7 @@ export class UsedBy {
       return
     }
 
-    // While folio still reads the folder the list is not known: nothing shows, and it asks again.
+    // While Folio still reads the folder the list is not known: nothing shows, and it asks again.
     if (!ready) {
       this.#section.hidden = true
       setTimeout(() => this.#shown === urlPath && void this.show(urlPath), RETRY_MS)

@@ -1,5 +1,6 @@
 /** Data files read as pages: tables, nested documents and databases, through an engine that only reads. */
 
+import { AsyncLocalStorage } from "node:async_hooks"
 import { fork } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import fs from "node:fs"
@@ -7,9 +8,10 @@ import os from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { Worker } from "node:worker_threads"
-import { numberOf } from "../client/tableviews.ts"
+import { CATEGORIES, numberOf, type Wanted, wanted } from "../client/tableviews.ts"
 import type { DocumentTable } from "./documents.ts"
 import { type QueryFence, queriesOf, referencesIn } from "./embeds.ts"
+import { partOf } from "./failures.ts"
 import { type Format, formatOf } from "./files.ts"
 import { type BlocksOf, expand, expandText } from "./includes.ts"
 import { alive, startOf } from "./processes.ts"
@@ -21,6 +23,7 @@ import {
   type Readers,
   type Reference,
   resolve,
+  Unreadable,
 } from "./queries.ts"
 import { fileVersion } from "./versions.ts"
 
@@ -29,6 +32,10 @@ export type Cell = string | number | boolean | null
 interface Column {
   name: string
   type: string
+}
+
+interface Lane {
+  urgent: boolean
 }
 
 export interface Grid {
@@ -95,7 +102,14 @@ const NESTING = 5
 const COPY_BATCH = 5000
 /** Below Node's four worker threads, so one is always free to carry a running query's interruption. */
 const RUNNING = 3
+/** Work no tab waits on leaves one engine job free, so a page's own read never waits behind it. */
+const BACKGROUND = RUNNING - 1
+const LANE = new AsyncLocalStorage<Lane>()
+const URGENT: Lane = { urgent: true }
 const INTERRUPT_AGAIN_MS = 250
+const CLOSE_POLL_MS = 50
+/** An engine interruption lands within milliseconds; what is still running by then is no engine work. */
+const CLOSE_WAIT_MS = 2000
 const MISSING = "missing"
 const TREE_BYTES = 20 * 1024 * 1024
 const DEPTH = 1000
@@ -169,15 +183,19 @@ export type Filter =
   | { field: string; eq: string }
   | { field: string; from: number; to: number; last?: boolean }
 
-/** A table view's own filters: text anywhere in a shown column, and text within one column, ignoring case. */
+/**
+ * A table view's filters as the page reads them: a term's column `-1` is any shown column, and binds
+ * before or; a list of records' `literal` search finds each text as written in any column.
+ */
 export interface Search {
-  text: string
-  columns: [number, string][]
+  terms: [number, string][]
+  joins: ("and" | "or")[]
   hidden: number[]
+  literal?: boolean
 }
 
 export interface Refinement {
-  order?: Order
+  order?: Order[]
   filter?: Filter
   search?: Search
 }
@@ -239,7 +257,7 @@ export interface Comparison {
 export type SqliteProgress = { names: string[] } | { table: DataTable }
 
 export type SqliteRequest =
-  | { kind: "read"; file: string; table?: string; limit: number; order?: Order; offset?: number }
+  | { kind: "read"; file: string; table?: string; limit: number; order?: Order[]; offset?: number }
   | { kind: "export"; file: string; table: string; target?: string }
 
 interface Run {
@@ -258,6 +276,11 @@ export function timedOut(error: string): boolean {
   return / ran longer than [\d.]+ s and was stopped\.$| took longer than [\d.]+ s to read\.$/.test(
     error,
   )
+}
+
+/** Run work a tab waits on, such as the rows of a data page: its engine jobs go before any other. */
+export function urgently<T>(work: () => T): T {
+  return LANE.run(URGENT, work)
 }
 
 /** Reads a served folder's data files; the engine starts on first use. */
@@ -286,7 +309,10 @@ export class Data {
   readonly #queryMs: number
   readonly #copyWaitMs: number
   #running = 0
-  readonly #waiting: (() => void)[] = []
+  readonly #waiting: { start: () => void; lane: Lane | undefined }[] = []
+  readonly #lanes = new WeakMap<Promise<unknown>, Lane>()
+  readonly #connections = new Set<Connection>()
+  #closing = false
   readonly #stats = new Map<string, Promise<DataStats>>()
   readonly #comparisons = new Map<string, Promise<Comparison>>()
 
@@ -329,7 +355,7 @@ export class Data {
           return { ...base, ...(await this.#database(file, table, rows, refinement)) }
         case "sql": {
           const text = fs.readFileSync(file, "utf8")
-          const ran = await this.query(text, path.dirname(file), QUERY_ROWS).catch(
+          const ran = await this.query(text, path.dirname(file), { limit: QUERY_ROWS }).catch(
             (error: unknown) => error,
           )
           return ran instanceof Error || !("grid" in (ran as object))
@@ -399,6 +425,42 @@ export class Data {
   }
 
   /**
+   * A column's values among the records a filter and search keep, told apart as quotes match them, most
+   * common first with their counts; one value past the list's length marks a column holding more.
+   */
+  async values(
+    file: string,
+    table: string | undefined,
+    refinement: Refinement,
+    column: number,
+  ): Promise<{ values?: [string, number][]; error?: string }> {
+    try {
+      const values = await this.#over(file, table, async (source, run) => {
+        const all = `select * from ${source}`
+        const { columns } = await run(all, 0)
+
+        if (!columns[column]) {
+          throw new Error(`There is no column ${column + 1} to count.`)
+        }
+
+        const where = conditionsOf(columns, refinement)
+        const trimmed = `regexp_replace(coalesce(${shownText(columns[column])}, ''), '^[${SPACE}]+|[${SPACE}]+$', '', 'g')`
+        const counted = `select mode(folio_value) as folio_shown, count(*) as folio_count from (select ${trimmed} as folio_value from (${all}) folio_refined${where ? ` where ${where}` : ""}) folio_values where folio_value <> '' group by lower(folio_value)`
+        const grid = await run(
+          `select * from (${counted}) folio_counted order by folio_count desc, ${numeric("folio_shown")} nulls last, folio_shown collate nocase`,
+          CATEGORIES + 1,
+        )
+
+        return grid.rows.map(([value, count]): [string, number] => [String(value), Number(count)])
+      })
+
+      return { values }
+    } catch (error) {
+      return { error: this.#message(error) }
+    }
+  }
+
+  /**
    * Read what a part of a data file names: a database's table, or a path into a file's value - a
    * tabular file being its list of records - whose dotted steps are keys or list positions.
    */
@@ -456,24 +518,57 @@ export class Data {
     }
   }
 
+  /** Run work several callers wait on in a lane of its own, so an urgent caller can raise it with `joined`. */
+  apart<T>(work: () => Promise<T>): Promise<T> {
+    const lane = { urgent: LANE.getStore()?.urgent === true }
+    const done = LANE.run(lane, work)
+    this.#lanes.set(done, lane)
+    return done
+  }
+
+  /** Wait on work run `apart`; from an urgent caller its engine jobs, queued ones too, go first from now on. */
+  joined<T>(done: Promise<T>): Promise<T> {
+    const lane = this.#lanes.get(done)
+
+    if (lane && !lane.urgent && LANE.getStore()?.urgent) {
+      lane.urgent = true
+
+      for (
+        let at = this.#waiting.findIndex((waiting) => waiting.lane === lane);
+        at >= 0 && this.#running < RUNNING;
+        at = this.#waiting.findIndex((waiting) => waiting.lane === lane)
+      ) {
+        this.#running++
+        this.#waiting.splice(at, 1)[0].start()
+      }
+    }
+
+    return done
+  }
+
   /**
    * Run one SELECT whose file references resolve against `folder`, stopping it after 10 s and
    * keeping the first `limit` rows; it reads only the served folder. Names the files it read.
+   * `absolute` also takes a quoted path starting with the served folder's own path.
    */
   async query(
     sql: string,
     folder: string,
-    limit = ROWS,
-    whole = false,
+    { limit = ROWS, whole = false, absolute = false } = {},
   ): Promise<{ grid: Grid; files: string[] }> {
     return this.#with(async (connection, deadline) => {
       const run = runOn(connection, deadline)
 
       try {
-        const planned = await this.#plan(run, sql, folder, [])
+        const planned = await this.#plan(run, sql, folder, [], absolute)
         const grid = await gridOf(connection, planned, limit, false, whole)
         return { grid, files: [...run.files] }
       } catch (error) {
+        // The part an error escaped is kept against the error object, which a new Error would lose.
+        if (partOf(error) !== undefined || error instanceof Unreadable) {
+          throw error
+        }
+
         let text = message(error)
 
         // Longest first, so a view numbered 1 never eats into one numbered 10.
@@ -615,7 +710,22 @@ export class Data {
     }
   }
 
+  /**
+   * Stop the engine: running jobs are interrupted, queued ones never start, and none of them answers.
+   * Node's exit waits for the engine's running work, which no timer interrupts once exit has begun.
+   */
   async close(): Promise<void> {
+    this.#closing = true
+    const until = Date.now() + CLOSE_WAIT_MS
+
+    while (this.#running > 0 && Date.now() < until) {
+      for (const connection of this.#connections) {
+        connection.interrupt()
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, CLOSE_POLL_MS))
+    }
+
     const instance = await this.#instance
     instance?.closeSync()
   }
@@ -626,7 +736,7 @@ export class Data {
    */
   #shared(sql: string, folder: string, version: string): Promise<{ grid: Grid; files: string[] }> {
     if (!version) {
-      return this.query(sql, folder, QUERY_ROWS)
+      return this.query(sql, folder, { limit: QUERY_ROWS })
     }
 
     const key = `${folder}\0${sql}`
@@ -635,10 +745,10 @@ export class Data {
     if (held?.version === version) {
       this.#queries.delete(key)
       this.#queries.set(key, held)
-      return held.run
+      return this.joined(held.run)
     }
 
-    const run = this.query(sql, folder, QUERY_ROWS)
+    const run = this.apart(() => this.query(sql, folder, { limit: QUERY_ROWS }))
     this.#queries.delete(key)
     this.#queries.set(key, { version, run })
     run.catch(() => {
@@ -679,7 +789,7 @@ export class Data {
       try {
         if (
           copy &&
-          !paged.order &&
+          !paged.order?.length &&
           !paged.filter &&
           !paged.search &&
           paged.offset === 0 &&
@@ -753,35 +863,37 @@ export class Data {
     let made = this.#converting.get(target)
 
     if (!made) {
-      const making = fs.existsSync(target)
-        ? Promise.resolve()
-        : this.#with(
-            async (connection) => {
-              const written = `${target}.${randomUUID()}.tmp`
+      made = this.apart(() =>
+        (fs.existsSync(target)
+          ? Promise.resolve()
+          : this.#with(
+              async (connection) => {
+                const written = `${target}.${randomUUID()}.tmp`
 
-              try {
-                await connection.run(
-                  `copy (select * from ${scan(read, format, false)}) to ${literal(written)} (format parquet)`,
-                )
-                fs.renameSync(written, target)
+                try {
+                  await connection.run(
+                    `copy (select * from ${scan(read, format, false)}) to ${literal(written)} (format parquet)`,
+                  )
+                  fs.renameSync(written, target)
 
-                // A newer version retired it while it was being made.
-                if (!this.#copies.has(target)) {
-                  fs.rmSync(target, { force: true })
+                  // A newer version retired it while it was being made.
+                  if (!this.#copies.has(target)) {
+                    fs.rmSync(target, { force: true })
+                  }
+                } finally {
+                  fs.rmSync(written, { force: true })
                 }
-              } finally {
-                fs.rmSync(written, { force: true })
-              }
-            },
-            "The copy",
-            false,
-          )
-      made = making.finally(() => this.#converting.delete(target))
+              },
+              "The copy",
+              false,
+            )
+        ).finally(() => this.#converting.delete(target)),
+      )
       made.catch(() => {})
       this.#converting.set(target, made)
     }
 
-    return { target, made }
+    return { target, made: this.joined(made) }
   }
 
   #readable(file: string, format: Format): { read: string; stamp?: string } {
@@ -1132,7 +1244,8 @@ export class Data {
 
       return work(
         literal(`${path.basename(file)}#${table}`),
-        async (sql, limit, whole) => (await this.query(sql, path.dirname(file), limit, whole)).grid,
+        async (sql, limit, whole) =>
+          (await this.query(sql, path.dirname(file), { limit, whole })).grid,
       )
     }
 
@@ -1218,7 +1331,7 @@ export class Data {
 
   /** The engine names files by their absolute path; the reader knows them by their place in the folder. */
   #message(error: unknown, whole = false): string {
-    const text = error instanceof Error ? error.message : String(error)
+    const text = error instanceof Error ? error.message : `${error}`
 
     if (/^INTERRUPT Error/.test(text)) {
       return this.#stopped("The read")
@@ -1438,7 +1551,13 @@ export class Data {
     return path.relative(this.#root, file).split(path.sep).join("/")
   }
 
-  async #plan(run: Run, sql: string, folder: string, nesting: string[]): Promise<string> {
+  async #plan(
+    run: Run,
+    sql: string,
+    folder: string,
+    nesting: string[],
+    absolute = false,
+  ): Promise<string> {
     const planned = await plan(
       run.connection,
       sql,
@@ -1449,6 +1568,7 @@ export class Data {
       (readers) => {
         run.readers += readers
       },
+      absolute,
     )
 
     for (const file of planned.files) {
@@ -1842,7 +1962,7 @@ export class Data {
     file: string,
     table?: string,
     limit = ROWS,
-    order?: Order,
+    order?: Order[],
     offset = 0,
   ): Promise<Partial<DataPage>> {
     return this.#with(async (_, deadline) => {
@@ -1987,17 +2107,26 @@ export class Data {
     what = "The read",
     limited = true,
   ): Promise<T> {
-    if (this.#running < RUNNING) {
+    const lane = LANE.getStore()
+
+    if (this.#running < (lane?.urgent ? RUNNING : BACKGROUND)) {
       this.#running++
     } else {
-      await new Promise<void>((resolve) => this.#waiting.push(resolve))
+      await new Promise<void>((start) => this.#waiting.push({ start, lane }))
     }
 
     try {
+      if (this.#closing) {
+        return unanswered()
+      }
+
       const connection = await (await this.#engine()).connect()
+      this.#connections.add(connection)
       const deadline = limited ? Date.now() + this.#queryMs : Number.POSITIVE_INFINITY
       let timer: NodeJS.Timeout | undefined
+      let stopped = false
       const stop = () => {
+        stopped = true
         connection.interrupt()
         timer = setTimeout(stop, INTERRUPT_AGAIN_MS)
       }
@@ -2007,18 +2136,25 @@ export class Data {
       }
 
       try {
-        return await work(connection, deadline)
+        const answer = this.#closing ? unanswered() : await work(connection, deadline)
+        return this.#closing ? unanswered() : answer
       } catch (error) {
-        throw /interrupt/i.test(message(error)) ? new Error(this.#stopped(what)) : error
+        if (this.#closing) {
+          return unanswered()
+        }
+
+        throw stopped ? new Error(this.#stopped(what)) : error
       } finally {
         clearTimeout(timer)
+        this.#connections.delete(connection)
         connection.closeSync()
       }
     } finally {
-      const next = this.#waiting.shift()
+      const urgent = this.#waiting.findIndex(({ lane }) => lane?.urgent)
+      const next = urgent >= 0 ? urgent : this.#running <= BACKGROUND ? 0 : -1
 
-      if (next) {
-        next()
+      if (next >= 0 && next < this.#waiting.length) {
+        this.#waiting.splice(next, 1)[0].start()
       } else {
         this.#running--
       }
@@ -2381,7 +2517,7 @@ export function readSqlite(
   table?: string,
   limit = ROWS,
   report: (progress: SqliteProgress) => void = () => {},
-  order?: Order,
+  order?: Order[],
   offset = 0,
 ): Partial<DataPage> {
   const db = openSqlite(file)
@@ -2393,7 +2529,7 @@ export function readSqlite(
       )
       .all()
       .map((row) => String(row.name))
-    const readTable = (name: string, limit: number, order?: Order): DataTable => {
+    const readTable = (name: string, limit: number, order: Order[] = []): DataTable => {
       const quoted = identifier(name)
       const columns = db
         .prepare(`pragma table_info(${quoted})`)
@@ -2403,18 +2539,20 @@ export function readSqlite(
       const rows: Cell[][] = []
       let bytes = 0
 
-      const sorted = order && columns[order.column]
+      const levels = order.map(({ column, descending }) => {
+        if (!columns[column]) {
+          throw new Error(`${name} has no column ${column + 1} to sort by.`)
+        }
 
-      if (order && !sorted) {
-        throw new Error(`${name} has no column ${order.column + 1} to sort by.`)
-      }
-
-      const named = sorted && identifier(sorted.name)
-      const direction = order?.descending ? "desc nulls first" : "asc nulls last"
+        const named = identifier(columns[column].name)
+        const direction = descending ? "desc nulls first" : "asc nulls last"
+        return `(${named} is null or trim(${named}) = ''), folio_number(${named}) ${direction}, ${named} collate nocase ${direction}`
+      })
       // Equal values order by every column, so each page of a sort takes up where the last ended.
-      const by = named
-        ? ` order by (${named} is null or trim(${named}) = ''), folio_number(${named}) ${direction}, ${named} collate nocase ${direction}, ${columns.map((_, at) => at + 1).join(", ")}`
-        : ""
+      const by =
+        levels.length > 0
+          ? ` order by ${levels.join(", ")}, ${columns.map((_, at) => at + 1).join(", ")}`
+          : ""
 
       for (const row of db
         .prepare(`select * from ${quoted}${by} limit ${limit} offset ${offset}`)
@@ -2786,6 +2924,11 @@ async function settledWithin(promise: Promise<unknown>, ms: number): Promise<boo
   }
 }
 
+/** What a job gets once the engine stops: no answer, so nothing records the stop as a failure. */
+function unanswered(): Promise<never> {
+  return new Promise(() => {})
+}
+
 function runOn(connection: Connection, deadline: number): Run {
   return {
     connection,
@@ -2851,15 +2994,20 @@ function refinedSql(
   limit?: number,
   offset = 0,
 ): string {
-  const { order } = refinement
-  const sorted = order && columns[order.column]
+  const levels = (refinement.order ?? []).map(({ column, descending }) => {
+    const sorted = columns[column]
 
-  if (order && !sorted) {
-    throw new Error(`There is no column ${order.column + 1} to sort by.`)
-  }
+    if (!sorted) {
+      throw new Error(`There is no column ${column + 1} to sort by.`)
+    }
 
-  const named = sorted && identifier(sorted.name)
-  const direction = order?.descending ? "desc nulls first" : "asc nulls last"
+    const named = identifier(sorted.name)
+    const direction = descending ? "desc nulls first" : "asc nulls last"
+
+    return sorted.type === "VARCHAR"
+      ? `coalesce(trim(${named}), '') = '', ${numeric(named)} ${direction}, ${named} collate nocase ${direction}`
+      : `${named} is null, ${named} ${direction}`
+  })
   let rank = "folio_row"
 
   while (columns.some(({ name }) => name.toLowerCase() === rank)) {
@@ -2867,14 +3015,9 @@ function refinedSql(
   }
 
   // Equal values keep the file's order, so each page of a sort takes up where the last ended.
-  const by =
-    sorted?.type === "VARCHAR"
-      ? ` order by coalesce(trim(${named}), '') = '', ${numeric(named as string)} ${direction}, ${named} collate nocase ${direction}, ${rank}`
-      : sorted
-        ? ` order by ${named} is null, ${named} ${direction}, ${rank}`
-        : ""
+  const by = levels.length > 0 ? ` order by ${levels.join(", ")}, ${rank}` : ""
   const where = conditionsOf(columns, refinement)
-  const source = sorted
+  const source = by
     ? `select * exclude (${rank}) from (select *, row_number() over () as ${rank} from (${sql}) folio_numbered) folio_refined`
     : `select * from (${sql}) folio_refined`
 
@@ -2883,29 +3026,58 @@ function refinedSql(
 
 /** Text matches a value as the page writes it: a time as UTC to the millisecond, nested as JSON. */
 function conditionsOf(columns: Column[], { filter, search }: Refinement): string {
-  const found = (index: number, text: string) =>
+  const within = (index: number, text: string) =>
     `contains(lower(${shownText(columns[index])}), ${literal(text.toLowerCase())})`
-  const parts = filter ? [whereOf(filter, columns)] : []
+  const found = (index: number, typed: string) => {
+    const values = wanted(typed)
+    const trimmed = `lower(regexp_replace(coalesce(${shownText(columns[index])}, ''), '^[${SPACE}]+|[${SPACE}]+$', '', 'g'))`
+    const each = values.map(({ pieces, whole }) =>
+      !whole
+        ? within(index, String(pieces[0]))
+        : pieces.every((piece) => typeof piece === "string")
+          ? `${trimmed} = ${literal(pieces.join("").toLowerCase())}`
+          : `${trimmed} like ${literal(likeOf(pieces))} escape '\\'`,
+    )
 
-  if (search?.text) {
-    const shown = columns.flatMap((_, index) => (search.hidden.includes(index) ? [] : [index]))
-    parts.push(`(${shown.map((index) => found(index, search.text)).join(" or ") || "false"})`)
+    return each.length > 0 ? `(${each.join(" or ")})` : "true"
   }
-
-  // A column numbered -1 is any column, as a list of records filters the whole of each.
-  for (const [index, text] of search?.columns ?? []) {
+  const parts = filter ? [whereOf(filter, columns)] : []
+  const term = ([index, text]: [number, string]) => {
     if (index !== -1 && !columns[index]) {
       throw new Error(`There is no column ${index + 1} to filter.`)
     }
 
-    if (text && index === -1) {
-      parts.push(`(${columns.map((_, at) => found(at, text)).join(" or ") || "false"})`)
-    } else if (text) {
-      parts.push(found(index, text))
+    const shown =
+      index !== -1 ? [index] : columns.flatMap((_, at) => (search?.hidden.includes(at) ? [] : [at]))
+    return `(${shown.map((at) => (search?.literal ? within(at, text) : found(at, text))).join(" or ") || "false"})`
+  }
+  const groups: string[][] = []
+
+  for (const [at, pair] of (search?.terms ?? []).entries()) {
+    if (at === 0 || search?.joins[at - 1] === "or") {
+      groups.push([])
     }
+
+    groups[groups.length - 1].push(term(pair))
+  }
+
+  if (groups.length > 0) {
+    parts.push(`(${groups.map((group) => `(${group.join(" and ")})`).join(" or ")})`)
   }
 
   return parts.join(" and ")
+}
+
+function likeOf(pieces: Wanted["pieces"]): string {
+  return pieces
+    .map((piece) =>
+      typeof piece === "string"
+        ? piece.toLowerCase().replace(/[\\%_]/g, "\\$&")
+        : piece.wild === "*"
+          ? "%"
+          : "_",
+    )
+    .join("")
 }
 
 function shownText({ name, type }: Column): string {
@@ -2916,9 +3088,31 @@ function shownText({ name, type }: Column): string {
     return `strftime(${utc}, '%Y-%m-%dT%H:%M:%S.%gZ')`
   }
 
+  if (/^(FLOAT|DOUBLE|REAL|DECIMAL\(\d+,\s*\d+\))$/.test(type)) {
+    return javascriptNumber(`${named}::double`)
+  }
+
   return kindOf(type) === "nested" && type !== "BLOB"
     ? `to_json(${named})::varchar`
     : `${named}::varchar`
+}
+
+/** A double's text as JavaScript writes it: plain between 1e-7 and 1e21, else `1.5e-7`, `1e+21`. */
+function javascriptNumber(double: string): string {
+  const parts = `regexp_extract(${double}::varchar, '^(-?)(\\d)(?:\\.(\\d+))?e([-+])(\\d+)$', ['m', 'a', 'b', 'g', 'x'])`
+  const digits = "{'d': p.a || p.b, 'n': (case when p.g = '-' then -1 else 1 end) * p.x::int}"
+  const written = `p.m || case
+      when q.n >= 21 or q.n <= -7 then substr(q.d, 1, 1) || case when length(q.d) > 1 then '.' || substr(q.d, 2) else '' end || 'e' || case when q.n < 0 then '-' else '+' end || abs(q.n)::varchar
+      when q.n < 0 then '0.' || repeat('0', -q.n - 1) || q.d
+      when length(q.d) <= q.n + 1 then q.d || repeat('0', q.n + 1 - length(q.d))
+      else substr(q.d, 1, q.n + 1) || '.' || substr(q.d, q.n + 2)
+    end`
+
+  return `case
+    when ${double} = trunc(${double}) and abs(${double}) < 9007199254740992 then ${double}::hugeint::varchar
+    when not contains(${double}::varchar, 'e') then regexp_replace(${double}::varchar, '\\.0$', '')
+    else list_transform([${parts}], lambda p: list_transform([${digits}], lambda q: ${written})[1])[1]
+  end`
 }
 
 function groupedQuery(
@@ -3134,10 +3328,10 @@ function identifier(name: string): string {
 
 /**
  * The engine follows its message with the statement it ran, rewritten, and carets under the fault;
- * the lines naming the fault are kept, the rewritten statement, which names folio's own views, is not.
+ * the lines naming the fault are kept, the rewritten statement, which names Folio's own views, is not.
  */
 function message(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error))
+  return (error instanceof Error ? error.message : `${error}`)
     .split("\n")
     .filter((line) => line.trim() && !/^LINE \d+:/.test(line) && !/^\s*\^+\s*$/.test(line))
     .join(" ")

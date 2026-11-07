@@ -6,11 +6,20 @@ import http from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { after, before, test } from "node:test"
+import { api, type Refusal } from "../src/server/api.ts"
+import { versionOf } from "../src/server/blocks.ts"
+import { conventionsOf } from "../src/server/conventions.ts"
 import { Data } from "../src/server/data.ts"
+import { documentsOf } from "../src/server/documents.ts"
+import { guarded, within } from "../src/server/failures.ts"
+import { healthOf } from "../src/server/health.ts"
 import { createHandler, listen, listenFree } from "../src/server/http.ts"
+import { impactOf } from "../src/server/impact.ts"
 import { Indexer } from "../src/server/indexer.ts"
 import { Model } from "../src/server/model.ts"
 import { presenceOf } from "../src/server/presence.ts"
+import { pageState } from "../src/server/versions.ts"
+import { served } from "./served.ts"
 
 const indexer = new Indexer(new URL("../src/server/index-worker.ts", import.meta.url))
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-http-")))
@@ -90,8 +99,52 @@ test("serves the page shell for markdown, mermaid and folders", async () => {
   assert.match((await get("/guide.md")).body, /<title>guide\.md<\/title>/)
   assert.match(
     (await get("/notes/")).body,
-    new RegExp(`<html lang="en" data-root="${path.basename(root)}" data-build="build-1">`),
+    new RegExp(
+      `<html lang="en" data-root="${path.basename(root)}" data-folder="${root}" data-build="build-1">`,
+    ),
   )
+})
+
+test("every page shell names the F as its tab's icon", async () => {
+  for (const urlPath of ["/guide.md", "/flow.mmd", "/", "/notes/"]) {
+    const href =
+      /<link rel="icon" type="image\/svg\+xml" href="data:image\/svg\+xml,([^"]+)">/.exec(
+        (await get(urlPath)).body,
+      )?.[1]
+    assert.ok(href, urlPath)
+    assert.equal(
+      decodeURIComponent(href),
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="4" fill="#93c5fd"/><path d="M16 7H9v11M9 12h5" fill="none" stroke="#1e3a8a" stroke-width="2"/></svg>',
+    )
+  }
+})
+
+test("/favicon.ico answers the F, unless the folder holds a favicon.ico of its own", async () => {
+  const drawn = await get("/favicon.ico")
+  assert.equal(drawn.status, 200)
+  assert.equal(drawn.headers["content-type"], "image/svg+xml")
+  assert.equal(
+    drawn.body,
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="4" fill="#93c5fd"/><path d="M16 7H9v11M9 12h5" fill="none" stroke="#1e3a8a" stroke-width="2"/></svg>',
+  )
+
+  assert.equal((await get("/favicon.ico?v=2")).status, 404)
+
+  fs.mkdirSync(path.join(root, "favicon.ico"))
+  try {
+    assert.equal((await get("/favicon.ico")).status, 301)
+  } finally {
+    fs.rmdirSync(path.join(root, "favicon.ico"))
+  }
+
+  fs.writeFileSync(path.join(root, "favicon.ico"), "the folder's own")
+  try {
+    const own = await get("/favicon.ico")
+    assert.equal(own.headers["content-type"], "image/x-icon")
+    assert.equal(own.body, "the folder's own")
+  } finally {
+    fs.rmSync(path.join(root, "favicon.ico"))
+  }
 })
 
 test("serves raw text with includes expanded and a version", async () => {
@@ -143,6 +196,21 @@ test("answers an unchanged image with 304", async () => {
   })
 
   assert.equal(response, 304)
+})
+
+test("answers a data file's column values for a filter and search, and refuses a column not named by its place", async () => {
+  const search = encodeURIComponent(JSON.stringify({ terms: [[1, '"12"']], joins: [], hidden: [] }))
+  const all = JSON.parse((await get("/data/scores.csv?data&values=0")).body)
+  const searched = JSON.parse((await get(`/data/scores.csv?data&values=0&search=${search}`)).body)
+
+  assert.deepEqual(all, {
+    values: [
+      ["ada", 1],
+      ["bob", 1],
+    ],
+  })
+  assert.deepEqual(searched, { values: [["bob", 1]] })
+  assert.equal((await get("/data/scores.csv?data&values=name")).status, 400)
 })
 
 test("redirects a folder without its trailing slash", async () => {
@@ -263,6 +331,57 @@ test("a YAML file or chart description that refers to itself is refused in place
   }
 })
 
+test("a page read before, and its read record, answer at once while slow work no tab waits on fills the engine", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-http-lane-")))
+  fs.writeFileSync(path.join(folder, "t.csv"), "a\n1\n")
+  fs.writeFileSync(path.join(folder, "q.sql"), "select * from 't.csv'")
+  fs.writeFileSync(path.join(folder, "page.md"), "# Page\n\n{table: q.sql}\n")
+  const busy = new Data(
+    folder,
+    fs.mkdtempSync(path.join(os.tmpdir(), "folio-http-lane-data-")),
+    4000,
+  )
+  const reading = new Model(
+    folder,
+    fs.mkdtempSync(path.join(os.tmpdir(), "folio-http-lane-model-")),
+    indexer,
+    () => {},
+  )
+  const other = http.createServer(createHandler(folder, assets, "build-1", reading, busy, () => {}))
+  const otherBase = `http://localhost:${await listen(other, 0)}`
+  const slow = "select sum(hash(a.range + b.range)) from range(200000) a, range(200000) b"
+  const background: Promise<unknown>[] = []
+
+  try {
+    await reading.start()
+    await reading.reads.read(
+      "page.md",
+      (reading.held("page.md") ?? []).map((block) => ({
+        id: block.id,
+        version: versionOf(block),
+        embeds: { "page.md\nq.sql": "seen" },
+      })),
+    )
+    background.push(...[1, 2].map(() => busy.query(slow, folder).catch((error: Error) => error)))
+    await new Promise((resolve) => setTimeout(resolve, 300))
+
+    const started = Date.now()
+    const waited = await Promise.all(
+      ["?page", "?read"].map(async (asked) => {
+        const answered = await fetch(`${otherBase}/page.md${asked}`)
+        return `${asked} ${answered.status} ${Date.now() - started < 2000 ? "at once" : "late"}`
+      }),
+    )
+
+    assert.deepEqual(waited, ["?page 200 at once", "?read 200 at once"])
+  } finally {
+    await Promise.all(background)
+    other.close()
+    reading.close()
+    await busy.close()
+  }
+})
+
 test("refuses what is not renderable or not inside the folder", async () => {
   for (const urlPath of [
     "/secret.env",
@@ -309,7 +428,7 @@ test("tells what is known of an address: a history kept there, and documents of 
   })
 })
 
-test("tells where a document moved from an address it left, and that folio is still reading", async () => {
+test("tells where a document moved from an address it left, and that Folio is still reading", async () => {
   await model.history.saved("old/route.md", "# Route\n", Date.now())
   await model.history.rename("old/route.md", "new/path.md")
   assert.deepEqual(JSON.parse((await get("/old/route.md?not-found")).body), {
@@ -418,7 +537,7 @@ test("logs one line per request, a request answered with a failure as a problem"
     "GET /guide.md 200 request",
     "GET /missing.md 404 warning",
     "GET /guide.md?raw 403 warning",
-    "GET /favicon.ico 404 request",
+    "GET /favicon.ico 200 request",
     "GET /.well-known/appspecific/com.chrome.devtools.json 404 request",
     "GET /missing.md?page 404 request",
     "GET /missing.md?raw 404 warning",
@@ -427,36 +546,152 @@ test("logs one line per request, a request answered with a failure as a problem"
   ])
 })
 
-test("a request folio fails to answer logs one line with the reason", async () => {
+test("an unexpected failure answers a fixed text naming the part it escaped, the innermost first, and logs one line with the reason; a refusal answers as before", async () => {
   const said: string[] = []
-  const failing = {
-    store: fs.mkdtempSync(path.join(os.tmpdir(), "folio-http-failing-")),
-    history: {
-      lastDigest: () => {
-        throw new Error("history unreadable")
-      },
-    },
-  } as unknown as Model
-  const stopped = { page: () => Promise.reject(new Error("engine stopped")) } as unknown as Data
+  const stopped = guarded("data engine", {
+    page: () => Promise.reject(new Error("engine stopped")),
+    dependencies: () => Promise.reject(new Error("engine gone")),
+  }) as unknown as Data
   const other = http.createServer(
-    createHandler(root, assets, "build-1", failing, stopped, (line, level) =>
+    createHandler(root, assets, "build-1", model, stopped, (line, level) =>
       said.push(`${line} ${level}`),
     ),
   )
   const otherBase = `http://localhost:${await listen(other, 0)}`
+  const conventions = conventionsOf(model) as unknown as Record<string, unknown>
+  const history = model.history as unknown as Record<string, unknown>
+  const health = healthOf(model, data) as unknown as Record<string, unknown>
+  // The model's impact keeps the first Data it gets; the failing handler must not hand it the stub.
+  impactOf(model, data)
+  const where =
+    "failed while answering this request. The reason is in Folio's log, in the terminal running it.\n"
+  conventions.kindOf = () => {
+    throw new Error("alias unresolved")
+  }
+  history.lastDigest = () => {
+    throw new Error("history unreadable")
+  }
+  health.state = () => Promise.reject(new Error("health stuck"))
 
   try {
-    for (const address of ["/?digest-data&from=0&to=1", "/data/scores.csv?data"]) {
-      assert.equal((await fetch(`${otherBase}${address}`)).status, 500)
+    const answers: string[] = []
+
+    for (const address of [
+      "/?api=documents",
+      "/?digest-data&from=0&to=1",
+      "/data/scores.csv?data",
+      "/guide.md?api=document",
+      "/?api=health",
+      "/?api=needs",
+      "/?api=query",
+    ]) {
+      const answered = await fetch(`${otherBase}${address}`)
+      answers.push(`${answered.status} ${await answered.text()}`)
     }
+
+    assert.deepEqual(answers, [
+      `500 Reading the folder's FOLIO.md declarations ${where}`,
+      `500 Folio's history ${where}`,
+      `500 Folio's data engine ${where}`,
+      `500 Folio's data engine ${where}`,
+      `500 Folio's health check ${where}`,
+      `500 Folio's health check ${where}`,
+      "400 This resource needs sql.\n",
+    ])
 
     await new Promise((resolve) => setImmediate(resolve))
     assert.deepEqual(said, [
+      "GET /?api=documents 500: alias unresolved error",
       "GET /?digest-data&from=0&to=1 500: history unreadable error",
       "GET /data/scores.csv?data 500: engine stopped error",
+      "GET /guide.md?api=document 500: engine gone error",
+      "GET /?api=health 500: health stuck error",
+      "GET /?api=needs 500: health stuck error",
+      "GET /?api=query 400 warning",
     ])
   } finally {
+    delete conventions.kindOf
+    delete history.lastDigest
+    delete health.state
     other.close()
+  }
+})
+
+test("a query failing inside the declarations, history or read record answers like any unexpected failure; the query's own errors keep 400 and their reason", async () => {
+  const said: string[] = []
+  const serve = async (tables: Data) => {
+    const other = http.createServer(
+      createHandler(root, assets, "build-1", model, tables, (line, level) =>
+        said.push(`${line} ${level}`),
+      ),
+    )
+    return { other, at: `http://localhost:${await listen(other, 0)}` }
+  }
+  const scratch = () => fs.mkdtempSync(path.join(os.tmpdir(), "folio-http-query-"))
+  const declared = guarded("data engine", new Data(root, scratch()))
+  const failing = (part: "history" | "read record") => {
+    const tables = guarded("data engine", new Data(root, scratch()))
+    tables.useDocuments({
+      versionOf: () => "1",
+      table: () =>
+        within(part, () => {
+          throw new Error(`${part} unreadable`)
+        }),
+    })
+    return tables
+  }
+  const conventions = conventionsOf(model) as unknown as Record<string, unknown>
+  const where =
+    "failed while answering this request. The reason is in Folio's log, in the terminal running it.\n"
+  const ask = async (at: string, sql: string) => {
+    const answered = await fetch(`${at}/?api=query&sql=${encodeURIComponent(sql)}`)
+    return `${answered.status} ${await answered.text()}`
+  }
+
+  declared.useDocuments(documentsOf(model))
+  conventions.kindOf = () => {
+    throw new Error("alias unresolved")
+  }
+  const servers = await Promise.all(
+    [declared, failing("history"), failing("read record")].map(serve),
+  )
+
+  try {
+    const [declarations, history, record] = servers.map(({ at }) => at)
+
+    assert.deepEqual(
+      [
+        await ask(declarations, "select path from folio.links"),
+        await ask(history, "select path from folio.links"),
+        await ask(record, "select path from folio.links"),
+        await ask(declarations, "select * from kind.nothing"),
+        await ask(declarations, "select * from 'data/missing.csv'"),
+      ],
+      [
+        `500 Reading the folder's FOLIO.md declarations ${where}`,
+        `500 Folio's history ${where}`,
+        `500 Folio's read record ${where}`,
+        "400 No kind is named nothing: a declaration names the kinds a query reads.\n",
+        `400 No data file at data/missing.csv. The served folder is ${root}: a path in a query is relative to the query's folder, from the served folder after a slash, or absolute under it.\n`,
+      ],
+    )
+
+    const column = await ask(declarations, "select nope from 'data/scores.csv'")
+    assert.match(column, /^400 .*"nope"/)
+    assert.doesNotMatch(column, /failed while answering/)
+
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(said.slice(0, 3), [
+      "GET /?api=query&sql=select%20path%20from%20folio.links 500: alias unresolved error",
+      "GET /?api=query&sql=select%20path%20from%20folio.links 500: history unreadable error",
+      "GET /?api=query&sql=select%20path%20from%20folio.links 500: read record unreadable error",
+    ])
+  } finally {
+    delete conventions.kindOf
+
+    for (const { other } of servers) {
+      other.close()
+    }
   }
 })
 
@@ -471,7 +706,7 @@ test("rejects a taken port with an error naming it, leaving nothing waiting to h
   assert.equal(refused.listenerCount("listening"), waiting)
 })
 
-test("without a port given, folio passes over ports another program or another folder's folio holds", async () => {
+test("without a port given, Folio passes over ports another program or another folder's Folio holds", async () => {
   const [first, ...held] = await holding(3, [undefined, "/elsewhere"])
   const moved = http.createServer()
 
@@ -483,7 +718,7 @@ test("without a port given, folio passes over ports another program or another f
   }
 })
 
-test("without a port given, folio does not serve a folder a folio serves on a port it passes, and names that address", async () => {
+test("without a port given, Folio does not serve a folder a Folio serves on a port it passes, and names that address", async () => {
   const [first, ...held] = await holding(3, ["/elsewhere", root])
   const refused = http.createServer()
 
@@ -586,6 +821,24 @@ test("serves a page as its expanded text, its version and the blocks every file 
   )
   assert.equal((await get("/img/photo.png?page")).status, 404)
   assert.equal((await get("/missing.md?page")).status, 404)
+})
+
+test("a page opened has its blocks' past worked out ahead, those its includes bring in too; one fetched before it is opened has not", async () => {
+  const prepared: string[] = []
+  const prepare = model.history.prepare.bind(model.history)
+  model.history.prepare = (urlPath, current) => {
+    prepared.push(urlPath)
+    return prepare(urlPath, current)
+  }
+
+  try {
+    assert.equal((await get("/guide.md?page&ahead")).status, 200)
+    assert.deepEqual(prepared, [])
+    assert.equal((await get("/guide.md?page")).status, 200)
+    assert.deepEqual(prepared, ["guide.md", "part.md"])
+  } finally {
+    model.history.prepare = prepare
+  }
 })
 
 test("shows how far the model has got for a folder, and nothing for an image or a missing file", async () => {
@@ -731,6 +984,386 @@ test("the API lists its resources and answers each as JSON, refusing what names 
   assert.deepEqual(fs.readdirSync(root).sort(), before)
 })
 
+test("the API takes a path absolute under the served folder, and each refusal of a path names the served folder", async () => {
+  const answered = async (urlPath: string) => {
+    const response = await get(urlPath)
+    return `${response.status} ${response.body}`
+  }
+  const sql = (folder: string, query: string) =>
+    answered(`${folder}?api=query&sql=${encodeURIComponent(query)}`)
+  const rule = "a path is relative to it, or absolute under it."
+
+  assert.equal(
+    await answered(`${root}/guide.md?api=document`),
+    await answered("/guide.md?api=document"),
+  )
+  assert.equal(
+    await answered(`${root}/data/?api=documents`),
+    await answered("/data/?api=documents"),
+  )
+  assert.equal(
+    await answered(`/guide.md?api=provenance&block=x&source=${root}/part.md`),
+    await answered("/guide.md?api=provenance&block=x&source=part.md"),
+  )
+  assert.equal(
+    await sql("/", `select count(1) from '${root}/data/scores.csv'`),
+    `200 ${JSON.stringify({ columns: [{ name: "count(1)", type: "BIGINT" }], rows: [[2]], total: 1, partial: false, files: ["data/scores.csv"] })}`,
+  )
+  assert.equal(
+    await sql(`${root}/data/`, "select count(1) from 'scores.csv'"),
+    await sql("/data/", "select count(1) from 'scores.csv'"),
+  )
+  assert.equal(
+    JSON.parse(
+      (
+        await get(
+          `/guide.md?api=embed&reference=${encodeURIComponent(`${root}/data/scores.csv#1.score`)}`,
+        )
+      ).body,
+    ).value,
+    12,
+  )
+
+  assert.equal(
+    await answered("/elsewhere/guide.md?api=document"),
+    `404 elsewhere/guide.md is no document of the served folder, ${root}: ${rule}\n`,
+  )
+  assert.equal(
+    await answered("/guide.md?api=provenance&block=x&source=/etc/hosts"),
+    `404 /etc/hosts is outside the served folder, ${root}: ${rule}\n`,
+  )
+  assert.equal(
+    await answered("/guide.md?api=provenance&block=x&source=elsewhere/part.md"),
+    `404 elsewhere/part.md is no document of the served folder, ${root}: ${rule}\n`,
+  )
+  assert.equal(
+    await answered("/elsewhere/guide.md?api=related&block=x"),
+    `404 elsewhere/guide.md is no document of the served folder, ${root}: ${rule}\n`,
+  )
+
+  // A folder inside the served one whose path spells the served folder's own is read as written.
+  const twin = root.slice(1)
+  fs.mkdirSync(path.join(root, twin), { recursive: true })
+  fs.writeFileSync(path.join(root, twin, "guide.md"), "# Twin\n")
+
+  try {
+    assert.match(
+      await answered(`/${twin}/guide.md?api=history`),
+      new RegExp(`"path":"${twin}/guide.md"`),
+    )
+    assert.match(
+      await answered(`/guide.md?api=provenance&block=x&source=${twin}/guide.md`),
+      /^404 No such block on this page\./,
+    )
+  } finally {
+    fs.rmSync(path.join(root, twin.split("/")[0]), { recursive: true, force: true })
+  }
+  assert.equal(
+    await sql("/", `select * from '${root}/data/absent.csv'`),
+    `400 No data file at ${root}/data/absent.csv. The served folder is ${root}: a path in a query is relative to the query's folder, from the served folder after a slash, or absolute under it.\n`,
+  )
+  assert.equal(
+    await sql("/data/", "select * from '../../outside.csv'"),
+    `400 ../../outside.csv is outside the served folder. The served folder is ${root}: a path in a query is relative to the query's folder, from the served folder after a slash, or absolute under it.\n`,
+  )
+})
+
+test("health, needs, changes and stale narrow to a document or the folder under a path, and refuse a path that is neither", async () => {
+  const old = (Date.now() - 2 * 365 * 86_400_000) / 1000
+  const fixture = await served(
+    indexer,
+    {
+      "top.md": "# Top\n\nSee [gone](gone.md).\n",
+      "notes/b.md": "# B\n\nSee [gone](gone.md).\n",
+      "notes/c.md": "# C\n\nSee [gone](gone.md).\n",
+      "notesy/d.md": "# D\n\nSee [gone](gone.md).\n",
+      "notes/x.csv": "a\n1\n",
+    },
+    (folder) => {
+      for (const name of ["top.md", "notes/b.md", "notes/c.md", "notesy/d.md"]) {
+        fs.utimesSync(path.join(folder, name), old, old)
+      }
+    },
+  )
+  const asked = (resource: string, at: string) =>
+    api(fixture.root, fixture.model, fixture.data, at, new URLSearchParams({ api: resource }))
+  const paths = async (resource: string, key: string, at: string) =>
+    ((await asked(resource, at)) as Record<string, { path: string }[]>)[key].map(
+      ({ path: found }) => found,
+    )
+
+  try {
+    for (const read of ["top.md", "notes/b.md"]) {
+      const blocks = fixture.model.held(read) ?? []
+      await fixture.model.reads.read(
+        read,
+        blocks.map((block) => ({ id: block.id, version: versionOf(block) })),
+      )
+      fs.writeFileSync(path.join(fixture.root, read), "# Edited\n\nSee [gone](gone.md).\n")
+    }
+
+    for (let tries = 0; (await paths("changes", "documents", "")).length < 2; tries++) {
+      assert.ok(tries < 200, "the edits never showed")
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+
+    assert.deepEqual(await paths("health", "problems", ""), [
+      "notes/b.md",
+      "notes/c.md",
+      "notesy/d.md",
+      "top.md",
+    ])
+    assert.deepEqual(await paths("health", "problems", "notes/"), ["notes/b.md", "notes/c.md"])
+    assert.deepEqual(await paths("health", "problems", "notes"), ["notes/b.md", "notes/c.md"])
+    assert.deepEqual(await paths("health", "problems", "notes/c.md"), ["notes/c.md"])
+    assert.deepEqual(await paths("stale", "documents", "notes/"), ["notes/c.md"])
+    assert.deepEqual(await paths("needs", "needs", "notes/"), ["notes/b.md", "notes/b.md"])
+    assert.deepEqual(await paths("needs", "needs", "top.md"), ["top.md", "top.md"])
+    assert.deepEqual(await paths("changes", "documents", "notes/"), ["notes/b.md"])
+    assert.deepEqual(await paths("changes", "documents", "notesy"), [])
+    assert.notEqual(
+      ((await asked("health", "notes/")) as { version: string }).version,
+      ((await asked("health", "")) as { version: string }).version,
+    )
+    for (const nowhere of ["nope/", "notes/x.csv"]) {
+      await assert.rejects(asked("health", nowhere), (error: Refusal) => {
+        assert.equal(error.status, 404)
+        assert.equal(
+          error.message,
+          `${nowhere} is no document or folder of the served folder, ${fixture.root}: a path is relative to it, or absolute under it.`,
+        )
+        return true
+      })
+    }
+  } finally {
+    fixture.model.close()
+    await fixture.data.close()
+  }
+})
+
+test("the API answers every time as ISO 8601 and takes a digest's period as ISO, refusing milliseconds", async () => {
+  const fixture = await served(indexer, { "log.md": "# Log\n\nFirst.\n\nSecond.\n" })
+  const asked = (at: string, query: Record<string, string>) =>
+    api(fixture.root, fixture.model, fixture.data, at, new URLSearchParams(query))
+  const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+
+  try {
+    const blocks = fixture.model.held("log.md") ?? []
+    await fixture.model.reads.read(
+      "log.md",
+      blocks.map((block) => ({ id: block.id, version: versionOf(block) })),
+    )
+    fs.writeFileSync(path.join(fixture.root, "log.md"), "# Log\n\nFirst, edited.\n\nThird.\n")
+    await fixture.model.settled()
+    await fixture.model.settled()
+
+    const read = (await asked("log.md", { api: "reads" })) as {
+      marks: { at?: unknown }[]
+      removed: { at?: unknown }[]
+    }
+    const history = (await asked("log.md", { api: "history" })) as { versions: { at: unknown }[] }
+    const block = (await asked("log.md", { api: "history", block: blocks[0].id })) as {
+      versions: { at: unknown }[]
+    }
+    const period = (await asked("", {
+      api: "digest",
+      from: "2026-11-02",
+      to: "2026-11-02T09:00:00+01:00",
+    })) as { from: unknown; to: unknown }
+    const unzoned = (await asked("", {
+      api: "digest",
+      from: "2026-11-02T08:00",
+      to: "2026-11-02T08:00:00.5",
+    })) as { from: unknown; to: unknown }
+
+    assert.ok(read.marks.length > 0 && read.removed.length > 0, JSON.stringify(read))
+    for (const { at } of [...read.marks, ...read.removed, ...history.versions, ...block.versions]) {
+      assert.match(String(at), iso)
+    }
+    assert.deepEqual(period, {
+      ...period,
+      from: "2026-11-02T00:00:00.000Z",
+      to: "2026-11-02T08:00:00.000Z",
+    })
+    assert.deepEqual(
+      [unzoned.from, unzoned.to],
+      ["2026-11-02T08:00:00.000Z", "2026-11-02T08:00:00.500Z"],
+    )
+    const newest = history.versions[0] as unknown as { id: string; at: string }
+    const through = (await asked("", { api: "digest", from: "2000-01-01", to: newest.at })) as {
+      documents: { path: string; to?: string }[]
+    }
+    assert.equal(through.documents.find(({ path: at }) => at === "log.md")?.to, newest.id)
+    const second = Math.floor(Date.now() / 1000) + 60
+    fs.writeFileSync(path.join(fixture.root, "log.md"), "# Log\n\nFirst, edited.\n\nThird, late.\n")
+    fs.utimesSync(path.join(fixture.root, "log.md"), second, second + 0.0009995)
+    assert.ok(fs.statSync(path.join(fixture.root, "log.md")).mtimeMs % 1 > 0.9992, "a late mtime")
+    await fixture.model.settled()
+    await fixture.model.settled()
+    const late = ((await asked("log.md", { api: "history" })) as typeof history).versions[0] as {
+      id: string
+      at: string
+    }
+    const reached = (await asked("", { api: "digest", from: "2000-01-01", to: late.at })) as {
+      documents: { path: string; to?: string }[]
+    }
+    assert.equal(
+      reached.documents.find(({ path: at }) => at === "log.md")?.to,
+      late.id,
+      "a time late in its millisecond",
+    )
+    assert.deepEqual(
+      [
+        ((await asked("", { api: "digest", from: "2026-11-02t08:00z" })) as { from: string }).from,
+        ((await asked("", { api: "digest", from: "2026-11-02T09:00+01" })) as { from: string })
+          .from,
+      ],
+      ["2026-11-02T08:00:00.000Z", "2026-11-02T08:00:00.000Z"],
+    )
+    await assert.rejects(asked("", { api: "digest", from: "2026-02-30" }), /2026-02-30 is no time/)
+    await assert.rejects(asked("", { api: "digest", from: "1793743622799" }), (error: Refusal) => {
+      assert.equal(error.status, 400)
+      assert.equal(
+        error.message,
+        "from 1793743622799 is no time Folio reads: it reads an ISO 8601 date, 2026-11-02, or a date and time to the minute or finer with an optional offset - Z, +01 or +01:00 - as 2026-11-02T09:00:00+01:00; a date alone is midnight UTC, a time without an offset UTC.",
+      )
+      return true
+    })
+  } finally {
+    fixture.model.close()
+    await fixture.data.close()
+  }
+})
+
+test("asked about a document in a dot-folder or node_modules, the API reads it then and answers as for any other; the folder's lists still leave it out", async () => {
+  const fixture = await served(indexer, {
+    "FOLIO.md":
+      "# Kinds\n\n```yaml folio\nkinds:\n  draft:\n    where: .drafts/*.md\n    fields:\n      grams: {from: frontmatter}\n```\n",
+    "plan.md": "# Plan\n\nSee [the probe](.drafts/probe.md#probe).\n",
+    ".drafts/probe.md":
+      "---\ngrams: 5\n---\n# Probe\n\nSee [gone](gone.md).\n\nThe count is {value: data.csv#0.n}.\n\n{include: part.md}\n\n{include: kept.md#kept}\n",
+    ".drafts/part.md": "Brought in from beside it.\n",
+    ".drafts/kept.md": "# Kept\n\nA kept section.\n\n# Other\n\nNot this.\n",
+    ".drafts/data.csv": "n\n3\n",
+    "node_modules/pkg/README.md": "# Pkg\n\nA readme.\n",
+  })
+  const asked = (at: string, query: Record<string, string>) =>
+    api(fixture.root, fixture.model, fixture.data, at, new URLSearchParams(query))
+  type Shown = {
+    blocks: { id: string; kind: string; text: string }[]
+    page: { source: string }[]
+    conventions: { kind?: string; fields?: Record<string, unknown> }
+    data: string[]
+  }
+  const linkProblems = async () =>
+    (
+      (await asked("", { api: "health" })) as { problems: { path: string; kind: string }[] }
+    ).problems
+      .filter(({ kind }) => kind === "link")
+      .map(({ path: at }) => at)
+
+  try {
+    const before = await linkProblems()
+    const draft = (await asked(".drafts/probe.md", { api: "document" })) as Shown
+    const counted = draft.blocks.find(({ text }) => text.startsWith("The count"))
+
+    assert.deepEqual(
+      draft.blocks.map(({ kind, text }) => `${kind} ${text}`),
+      [
+        "frontmatter --- grams: 5 ---",
+        "heading # Probe",
+        "paragraph See [gone](gone.md).",
+        "paragraph The count is {value: data.csv#0.n}.",
+        "paragraph {include: part.md}",
+        "paragraph {include: kept.md#kept}",
+      ],
+    )
+    assert.deepEqual(
+      [".drafts/part.md", ".drafts/kept.md"].filter((included) =>
+        draft.page.some(({ source }) => source === included),
+      ),
+      [".drafts/part.md", ".drafts/kept.md"],
+      "an included draft, whole and a section of one",
+    )
+    assert.deepEqual(
+      fixture.model
+        .backlinks(
+          ".drafts/probe.md",
+          pageState(fixture.root, path.join(fixture.root, ".drafts/probe.md"), fixture.model)
+            .blocks,
+        )
+        .map(({ source, part }) => [source, part]),
+      [["plan.md", "Probe"]],
+    )
+    assert.deepEqual([draft.conventions.kind, draft.conventions.fields], ["draft", { grams: "5" }])
+    assert.deepEqual(draft.data, [".drafts/data.csv"])
+    const traced = (await asked(".drafts/probe.md", {
+      api: "provenance",
+      block: counted?.id ?? "",
+    })) as { lines: number[]; changed?: string }
+    assert.deepEqual(traced.lines, [8, 8])
+    assert.match(traced.changed ?? "", /^\d{4}-\d{2}-\d{2}T/)
+    assert.deepEqual(
+      await linkProblems(),
+      before,
+      "health is the same whether or not a tool read the draft",
+    )
+    assert.deepEqual(
+      ((await asked("node_modules/pkg/README.md", { api: "document" })) as Shown).blocks.map(
+        ({ text }) => text,
+      ),
+      ["# Pkg", "A readme."],
+    )
+
+    fs.writeFileSync(path.join(fixture.root, ".drafts/probe.md"), "# Probe\n\nRewritten.\n")
+    const heading = draft.blocks.find(({ kind }) => kind === "heading")?.id
+    const rewritten = (await asked(".drafts/probe.md", { api: "document" })) as Shown
+    assert.deepEqual(
+      rewritten.blocks.map(({ text }) => text),
+      ["# Probe", "Rewritten."],
+    )
+    assert.equal(rewritten.blocks[0].id, heading, "an unchanged block keeps its id")
+    assert.deepEqual(
+      ((await asked("", { api: "documents" })) as { documents: { path: string }[] }).documents.map(
+        ({ path: found }) => found,
+      ),
+      ["FOLIO.md", "plan.md"],
+    )
+    assert.ok(!(await linkProblems()).some((at) => at.startsWith(".drafts/")))
+  } finally {
+    fixture.model.close()
+    await fixture.data.close()
+  }
+})
+
+test("a document's link to a document the model leaves out names nothing of its kind, whether or not a tool read it", async () => {
+  const fixture = await served(indexer, {
+    "FOLIO.md":
+      "# Kinds\n\n```yaml folio\nkinds:\n  draft:\n    where: .drafts/*.md\n  plan:\n    where: plan.md\n    fields:\n      probe: {from: label, type: list, of: link, to: draft}\n```\n",
+    "plan.md": "# Plan\n\n**Probe:** [the probe](.drafts/probe.md)\n",
+    ".drafts/probe.md": "# Probe\n\nA draft.\n",
+  })
+
+  try {
+    await api(
+      fixture.root,
+      fixture.model,
+      fixture.data,
+      ".drafts/probe.md",
+      new URLSearchParams({ api: "document" }),
+    )
+    assert.deepEqual(
+      (await healthOf(fixture.model, fixture.data).state()).problems
+        .filter(({ kind }) => kind === "field")
+        .map(({ path: at, what }) => [at, what.endsWith("names no draft")]),
+      [["plan.md", true]],
+    )
+  } finally {
+    fixture.model.close()
+    await fixture.data.close()
+  }
+})
+
 test("the API refuses another site's page, a foreign Origin or Host, and anything but reading", async () => {
   assert.equal((await getWith("/?api=health", { origin: "https://evil.example" })).status, 403)
   assert.equal((await getWith("/?api=health", { "sec-fetch-site": "cross-site" })).status, 403)
@@ -770,7 +1403,7 @@ test("a query that fails through the API names files by their place in the folde
   }
 })
 
-test("while sharing is paused, the views of what the reader read answer only that, except to folio's own pages", async () => {
+test("while sharing is paused, the views of what the reader read answer only that, except to Folio's own pages", async () => {
   const views = [
     "/notes/a.md?read",
     "/notes/a.md?page",
@@ -796,7 +1429,7 @@ test("while sharing is paused, the views of what the reader read answer only tha
   }
 })
 
-/** `count` free ports in a row, the first held: undefined by a non-folio server, a path by a folio of it. */
+/** `count` free ports in a row, the first held: undefined by a non-Folio server, a path by a Folio of it. */
 async function holding(
   count: number,
   roots: (string | undefined)[],
@@ -811,6 +1444,7 @@ async function holding(
       for (let at = 0; at < count; at++) {
         const folio = roots[at]
         const one = http.createServer((request, response) => {
+          response.setHeader("Content-Type", "application/json")
           response.end(folio && request.url === "/?api" ? JSON.stringify({ root: folio }) : "no")
         })
         await listen(one, first + at)

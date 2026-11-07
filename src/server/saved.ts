@@ -54,7 +54,7 @@ const END = /^<!--\s*\/folio view\s*-->\s*$/
 const FENCE = /^\s{0,3}(`{3,}|~{3,})/
 const BOM = "\u00ef\u00bb\u00bf"
 const MARK = "<!-- folio view:"
-/** Copies an earlier folio left carry their document's name before the id, and are swept as well. */
+/** Copies an earlier Folio left carry their document's name before the id, and are swept as well. */
 const TEMPORARY = /^\.(?:.+\.)?[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}\.folio$/
 const SETTLE_MS = 100
 /** Longer than the pauses of a program writing a file in pieces, so its write is never cut short. */
@@ -391,15 +391,15 @@ export class Saved {
     const { regions, open } = regionsOf(lines)
     const failed: ViewProblem[] = open.map((line) => ({
       line: line + 1,
-      what: "This view has no closing <!-- /folio view --> line, so folio writes nothing into it.",
+      what: "This view has no closing <!-- /folio view --> line, so Folio writes nothing into it.",
     }))
     const replaced: ViewProblem[] = []
     const written: Record<string, string> = {}
     let changed = false
 
-    // The document changed since folio last wrote it, without touching a view: earlier reports are spent.
+    // The document changed since Folio last wrote it, without touching a view: earlier reports are spent.
     const spent = was.writtenText !== undefined && hash(text) !== was.writtenText
-    // Only folio's own last write of the document was heard since the pass that wrote it began.
+    // Only Folio's own last write of the document was heard since the pass that wrote it began.
     const unheard = this.#wroteAt.get(urlPath) === heard
 
     for (const [index, region] of regions.entries()) {
@@ -459,7 +459,7 @@ export class Saved {
       if (echoes >= ECHOES) {
         failed.push({
           line: region.start + 1,
-          what: `The view ${region.reference} changes with every write into this document, which its query reads, so folio stopped writing it.`,
+          what: `The view ${region.reference} changes with every write into this document, which its query reads, so Folio stopped writing it.`,
         })
 
         if (was.writtenBodies[key] !== undefined) {
@@ -535,7 +535,7 @@ export class Saved {
 
   /**
    * Only a settled file is written - no other program holds it open to write, and it has been still for a
-   * moment unless folio wrote it last - so a write under way is never cut short. Says whether it wrote; a
+   * moment unless Folio wrote it last - so a write under way is never cut short. Says whether it wrote; a
    * file its time places in the future counts as still.
    * folderBefore is the folder as the results were worked out, so a change landing since is counted.
    */
@@ -596,7 +596,7 @@ export class Saved {
   }
 
   /**
-   * A rename would part a file from its other hard links, or from an owner folio cannot give a new file,
+   * A rename would part a file from its other hard links, or from an owner Folio cannot give a new file,
    * so such a file is written over in place instead.
    */
   #replace(file: string, bytes: Buffer, stat?: fs.Stats): void {
@@ -646,7 +646,7 @@ export class Saved {
 
   /**
    * The document's old and new text are kept beside it, flushed, until the write is done, so a write cut short
-   * by folio stopping is finished when it starts again.
+   * by Folio stopping is finished when it starts again.
    */
   #inPlace(file: string, bytes: Buffer): void {
     const id = randomUUID()
@@ -668,7 +668,7 @@ export class Saved {
     }
   }
 
-  /** Noted before it is made, so one left by a folio killed before renaming it is removed, not committed. */
+  /** Noted before it is made, so one left by a Folio killed before renaming it is removed, not committed. */
   #writing(temporary: string, made: boolean, mend?: Mend): void {
     const noted = readJournal(this.#journal)
 
@@ -711,7 +711,7 @@ export class Saved {
       if (cutShort(now, next, before)) {
         inPlace(file, next)
         this.#model.log(
-          `views: ${file} was left half written when folio stopped; its write is finished.`,
+          `views: ${file} was left half written when Folio stopped; its write is finished.`,
           "info",
         )
       } else if (!now.equals(next) && !now.equals(before)) {
@@ -946,7 +946,7 @@ function deviceOf(pid: string, info: string, mounts: Map<string, string>): strin
 }
 
 /**
- * What a folder holds, folio's own copies left out, so a later look tells another program's change apart.
+ * What a folder holds, Folio's own copies left out, so a later look tells another program's change apart.
  * Every name leading to the document is left out too: a hard link or a link to it moves with each write.
  */
 function folderState(dir: string, document?: string): string {

@@ -2,6 +2,7 @@
 
 import type { ColumnStats, DataStats, Filter } from "../server/data.ts"
 import { copyButton } from "./copy.ts"
+import { CATEGORIES } from "./tableviews.ts"
 
 export interface Profile {
   kind: ColumnStats["kind"]
@@ -33,7 +34,6 @@ type OnPick = (picked: Picked | undefined) => void
 const BINS = 20
 const TOP = 8
 const STRIP_TOP = 3
-const CATEGORIES = 12
 const COMPARED_GROUPS = 8
 const DATE_TEXT =
   /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/
@@ -137,7 +137,7 @@ export function hideEmpty(
 export class FieldsPanel {
   readonly element = document.createElement("div")
   onPick: OnPick = () => {}
-  onSort: (field: string, descending: boolean) => void = () => {}
+  onSort: (field: string, descending: boolean, adding: boolean) => void = () => {}
   onCompare: ((field: string) => void) | undefined
   readonly #names: string[]
   readonly #query: string | undefined
@@ -289,7 +289,7 @@ export class FieldsPanel {
         button.type = "button"
         button.className = "data-switch"
         button.textContent = descending ? "Largest first" : "Smallest first"
-        button.addEventListener("click", () => this.onSort(name, descending))
+        button.addEventListener("click", (event) => this.onSort(name, descending, event.altKey))
         order.append(button)
       }
 

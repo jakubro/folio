@@ -4,7 +4,9 @@ import fs from "node:fs"
 import path from "node:path"
 import { after, test } from "node:test"
 import { versionOf } from "../src/server/blocks.ts"
+import { Data } from "../src/server/data.ts"
 import { Indexer } from "../src/server/indexer.ts"
+import { Model } from "../src/server/model.ts"
 import { staleOf } from "../src/server/stale.ts"
 import { served } from "./served.ts"
 
@@ -101,5 +103,60 @@ test("a document's age is its last commit, not its file time, which a checkout r
   } finally {
     model.close()
     await data.close()
+  }
+})
+
+test("the times worked out are kept in the store, so a model started again lists the same without reading any history", async () => {
+  const old = (Date.now() - TWO_YEARS) / 1000
+  const { root, store, model, data } = await served(
+    indexer,
+    { "a.md": "# A\n", "b.md": "# B\n", "fresh.md": "# Fresh\n" },
+    (folder) => {
+      for (const name of ["a.md", "b.md"]) {
+        fs.utimesSync(path.join(folder, name), old, old)
+      }
+    },
+  )
+  const first = await staleOf(model, data)
+  model.close()
+  await data.close()
+
+  for (let tries = 0; !fs.existsSync(path.join(store, "stale.json")); tries++) {
+    assert.ok(tries < 200, "never kept")
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+
+  const again = new Model(root, store, indexer, () => {})
+  const engine = new Data(root, store)
+  let asked = 0
+  await again.start()
+  ;(again.history as unknown as { versions: () => Promise<[]> }).versions = async () => {
+    asked++
+    return []
+  }
+
+  try {
+    const second = await staleOf(again, engine)
+    assert.deepEqual(
+      first.documents.map(({ path: at }) => at),
+      ["a.md", "b.md"],
+    )
+    assert.deepEqual(second.documents, first.documents)
+    assert.equal(asked, 0)
+
+    fs.writeFileSync(path.join(root, "a.md"), "# A, edited\n")
+
+    for (let tries = 0; (await staleOf(again, engine)).documents.length > 1; tries++) {
+      assert.ok(tries < 200, "the edited document is still listed")
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+
+    assert.deepEqual(
+      (await staleOf(again, engine)).documents.map(({ path: at }) => at),
+      ["b.md"],
+    )
+  } finally {
+    again.close()
+    await engine.close()
   }
 })

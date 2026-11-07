@@ -19,8 +19,10 @@ export class BlockLinks {
     "block-copy",
   )
   #block: HTMLElement | undefined
+  #placed = ""
   /** Opens where the block under the pointer came from. */
-  onProvenance: (block: HTMLElement) => void = () => {}
+  onProvenance: (block: HTMLElement, button: HTMLElement) => void = () => {}
+  onVersions: (block: HTMLElement, button: HTMLElement) => void = () => {}
   copies: (block: HTMLElement) => boolean = () => false
   copyOf: (block: HTMLElement) => string | undefined = () => undefined
 
@@ -36,15 +38,30 @@ export class BlockLinks {
     this.#past.innerHTML = ICONS.clock
     this.#past.title = "This block's past versions"
     this.#past.hidden = true
+    this.#past.addEventListener("click", (event) => {
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
+        return
+      }
+
+      event.preventDefault()
+
+      if (this.#block) {
+        this.onVersions(this.#block, this.#past)
+      }
+    })
     this.#why.className = "block-provenance"
     this.#why.type = "button"
     this.#why.innerHTML = ICONS.info
     this.#why.title = "Where this block came from"
     this.#why.hidden = true
-    this.#why.addEventListener("click", () => this.#block && this.onProvenance(this.#block))
+    this.#why.addEventListener(
+      "click",
+      () => this.#block && this.onProvenance(this.#block, this.#why),
+    )
     this.#copy.hidden = true
     main.append(this.#mark, this.#past, this.#why, this.#copy)
-    main.addEventListener("pointerover", (event) => this.#over(event.target as Element))
+    main.addEventListener("pointerover", (event) => this.#over(event))
+    main.addEventListener("pointermove", (event) => this.#over(event))
     main.addEventListener("pointerleave", () => this.#hide())
     // A leave is lost when the element under the pointer is replaced while it is there.
     document.addEventListener("pointerover", (event) => {
@@ -83,27 +100,66 @@ export class BlockLinks {
     this.#gone.hidden = !shown
   }
 
-  #over(target: Element): void {
+  #over({ target, clientY }: PointerEvent): void {
+    const element = target as Element
+
     if (
-      target === this.#mark ||
-      this.#past.contains(target) ||
-      this.#why.contains(target) ||
-      this.#copy.contains(target)
+      element === this.#mark ||
+      this.#past.contains(element) ||
+      this.#why.contains(element) ||
+      this.#copy.contains(element)
     ) {
       return
     }
 
-    const block = target.closest<HTMLElement>(".markdown-body [data-folio-id]")
+    const block =
+      element.closest<HTMLElement>(".markdown-body [data-folio-id]") ??
+      (element.closest(".mark-panel, .table-panel") ? undefined : this.#levelWith(clientY))
 
-    if (!block) {
+    if (block === undefined) {
       this.#hide()
-      return
+    } else if (block) {
+      this.#show(block)
+    }
+  }
+
+  /** The block level with a height on the screen: null between two blocks, undefined past them all. */
+  #levelWith(y: number): HTMLElement | null | undefined {
+    const box = this.#main.querySelector(":scope > .markdown-body")?.getBoundingClientRect()
+
+    if (!box || y < box.top || y >= box.bottom) {
+      return undefined
     }
 
+    // A block narrower than the page, such as a table, does not reach its right edge.
+    for (const x of [box.right - 1, box.left + 1]) {
+      const block = document
+        .elementFromPoint(x, y)
+        ?.closest<HTMLElement>(".markdown-body [data-folio-id]")
+
+      if (block) {
+        return block
+      }
+    }
+
+    return null
+  }
+
+  #show(block: HTMLElement): void {
     const article = block.closest(".markdown-body") as Element
+    const box = article.getBoundingClientRect()
+    const placed = `${block.getBoundingClientRect().top + scrollY} ${box.left} ${box.right}`
     // A heading carries its own link mark, so only its provenance is offered here.
     const heading = block.matches("h1, h2, h3, h4, h5, h6")
 
+    if (block === this.#block && placed === this.#placed) {
+      return
+    }
+
+    this.#placed = placed
+
+    this.#block?.classList.remove("pointed")
+    block.classList.toggle("pointed", heading)
     // Placed against the document: a positioned ancestor would change how the article's text is drawn.
     this.#block = block
     this.#mark.href = `#^${encodeURIComponent(block.dataset.folioId ?? "")}`
@@ -115,16 +171,18 @@ export class BlockLinks {
     this.#past.style.top = this.#mark.style.top
     this.#past.style.left = `${article.getBoundingClientRect().right + scrollX}px`
     this.#past.hidden = heading
-    this.#why.style.top = `calc(${this.#mark.style.top} + 1.25em)`
+    this.#why.style.top = `calc(${this.#mark.style.top} + ${heading ? 0 : 1.25}em)`
     this.#why.style.left = this.#past.style.left
     this.#why.hidden = false
-    this.#copy.style.top = `calc(${this.#mark.style.top} + 2.5em)`
+    this.#copy.style.top = `calc(${this.#mark.style.top} + ${heading ? 1.25 : 2.5}em)`
     this.#copy.style.left = this.#past.style.left
     this.#copy.hidden = !this.copies(block)
   }
 
   #hide(): void {
+    this.#block?.classList.remove("pointed")
     this.#block = undefined
+    this.#placed = ""
     this.#mark.hidden = true
     this.#past.hidden = true
     this.#why.hidden = true

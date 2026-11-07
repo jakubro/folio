@@ -18,6 +18,7 @@ export interface LinksState {
 export interface Content {
   text: string
   version: string | null
+  title: string | null
   blocks: PageBlock[]
   layout: PageLayout
   links?: LinksState
@@ -54,8 +55,9 @@ export function kindOf(urlPath: string): Kind | undefined {
   return /\.(md|markdown)$/i.test(urlPath) ? "markdown" : undefined
 }
 
-export async function fetchPage(pathname: string): Promise<Content | undefined> {
-  const response = await fetch(`${pathname}?page`)
+/** `ahead` for a page not yet opened: Folio then works nothing out ahead, its blocks' past included. */
+export async function fetchPage(pathname: string, ahead = false): Promise<Content | undefined> {
+  const response = await fetch(`${pathname}?page${ahead ? "&ahead" : ""}`)
   return response.ok ? response.json() : undefined
 }
 
@@ -122,7 +124,7 @@ export class Prerender {
       return
     }
 
-    const page = fetchPage(pathname)
+    const page = fetchPage(pathname, true)
       .then(async (content) =>
         content
           ? {

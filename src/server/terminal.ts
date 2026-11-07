@@ -1,4 +1,4 @@
-/** What a running folio tells a person watching it, coloured and with a live progress line on a terminal only. */
+/** What a running Folio tells a person watching it, coloured and with a live progress line on a terminal only. */
 
 import { styleText } from "node:util"
 import type { Help } from "./args.ts"

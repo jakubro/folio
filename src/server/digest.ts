@@ -67,7 +67,7 @@ export async function digest(
 }
 
 /**
- * Every document something in the period may have touched: folio's saves, git's commits in every
+ * Every document something in the period may have touched: Folio's saves, git's commits in every
  * repository the folder holds or lies in, and files whose time falls in it.
  */
 async function candidates(
@@ -117,7 +117,7 @@ async function candidates(
 
 /**
  * A document seen only as the file on disk may have existed long before: it was created in the
- * period only if folio or git saw it come to be, or the file itself was born in it.
+ * period only if Folio or git saw it come to be, or the file itself was born in it.
  */
 function seenBorn(versions: Version[], to: number): boolean {
   return versions.some(({ at, seen }) => at <= to && seen.some((how) => how !== "file"))

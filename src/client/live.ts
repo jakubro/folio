@@ -17,6 +17,7 @@ export interface Change {
     | "health"
     | "needs"
     | "stale"
+    | "related"
   path: string
   version: string | null
 }

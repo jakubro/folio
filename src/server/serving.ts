@@ -1,4 +1,4 @@
-/** Where each running folio serves, kept in its store so `folio check` and `folio mcp` find it. */
+/** Where each running Folio serves, kept in its store so `folio check` and `folio mcp` find it. */
 
 import fs from "node:fs"
 import path from "node:path"
@@ -20,7 +20,7 @@ export function recordServing(store: string, port: number): void {
 
   fs.mkdirSync(store, { recursive: true })
   fs.writeFileSync(file, JSON.stringify({ port, pid: process.pid, start: startOf("self") }))
-  // A folio started on the same folder with --port since then holds the record now.
+  // A Folio started on the same folder with --port since then holds the record now.
   process.once("exit", () => {
     if (recorded(file)?.pid === process.pid) {
       fs.rmSync(file, { force: true })
@@ -28,13 +28,13 @@ export function recordServing(store: string, port: number): void {
   })
 }
 
-/** The folio serving exactly `folder`, a real path; none once the process recording it stops. */
+/** The Folio serving exactly `folder`, a real path; none once the process recording it stops. */
 export function servingAt(folder: string, env: NodeJS.ProcessEnv = process.env): Reach | undefined {
   const found = recorded(path.join(modelStore(folder, env), RECORD))
   return found && alive(found.pid, found.start) ? { port: found.port } : undefined
 }
 
-/** The nearest folder at or above `folder`, a real path, that a folio serves. */
+/** The nearest folder at or above `folder`, a real path, that a Folio serves. */
 export function servingAbove(
   folder: string,
   env: NodeJS.ProcessEnv = process.env,

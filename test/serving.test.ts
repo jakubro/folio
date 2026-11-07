@@ -9,7 +9,7 @@ import { recordServing, servingAbove, servingAt } from "../src/server/serving.ts
 
 const SERVING = new URL("../src/server/serving.ts", import.meta.url).pathname
 
-test("a running folio's record names its port, and the nearest folder served at or above a folder wins", () => {
+test("a running Folio's record names its port, and the nearest folder served at or above a folder wins", () => {
   const env = { XDG_STATE_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "folio-serving-state-")) }
   const notes = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-serving-")))
   const plans = path.join(notes, "plans")
@@ -31,7 +31,7 @@ test("a running folio's record names its port, and the nearest folder served at 
   assert.equal(servingAt(notes, { XDG_STATE_HOME: path.join(env.XDG_STATE_HOME, "x") }), undefined)
 })
 
-test("a folio killed without stopping leaves a record that names no folio; one stopping removes its own record only", () => {
+test("a Folio killed without stopping leaves a record that names no Folio; one stopping removes its own record only", () => {
   const env = { XDG_STATE_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "folio-serving-state-")) }
   const killed = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-serving-")))
   const stopped = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-serving-")))

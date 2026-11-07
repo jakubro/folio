@@ -1,4 +1,4 @@
-/** Headless Chromium run of folio's documented behaviour: table views and data files opened as pages. */
+/** Headless Chromium run of Folio's documented behaviour: table views and data files opened as pages. */
 
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -549,7 +549,7 @@ test("Filter, sort, undo: undoing a sort typed after a text filter brings back t
   await page.close()
 })
 
-test("Linked, Tree toggle: a link to a data file opens it inside folio; the tree lists data files only when asked", async () => {
+test("Linked, Tree toggle: a link to a data file opens it inside Folio; the tree lists data files only when asked", async () => {
   await writeData()
   const page = await open("store/index.md")
 
@@ -2230,8 +2230,8 @@ test("Toggle position, Table control position, Toggle hidden, Pointer back, Keyb
       const control = (
         document.querySelector(".table-control") as HTMLElement
       ).getBoundingClientRect()
-      const box = document.querySelectorAll(".markdown-body table")[at].getBoundingClientRect()
-      return control.top - box.top
+      const head = document.querySelectorAll<HTMLTableElement>(".markdown-body table")[at].tHead
+      return control.top - (head as HTMLTableSectionElement).getBoundingClientRect().top
     }, table)
   const toggle = () =>
     page.$eval(".tree-data", (button) => {
@@ -2255,7 +2255,7 @@ test("Toggle position, Table control position, Toggle hidden, Pointer back, Keyb
   await page.click(".markdown-body table >> nth=0 >> th >> nth=1")
   await away()
   seen.headerClicked = await page.isVisible(".table-control")
-  await page.hover(".markdown-body table >> nth=0")
+  await page.hover(".markdown-body table >> nth=0 >> th >> nth=0")
   seen.narrow = await placed(0)
   await page.hover(".markdown-body table >> nth=1")
   seen.wide = await placed(1)
@@ -2294,7 +2294,7 @@ test("Toggle position, Table control position, Toggle hidden, Pointer back, Keyb
   seen.keyboard = [await page.evaluate(() => document.activeElement?.className), await toggle()]
   await page.click('button[title="Switch theme"]')
   await page.waitForFunction(() => document.documentElement.dataset.theme === "dark")
-  await page.hover(".markdown-body table >> nth=0")
+  await page.hover(".markdown-body table >> nth=0 >> th >> nth=0")
   await page.hover(".tree")
   seen.dark = await page.evaluate(() =>
     [".table-control", ".tree-data"].map(
@@ -2612,26 +2612,26 @@ test("Pinned, Covers the rows, Leaves with its table, Back up, Sideways, No head
     found.map((table) => [table.className, !!(table as HTMLTableElement).tHead]),
   )
   assert.deepEqual(tables, [
-    ["frontmatter", false],
     ["viewed", true],
     ["", false],
     ["", true],
     ["", false],
     ["", true],
+    ["frontmatter", false],
   ])
 
-  const resting = await pinOf(page, 1)
+  const resting = await pinOf(page, 0)
   assert.equal(resting.transform, "none")
   assert.ok(resting.top > PIN_TOP, `${resting.top}`)
   assert.equal(resting.background, "0,0,0,0")
 
-  await scrollPast(page, 1, 400)
-  const pinned = await pinOf(page, 1)
+  await scrollPast(page, 0, 400)
+  const pinned = await pinOf(page, 0)
   assert.ok(pinnedAt(pinned.top), `pinned at ${pinned.top}`)
   assert.equal(pinned.background, "255,255,255,255")
   assert.equal(pinned.gap, '"" 1 6px')
   assert.deepEqual(
-    await covered(page, 1),
+    await covered(page, 0),
     [true, true, true],
     "the header covers the rows, math too",
   )
@@ -2640,13 +2640,13 @@ test("Pinned, Covers the rows, Leaves with its table, Back up, Sideways, No head
   for (let past = 380; past <= 440; past++) {
     await page.evaluate(
       ([line, by]) => {
-        const box = document.querySelectorAll(".markdown-body table")[1].getBoundingClientRect()
+        const box = document.querySelectorAll(".markdown-body table")[0].getBoundingClientRect()
         scrollTo(0, Math.round(scrollY + box.top - line + by))
       },
       [PIN_TOP, past],
     )
     await page.waitForTimeout(30)
-    const dark = await gapText(page, 1)
+    const dark = await gapText(page, 0)
 
     if (dark > 0) {
       leaks.push(`${past}: ${dark}`)
@@ -2655,36 +2655,36 @@ test("Pinned, Covers the rows, Leaves with its table, Back up, Sideways, No head
 
   assert.deepEqual(leaks, [], "no row shows between the toolbar and the header's text")
   await page.emulateMedia({ media: "print" })
-  assert.equal((await pinOf(page, 1)).transform, "none", "printed, the header stays in place")
+  assert.equal((await pinOf(page, 0)).transform, "none", "printed, the header stays in place")
   await page.emulateMedia({ media: "screen" })
   await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"))
-  assert.equal((await pinOf(page, 1)).background, "26,26,26,255")
+  assert.equal((await pinOf(page, 0)).background, "26,26,26,255")
   await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"))
 
   await page.evaluate((line) => {
     const rows = [
-      ...document.querySelectorAll<HTMLTableElement>(".markdown-body table")[1].tBodies[0].rows,
+      ...document.querySelectorAll<HTMLTableElement>(".markdown-body table")[0].tBodies[0].rows,
     ].filter((row) => !row.hidden)
     scrollTo(0, scrollY + (rows.at(-1) as HTMLElement).getBoundingClientRect().bottom - line + 10)
   }, PIN_TOP)
   await page.waitForTimeout(150)
-  const leaving = await pinOf(page, 1)
+  const leaving = await pinOf(page, 0)
   assert.ok(Math.abs(leaving.bottom - leaving.last) < 0.6, `${leaving.bottom} ${leaving.last}`)
   assert.ok(leaving.top < PIN_TOP)
 
   await page.evaluate(() => scrollTo(0, 0))
   await page.waitForTimeout(150)
-  assert.deepEqual(await pinOf(page, 1), resting)
+  assert.deepEqual(await pinOf(page, 0), resting)
   assert.equal(
     await page.$eval(
-      ".markdown-body table >> nth=2",
+      ".markdown-body table >> nth=1",
       (table) => table.getAnimations({ subtree: true }).length,
     ),
     0,
   )
   assert.equal(
     await page.$eval(
-      ".markdown-body table >> nth=5",
+      ".markdown-body table >> nth=4",
       (table) => table.getAnimations({ subtree: true }).length,
     ),
     0,
@@ -2693,7 +2693,7 @@ test("Pinned, Covers the rows, Leaves with its table, Back up, Sideways, No head
 
   const aligned = () =>
     page.evaluate(() => {
-      const table = document.querySelectorAll<HTMLTableElement>(".markdown-body table")[3]
+      const table = document.querySelectorAll<HTMLTableElement>(".markdown-body table")[2]
       const head = table.tHead as HTMLTableSectionElement
       const row = [...table.tBodies[0].rows].find(
         (one) => one.getBoundingClientRect().top > head.getBoundingClientRect().bottom,
@@ -2706,13 +2706,13 @@ test("Pinned, Covers the rows, Leaves with its table, Back up, Sideways, No head
       })
     })
   await page.evaluate(() => {
-    const box = document.querySelectorAll(".markdown-body table")[3].getBoundingClientRect()
+    const box = document.querySelectorAll(".markdown-body table")[2].getBoundingClientRect()
     scrollTo(0, Math.round(scrollY + box.top - 300))
   })
   await page.waitForTimeout(150)
-  const atRest = await edgesAtButton(page, 3)
-  await scrollPast(page, 3, 300)
-  const pinnedEdges = await edgesAtButton(page, 3)
+  const atRest = await edgesAtButton(page, 2)
+  await scrollPast(page, 2, 300)
+  const pinnedEdges = await edgesAtButton(page, 2)
   assert.equal(atRest.lines.length, 2, JSON.stringify(atRest))
   assert.deepEqual(
     pinnedEdges.lines.map((row) => row - pinnedEdges.lines[0]),
@@ -2727,8 +2727,8 @@ test("Pinned, Covers the rows, Leaves with its table, Back up, Sideways, No head
   await page.$eval(".markdown-body", (body) => {
     body.style.paddingTop = "0.5px"
   })
-  await scrollPast(page, 3, 300)
-  const shifted = await edgesAtButton(page, 3)
+  await scrollPast(page, 2, 300)
+  const shifted = await edgesAtButton(page, 2)
   assert.deepEqual(
     shifted.lines.map((row) => row - shifted.lines[0]),
     atRest.lines.map((row) => row - atRest.lines[0]),
@@ -2737,11 +2737,11 @@ test("Pinned, Covers the rows, Leaves with its table, Back up, Sideways, No head
   await page.$eval(".markdown-body", (body) => {
     body.style.paddingTop = ""
   })
-  await page.$eval(".markdown-body table >> nth=3", (table) => {
+  await page.$eval(".markdown-body table >> nth=2", (table) => {
     table.scrollLeft = 600
   })
   await page.waitForTimeout(150)
-  assert.ok(pinnedAt((await pinOf(page, 3)).top))
+  assert.ok(pinnedAt((await pinOf(page, 2)).top))
   assert.deepEqual(await aligned(), [0, 0])
 
   const toggles = ["Show or hide the file tree", "Show or hide the outline", "Full width"]
@@ -2749,8 +2749,8 @@ test("Pinned, Covers the rows, Leaves with its table, Back up, Sideways, No head
   for (const toggle of toggles) {
     await page.click(`button[title="${toggle}"]`)
     await page.waitForTimeout(200)
-    await scrollPast(page, 3, 300)
-    assert.ok(pinnedAt((await pinOf(page, 3)).top), toggle)
+    await scrollPast(page, 2, 300)
+    assert.ok(pinnedAt((await pinOf(page, 2)).top), toggle)
     assert.deepEqual(await aligned(), [0, 0], toggle)
   }
 
@@ -2795,11 +2795,11 @@ test("Sort from the pinned header, Sort and filter button, A folded table: a pin
     const head = (table as HTMLTableElement).tHead?.getBoundingClientRect() as DOMRect
     return {
       top: control.top - head.top,
-      left: control.left - table.getBoundingClientRect().right,
+      left: control.left - head.right,
     }
   })
   assert.ok(Math.abs(beside.top - 1) < 1, `control ${beside.top} below the header's top`)
-  assert.ok(beside.left >= -40 && beside.left <= 2, `control ${beside.left} from the table's edge`)
+  assert.ok(beside.left >= -40 && beside.left <= 2, `control ${beside.left} from the header's edge`)
   // Clicked where it shows: a locator click first scrolls its unmoved place into view.
   const button = await page.$eval(".table-control", (control) => {
     const box = control.getBoundingClientRect()
@@ -2909,4 +2909,1531 @@ test("Every table with a header, Compare, A frozen page: data pages, embeds, que
   assert.ok(Math.abs((await pinOf(frozen, 0)).top) < 0.6, "a frozen page pins to the top edge")
   await frozen.close()
   fs.rmSync(saved)
+})
+
+test("Wide table, filtered, Narrow table, filtered, First letter, Cleared, Sorted, columns hidden, Long table, Pinned header, Data page: a table's filter button sits level with its header", async () => {
+  const forty = Array.from(
+    { length: 40 },
+    (_, i) => `| ${["Oslo", "Lima", "Rome"][i % 3]} | ${i} |`,
+  )
+  const wide = Array.from({ length: 12 }, (_, i) => `column number ${i}`)
+  write({
+    "level/tables.md": [
+      "# Level",
+      `| city | n |\n|---|---|\n${forty.join("\n")}`,
+      `| ${wide.join(" | ")} |\n|${"---|".repeat(12)}\n${Array.from({ length: 40 }, (_, i) => `|${` x${i} |`.repeat(12)}`).join("\n")}`,
+      `| run | value |\n|---|---|\n${RUNS.join("\n")}`,
+      `<table><tbody>${Array.from({ length: 5 }, (_, i) => `<tr><td>row ${i}</td><td>x</td></tr>`).join("")}</tbody></table>`,
+      "Words fill the page. ".repeat(800),
+    ].join("\n\n"),
+    "level/forty.csv": `city,n\n${Array.from({ length: 40 }, (_, i) => `${["Oslo", "Lima", "Rome"][i % 3]},${i}`).join("\n")}\n`,
+  })
+  const page = await open("level/tables.md")
+  const level = (table: number) =>
+    page.evaluate((at) => {
+      const control = (
+        document.querySelector(".table-control") as HTMLElement
+      ).getBoundingClientRect()
+      const panel = document.querySelector(".table-panel") as HTMLElement
+      const element = document.querySelectorAll<HTMLTableElement>(".markdown-body table")[at]
+      const head = (element.tHead as HTMLTableSectionElement).getBoundingClientRect()
+      return {
+        below: Math.round((control.top - head.top) * 100) / 100,
+        beside: Math.round((control.left - head.right) * 100) / 100,
+        inside: control.right <= element.getBoundingClientRect().right,
+        top: control.top + scrollY,
+        panel: panel.hidden ? null : panel.getBoundingClientRect().top + scrollY,
+        pinned: getComputedStyle(element.tHead as Element).transform !== "none",
+      }
+    }, table)
+  // Its top in sight, so its header rests unpinned: a hover would centre a tall table and pin it.
+  const sight = async (table: number) => {
+    await page.evaluate((at) => {
+      const box = document.querySelectorAll(".markdown-body table")[at].getBoundingClientRect()
+      scrollTo(0, Math.round(scrollY + box.top - 200))
+    }, table)
+    await page.hover(`.markdown-body table >> nth=${table} >> th >> nth=0`)
+  }
+  const seen: Record<string, unknown> = {}
+
+  await sight(0)
+  const unfiltered = await level(0)
+  seen.narrowUnfiltered = [unfiltered.below, unfiltered.beside, unfiltered.pinned]
+  await panel(page, 0)
+  await page.fill('.table-panel input[aria-label="Filter rows"]', "o")
+  await waitFor(async () => (await caption(page, 0)) !== null)
+  const filtered = await level(0)
+  seen.narrowFiltered = [
+    filtered.below,
+    filtered.beside,
+    filtered.inside,
+    filtered.pinned,
+    (await caption(page, 0)) ?? "",
+  ]
+  seen.moved = Math.round(filtered.top - unfiltered.top) > 10
+  seen.panelWithButton = filtered.panel !== null && Math.abs(filtered.panel - filtered.top) < 1
+  await page.fill('.table-panel input[aria-label="Filter rows"]', "")
+  await waitFor(async () => (await caption(page, 0)) === null)
+  const cleared = await level(0)
+  seen.cleared = [cleared.below, Math.abs(cleared.top - unfiltered.top) < 0.5]
+  seen.panelBack = cleared.panel !== null && Math.abs(cleared.panel - cleared.top) < 1
+  await page.click('.table-panel button[aria-label="Sort by n"]')
+  await waitFor(async () => (await caption(page, 0))?.includes("sorted") === true)
+  const sorted = await level(0)
+  seen.sorted = [sorted.below, sorted.beside]
+  await page.click('.table-panel button[aria-label="Sort by n"]')
+  await page.click('.table-panel button[aria-label="Sort by n"]')
+  await page.click('.table-panel label:has-text("city") input')
+  await waitFor(async () => (await caption(page, 0))?.includes("hidden") === true)
+  const hidden = await level(0)
+  seen.hidden = [hidden.below, hidden.beside]
+  await page.click('.table-panel label:has-text("city") input')
+  await page.fill('.table-panel input[aria-label="Filter rows"]', "Rome")
+  await waitFor(async () => (await caption(page, 0)) === "13 of 40 rows")
+  const away = await page.$eval(".markdown-body table >> nth=1 >> th >> nth=0", (th) => {
+    const box = th.getBoundingClientRect()
+    return {
+      x: box.left + box.width / 2,
+      y: box.top + box.height / 2,
+      shown: box.bottom < innerHeight,
+    }
+  })
+  await page.mouse.move(away.x, away.y)
+  await page.fill('.table-panel input[aria-label="Filter rows"]', "")
+  await waitFor(async () => (await caption(page, 0)) === null)
+  seen.pointerAway =
+    away.shown &&
+    (await page.evaluate(() => {
+      const panel = (document.querySelector(".table-panel") as HTMLElement).getBoundingClientRect()
+      const head = (
+        document.querySelectorAll<HTMLTableElement>(".markdown-body table")[0].tHead as HTMLElement
+      ).getBoundingClientRect()
+      return Math.round((panel.top - head.top) * 100) / 100
+    }))
+  await page.keyboard.press("Escape")
+
+  await sight(1)
+  await page.click(".table-control")
+  await page.waitForSelector(".table-panel:not([hidden])")
+  await page.fill('.table-panel input[aria-label="Filter rows"]', "x1")
+  await waitFor(async () => (await caption(page, 1)) !== null)
+  const wideFiltered = await level(1)
+  seen.wideFiltered = [wideFiltered.below, wideFiltered.inside, wideFiltered.pinned]
+  await page.keyboard.press("Escape")
+
+  await sight(2)
+  const long = await level(2)
+  seen.long = [long.below, long.pinned, await caption(page, 2)]
+  await panel(page, 2)
+  await page.fill('.table-panel input[aria-label="Filter rows"]', "run")
+  await page.keyboard.press("Escape")
+  await scrollPast(page, 2, 400)
+  const head = await page.$eval(".markdown-body table >> nth=2 >> th >> nth=1", (th) => {
+    const box = th.getBoundingClientRect()
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 }
+  })
+  await page.mouse.move(head.x, head.y)
+  await page.waitForSelector(".table-control:not([hidden])")
+  const pinned = await level(2)
+  seen.pinned = [pinned.below, pinned.pinned]
+  await page.close()
+
+  const headless = await open("level/tables.md")
+  await headless.evaluate(() => {
+    const box = document.querySelectorAll(".markdown-body table")[3].getBoundingClientRect()
+    scrollTo(0, Math.round(scrollY + box.top - 200))
+  })
+  await headless.hover(".markdown-body table >> nth=3 >> td >> nth=0")
+  await headless.click(".table-control")
+  await headless.fill('.table-panel input[aria-label="Filter rows"]', "row")
+  await waitFor(async () => (await caption(headless, 3)) !== null)
+  seen.noHeader = await headless.evaluate(() => {
+    const control = (
+      document.querySelector(".table-control") as HTMLElement
+    ).getBoundingClientRect()
+    const body = document.querySelectorAll<HTMLTableElement>(".markdown-body table")[3].tBodies[0]
+    return Math.round((control.top - body.getBoundingClientRect().top) * 100) / 100
+  })
+  await headless.close()
+
+  const data = await openData("level/forty.csv")
+  await data.waitForSelector(".data-page table")
+  await data.hover(".data-page table")
+  await data.click(".table-control")
+  await data.fill('.table-panel input[aria-label="Filter city"]', "Oslo")
+  await data.waitForSelector(".table-status")
+  seen.dataPage = await data.evaluate(() => {
+    const control = (
+      document.querySelector(".table-control") as HTMLElement
+    ).getBoundingClientRect()
+    const head = (
+      document.querySelector(".data-page table") as HTMLTableElement
+    ).tHead?.getBoundingClientRect() as DOMRect
+    return Math.round((control.top - head.top) * 100) / 100
+  })
+  await data.close()
+
+  assert.deepEqual(seen, {
+    narrowUnfiltered: [1, 0.5, false],
+    narrowFiltered: [1, 0.5, true, false, "27 of 40 rows"],
+    moved: true,
+    panelWithButton: true,
+    cleared: [1, true],
+    panelBack: true,
+    sorted: [1, 0.5],
+    hidden: [1, 0.5],
+    pointerAway: 1,
+    wideFiltered: [1, true, false],
+    long: [1, false, "120 rows"],
+    pinned: [1, true],
+    noHeader: 1,
+    dataPage: 1,
+  })
+})
+
+test("Equal only, Case and spaces, Contains, Before the closing quote, Filter rows, Two fields, Data page, Address, Frozen page, Hint: a filter in quotes keeps only cells equal to it", async () => {
+  write({
+    "quotes/statuses.md": [
+      "# Statuses",
+      "| city | status |\n|---|---|\n| Oslo | open |\n| Lima | reopened |\n| Rome | closed |\n| Oslo | OPEN |\n| Bergen | open |",
+      "<table><thead><tr><th>name</th><th>state</th><th>a much longer column name</th></tr></thead><tbody><tr><td>ada</td><td> Open </td><td>x</td></tr><tr><td>bob</td><td>reopened</td><td>y</td></tr></tbody></table>",
+    ].join("\n\n"),
+    "quotes/stations.csv": `n,station\n${Array.from({ length: 6000 }, (_, i) => `${i},${["north", "northeast", "south"][i % 3]}`).join("\n")}\n`,
+  })
+  const page = await open("quotes/statuses.md")
+  const seen: Record<string, unknown> = {}
+  const status = '.table-panel input[aria-label="Filter status"]'
+
+  await panel(page, 0)
+  seen.hint = await page.$$eval(".table-panel input[type=text]", (fields) =>
+    fields.map((field) => (field as HTMLInputElement).placeholder),
+  )
+  await page.fill(status, '"open"')
+  seen.equal = await cells(page, 0, 0)
+  await page.fill(status, '"OPEN"')
+  seen.caseOf = await cells(page, 0, 0)
+  await page.fill(status, "open")
+  seen.contains = await cells(page, 0, 0)
+  await page.fill(status, '"op')
+  seen.unclosed = await cells(page, 0, 0)
+  await page.fill(status, "")
+  await page.fill('.table-panel input[aria-label="Filter rows"]', '"Oslo"')
+  seen.rows = await cells(page, 0, 1)
+  await page.fill('.table-panel input[aria-label="Filter rows"]', "")
+  await page.fill(status, '"open"')
+  await page.fill('.table-panel input[aria-label="Filter city"]', "Os")
+  seen.both = [await cells(page, 0, 0), await caption(page, 0)]
+  await page.waitForSelector(".table-values:not([hidden])")
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("Escape")
+
+  await panel(page, 1)
+  seen.longHint = await page.$eval(
+    '.table-panel input[aria-label="Filter a much longer column name"]',
+    (field) => (field as HTMLInputElement).placeholder,
+  )
+  await page.fill('.table-panel input[aria-label="Filter state"]', '"open"')
+  seen.spaces = await cells(page, 1, 0)
+  await page.keyboard.press("Escape")
+
+  const address = page.url()
+  const again = await context.newPage()
+  await again.goto(address)
+  await again.waitForSelector(".markdown-body table caption")
+  seen.address = await cells(again, 0, 0)
+  await again.close()
+
+  await page.goto(`${base}/quotes/statuses.md`)
+  await page.waitForSelector(".markdown-body table")
+  await page.waitForTimeout(300)
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.click('button[title="Freeze this page into one HTML file"]'),
+  ])
+  const saved = path.join(path.dirname(root), `folio-quotes-${process.pid}.html`)
+  await download.saveAs(saved)
+  await page.close()
+  const frozen = await context.newPage()
+  await frozen.goto(`file://${saved}`)
+  await frozen.waitForSelector(".markdown-body table")
+  await panel(frozen, 0)
+  await frozen.fill(status, '"open"')
+  seen.frozen = await cells(frozen, 0, 0)
+  await frozen.close()
+  fs.rmSync(saved)
+
+  const data = await openData("quotes/stations.csv")
+  await data.waitForSelector(".data-page > table > tbody > tr")
+  await data.hover(".data-page > table")
+  await data.click(".table-control")
+  await data.fill('.table-panel input[aria-label="Filter station"]', '"north"')
+  await data.waitForSelector(".data-page > table caption:has-text('of 6000 rows')")
+  seen.dataPage = await data.$eval(
+    ".data-page > table caption .table-count",
+    (shown) => shown.textContent,
+  )
+  await data.fill('.table-panel input[aria-label="Filter station"]', "north")
+  await data.waitForSelector(".data-page > table caption:has-text('4000 of 6000 rows')")
+  await data.fill('.table-panel input[aria-label="Filter station"]', "")
+  await data.waitForSelector(".data-page > table caption", { state: "detached" })
+  await data.keyboard.press("Escape")
+  await data.click('.data-switch:has-text("Records")')
+  await data.hover(".data-page table.data-list")
+  await data.click(".table-control")
+  await data.fill('.table-panel input[aria-label="Filter rows"]', '"north"')
+  await data.waitForSelector(".data-page table.data-list caption:has-text('0 of 6000 rows')")
+  seen.records = await data.$eval(
+    ".data-page table.data-list caption .table-count",
+    (shown) => shown.textContent,
+  )
+  await data.close()
+
+  assert.deepEqual(seen, {
+    hint: ["", "", ""],
+    equal: ["Oslo", "Oslo", "Bergen"],
+    caseOf: ["Oslo", "Oslo", "Bergen"],
+    contains: ["Oslo", "Lima", "Oslo", "Bergen"],
+    unclosed: ["Oslo", "Lima", "Oslo", "Bergen"],
+    rows: ["open", "OPEN"],
+    both: [["Oslo", "Oslo"], "2 of 5 rows"],
+    longHint: "",
+    spaces: ["ada"],
+    address: ["Oslo", "Oslo"],
+    frozen: ["Oslo", "Oslo", "Bergen"],
+    dataPage: "2000 of 6000 rows",
+    records: "0 of 6000 rows",
+  })
+})
+
+test("Few values, Pick, Equal only, Narrowing, Keyboard, Other filters, Many values, Filter rows, Data page, Escape, Frozen page: a column with few values offers them as you filter it", async () => {
+  const rows = [
+    ["Oslo", "open"],
+    ["Lima", "closed"],
+    ["Oslo", "waiting"],
+    ["Rome", "open"],
+    ["Oslo", "reopened"],
+    ["Lima", "open"],
+    ["Oslo", "closed"],
+    ["Rome", "open"],
+    ["Lima", "waiting"],
+    ["Oslo", "open"],
+    ["Rome", "closed"],
+    ["Lima", "reopened"],
+    ["Oslo", "open"],
+    ["Rome", "waiting"],
+  ]
+  const few = (lines: string[][]) =>
+    `# Few\n\n| city | status | code |\n|---|---|---|\n${lines.map(([city, status], i) => `| ${city} | ${status} | c${i + 1} |`).join("\n")}\n\n| mode |\n|---|\n| "auto" |\n| manual |\n| auto |\n| manual |\n`
+  write({
+    "values/few.md": few(rows),
+    "values/kinds.csv": `n,kind\n${Array.from({ length: 6000 }, (_, i) => `${i},${i % 1000 === 999 ? "rare" : `k${i % 10}`}`).join("\n")}\n`,
+  })
+  const listed = (shown: Page) =>
+    shown.evaluate(() => {
+      const list = document.querySelector(".table-values") as HTMLElement | null
+      return list && !list.hidden
+        ? [...list.querySelectorAll(".table-value")].map((option) =>
+            [...option.children].map((part) => part.textContent).join(" "),
+          )
+        : null
+    })
+  const opened = async (shown: Page) => {
+    await waitFor(async () => (await listed(shown)) !== null)
+    return listed(shown)
+  }
+  const none = async (shown: Page) => {
+    await shown.waitForTimeout(400)
+    return listed(shown)
+  }
+  const status = '.table-panel input[aria-label="Filter status"]'
+  const city = '.table-panel input[aria-label="Filter city"]'
+  const code = '.table-panel input[aria-label="Filter code"]'
+  const seen: Record<string, unknown> = {}
+  const page = await open("values/few.md")
+
+  await panel(page, 0)
+  await page.click('.table-panel input[aria-label="Filter rows"]')
+  seen.filterRows = await none(page)
+  await page.click(status)
+  seen.few = [await opened(page), await page.getAttribute(status, "aria-expanded")]
+  await page.click('.table-value:has-text("closed")')
+  await waitFor(async () => (await page.inputValue(status)) === '"closed"')
+  seen.pick = [await listed(page), await cells(page, 0, 0)]
+  await page.fill(status, "")
+  await page.click('.table-value:has-text("open") >> nth=0')
+  await waitFor(async () => (await page.inputValue(status)) === '"open"')
+  seen.equal = await cells(page, 0, 1)
+  await page.fill(status, "")
+  await page.keyboard.type("cl")
+  seen.narrowing = await opened(page)
+  await page.fill(status, "")
+  await opened(page)
+  await page.keyboard.press("ArrowDown")
+  await page.keyboard.press("ArrowDown")
+  const second = await page.getAttribute(status, "aria-activedescendant")
+  await page.keyboard.press("ArrowUp")
+  const first = await page.getAttribute(status, "aria-activedescendant")
+  await page.keyboard.press("Enter")
+  await waitFor(async () => (await page.inputValue(status)) === '"open"')
+  seen.keyboard = [second, first, await listed(page), (await cells(page, 0, 1)).length]
+  await page.fill(status, "")
+  await page.fill(city, '"Oslo"')
+  await page.click(status)
+  seen.others = await opened(page)
+  await page.keyboard.press("Escape")
+  await page.click(code)
+  seen.fewerCodes = (await opened(page))?.length
+  await page.fill(city, "")
+  await page.click(code)
+  seen.manyCodes = await none(page)
+  await page.evaluate(() => {
+    document.addEventListener(
+      "keydown",
+      (event) => {
+        document.body.dataset.arrow = String(event.defaultPrevented)
+      },
+      { once: true },
+    )
+  })
+  await page.keyboard.press("ArrowDown")
+  seen.arrowKept = await page.evaluate(() => document.body.dataset.arrow)
+  await page.click(status)
+  await opened(page)
+  await page.keyboard.press("Escape")
+  seen.escape = [await listed(page), await page.isVisible(".table-panel")]
+  await page.keyboard.press("Escape")
+  seen.escape2 = await page.isVisible(".table-panel")
+  await panel(page, 1)
+  await page.click('.table-panel input[aria-label="Filter mode"]')
+  seen.quoted = await opened(page)
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("Escape")
+  await panel(page, 0)
+  await page.click(status)
+  await opened(page)
+  write({ "values/few.md": few([...rows, ["Oslo", "paused"]]) })
+  await waitFor(async () => (await listed(page))?.includes("paused 1") === true)
+  seen.saved = await listed(page)
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("Escape")
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.click('button[title="Freeze this page into one HTML file"]'),
+  ])
+  const saved = path.join(path.dirname(root), `folio-values-${process.pid}.html`)
+  await download.saveAs(saved)
+  await page.close()
+  const frozen = await context.newPage()
+  await frozen.goto(`file://${saved}`)
+  await frozen.waitForSelector(".markdown-body table")
+  await panel(frozen, 0)
+  await frozen.click(status)
+  seen.frozen = await opened(frozen)
+  await frozen.close()
+  fs.rmSync(saved)
+
+  const data = await openData("values/kinds.csv")
+  await data.waitForSelector(".data-page > table > tbody > tr")
+  await data.hover(".data-page > table")
+  await data.click(".table-control")
+  await data.click('.table-panel input[aria-label="Filter kind"]')
+  seen.dataPage = await opened(data)
+  await data.click('.table-value:has-text("rare")')
+  await data.waitForSelector(".data-page > table caption:has-text('6 of 6000 rows')")
+  await data.keyboard.press("Escape")
+  await data.click('.data-switch:has-text("Records")')
+  await data.hover(".data-page table.data-list")
+  await data.click(".table-control")
+  await data.click('.table-panel input[aria-label="Filter record"]')
+  seen.records = await none(data)
+  await data.close()
+
+  assert.deepEqual(seen, {
+    filterRows: null,
+    few: [["open 6", "closed 3", "waiting 3", "reopened 2"], "true"],
+    pick: [null, ["Lima", "Oslo", "Rome"]],
+    equal: ["open", "open", "open", "open", "open", "open"],
+    narrowing: ["closed 3"],
+    keyboard: ["table-value-1", "table-value-0", null, 6],
+    others: ["open 3", "closed 1", "reopened 1", "waiting 1"],
+    fewerCodes: 6,
+    manyCodes: null,
+    arrowKept: "false",
+    escape: [null, true],
+    escape2: false,
+    quoted: ["manual 2", '"auto" 1', "auto 1"],
+    saved: ["open 6", "closed 3", "waiting 3", "reopened 2", "paused 1"],
+    frozen: ["open 6", "closed 3", "waiting 3", "reopened 2", "paused 1"],
+    dataPage: [
+      "k0 600",
+      "k1 600",
+      "k2 600",
+      "k3 600",
+      "k4 600",
+      "k5 600",
+      "k6 600",
+      "k7 600",
+      "k8 600",
+      "k9 594",
+      "rare 6",
+    ],
+    records: null,
+  })
+})
+
+test("Header sort, Everything at once, Panel sort, Address, Data page: Show as written clears the sort too", async () => {
+  write({
+    "reset/daily.md":
+      "# Daily\n\n| date | station | rain_mm |\n|---|---|---|\n| 2026-10-01 | north | 4 |\n| 2026-10-02 | south | 0 |\n| 2026-10-03 | east | 9 |\n| 2026-10-04 | north | 1 |\n",
+    "reset/daily.csv": `n,rain_mm\n${Array.from({ length: 1000 }, (_, i) => `${i},${(i * 37) % 100}`).join("\n")}\n`,
+  })
+  const seen: Record<string, unknown> = {}
+  const shown = async (page: Page) => ({
+    dates: await cells(page, 0, 0),
+    arrows: await page.$$eval(".markdown-body th.sorted", (headers) => headers.length),
+    columns: await page.$$eval(
+      ".markdown-body table >> nth=0 >> thead th",
+      (headers) => headers.filter((header) => !(header as HTMLElement).hidden).length,
+    ),
+    caption: await caption(page, 0),
+  })
+  const reset = (page: Page) => page.click(".table-panel .table-reset")
+  const page = await open("reset/daily.md")
+
+  await page.click(".markdown-body th:has-text('rain_mm')")
+  await page.click(".markdown-body th:has-text('rain_mm')")
+  await panel(page, 0)
+  await reset(page)
+  seen.header = await shown(page)
+  await page.keyboard.press("Escape")
+
+  await page.click(".markdown-body th:has-text('station')")
+  await panel(page, 0)
+  await page.fill('.table-panel input[aria-label="Filter station"]', "north")
+  await page.keyboard.press("Escape")
+  await page.uncheck('.table-panel label:has-text("rain_mm") input')
+  await reset(page)
+  seen.everything = await shown(page)
+
+  await page.click('.table-panel button[title="Sort by station"]')
+  await reset(page)
+  seen.panelSort = await shown(page)
+  await page.keyboard.press("Escape")
+
+  const again = await context.newPage()
+  await again.goto(page.url())
+  await again.waitForSelector(".markdown-body table")
+  await again.waitForTimeout(300)
+  seen.address = [new URL(page.url()).searchParams.has("view"), await shown(again)]
+  await again.close()
+  await page.close()
+
+  const data = await openData("reset/daily.csv")
+  const firstRows = () => cells(data, 0, 0).then((found) => found.slice(0, 3))
+  const after = async (want: string[]) => {
+    for (let i = 0; i < 50 && JSON.stringify(await firstRows()) !== JSON.stringify(want); i++) {
+      await data.waitForTimeout(100)
+    }
+    return firstRows()
+  }
+
+  await data.waitForSelector(".data-page > table > tbody > tr")
+  await data.click(".outline .data-field:has(.data-field-name:text-is('rain_mm'))")
+  await data.click('.outline .data-field-detail button:has-text("Largest first")')
+  await waitFor(async () => (await cells(data, 0, 1))[0] === "99")
+  await data.hover(".data-page > table")
+  await data.click(".table-control")
+  await reset(data)
+  seen.dataPage = await after(["0", "1", "2"])
+  await data.close()
+
+  const asWritten = {
+    dates: ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04"],
+    arrows: 0,
+    columns: 3,
+    caption: null,
+  }
+  assert.deepEqual(seen, {
+    header: asWritten,
+    everything: asWritten,
+    panelSort: asWritten,
+    address: [false, asWritten],
+    dataPage: ["0", "1", "2"],
+  })
+})
+
+test("Empty fields, Note, Any column, Narrow panel, Typing, Records view, Data page, Frozen page: a table's filter fields start empty under one note on quotes", async () => {
+  write({
+    "empty/stations.md": [
+      "# Stations",
+      "| date | station | rain_mm |\n|---|---|---|\n| 2026-10-01 | north | 4 |\n| 2026-10-02 | south | 0 |\n| 2026-10-03 | north | 9 |",
+      "| a very long column name for a station | another very long column name for rain |\n|---|---|\n| north | 1 |",
+    ].join("\n\n"),
+    "empty/rows.csv": "station,rain_mm\nnorth,1\nsouth,2\n",
+  })
+  const panelOf = (page: Page) =>
+    page.evaluate(() => {
+      const shown = document.querySelector(".table-panel") as HTMLElement
+      const top = (selector: string) => shown.querySelector(selector)?.getBoundingClientRect().top
+      const any = [...shown.querySelectorAll("*")].find(
+        (element) => element.children.length === 0 && element.textContent === "Any column",
+      )
+      const name = shown.querySelector("li label")
+      return {
+        fields: [...shown.querySelectorAll<HTMLInputElement>("input[type=text]")].map(
+          (field) => `${field.getAttribute("aria-label")}:${field.placeholder}${field.value}`,
+        ),
+        notes: [...shown.querySelectorAll(".table-note")].map((note) => note.textContent),
+        noteFirst: shown.firstElementChild?.classList.contains("table-note") ?? false,
+        anyAbove:
+          !!any &&
+          any.getBoundingClientRect().bottom <=
+            (top('input[aria-label="Filter rows"]') ?? Number.NEGATIVE_INFINITY),
+        anyLikeNames:
+          !!any &&
+          !!name &&
+          getComputedStyle(any).font === getComputedStyle(name).font &&
+          getComputedStyle(any).color === getComputedStyle(name).color,
+      }
+    })
+  const muted = (page: Page) =>
+    page.evaluate(() => {
+      const note = document.querySelector(".table-panel .table-note")
+      return (
+        !!note &&
+        getComputedStyle(note).color !==
+          getComputedStyle(note.closest(".table-panel") as Element).color
+      )
+    })
+  const seen: Record<string, unknown> = {}
+  const page = await open("empty/stations.md")
+
+  await panel(page, 0)
+  seen.panel = await panelOf(page)
+  seen.muted = await muted(page)
+  await page.fill('.table-panel input[aria-label="Filter station"]', '"north"')
+  seen.typing = await cells(page, 0, 0)
+  await page.fill('.table-panel input[aria-label="Filter station"]', "")
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("Escape")
+  await panel(page, 1)
+  seen.narrow = await panelOf(page)
+  await page.keyboard.press("Escape")
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.click('button[title="Freeze this page into one HTML file"]'),
+  ])
+  const saved = path.join(path.dirname(root), `folio-empty-${process.pid}.html`)
+  await download.saveAs(saved)
+  await page.close()
+  const frozen = await context.newPage()
+  await frozen.goto(`file://${saved}`)
+  await frozen.waitForSelector(".markdown-body table")
+  await panel(frozen, 0)
+  seen.frozen = await panelOf(frozen)
+  await frozen.close()
+  fs.rmSync(saved)
+
+  const data = await openData("empty/rows.csv")
+  await data.waitForSelector(".data-page > table > tbody > tr")
+  await data.hover(".data-page > table")
+  await data.click(".table-control")
+  seen.dataPage = await panelOf(data)
+  await data.keyboard.press("Escape")
+  await data.click('.data-switch:has-text("Records")')
+  await data.hover(".data-page table.data-list")
+  await data.click(".table-control")
+  seen.records = await panelOf(data)
+  await data.close()
+
+  const stations = {
+    fields: ["Filter rows:", "Filter date:", "Filter station:", "Filter rain_mm:"],
+    notes: ['"in quotes" = whole cell · * any text · ? one character · | or · \\ escapes'],
+    noteFirst: true,
+    anyAbove: true,
+    anyLikeNames: true,
+  }
+  assert.deepEqual(seen, {
+    panel: stations,
+    muted: true,
+    typing: ["2026-10-01", "2026-10-03"],
+    narrow: {
+      ...stations,
+      fields: [
+        "Filter rows:",
+        "Filter a very long column name for a station:",
+        "Filter another very long column name for rain:",
+      ],
+    },
+    frozen: stations,
+    dataPage: { ...stations, fields: ["Filter rows:", "Filter station:", "Filter rain_mm:"] },
+    records: {
+      fields: ["Filter rows:", "Filter record:"],
+      notes: [],
+      noteFirst: false,
+      anyAbove: true,
+      anyLikeNames: true,
+    },
+  })
+})
+
+test("Quote at the start, Equal, quotes inside, Quotes kept, Backslash, Literal backslash, Contains a pattern, Starts with, Ends with, One character, Literal star, Case, Several values, Patterns as values, Mixed values, Literal bar, Filter rows, Pick, Alt+pick, Value with a quote, Narrowing, Data page, Records view, Frozen page, Address, Note: a filter reads escapes, wildcards and several values", async () => {
+  write({
+    "patterns/stations.md": [
+      "# Stations",
+      "| station | status | note |",
+      "|---|---|---|",
+      '| north | open | say "hi" |',
+      '| south | review | "open" |',
+      '| east | closed | {"id": 3} |',
+      "| ninth | reopened | C:\\Users |",
+      "| month | open | a\\b |",
+      "| north | review | 5*3 |",
+      "| south | closed | a\\|b |",
+    ].join("\n"),
+    "patterns/stations.csv": `n,station\n${Array.from({ length: 6000 }, (_, i) => `${i},${["north", "northeast", "south"][i % 3]}`).join("\n")}\n`,
+  })
+  const listed = (shown: Page) =>
+    shown.evaluate(() => {
+      const list = document.querySelector(".table-values") as HTMLElement | null
+      return list && !list.hidden
+        ? [...list.querySelectorAll(".table-value")].map((option) => option.children[0].textContent)
+        : null
+    })
+  const station = '.table-panel input[aria-label="Filter station"]'
+  const status = '.table-panel input[aria-label="Filter status"]'
+  const note = '.table-panel input[aria-label="Filter note"]'
+  const seen: Record<string, unknown> = {}
+  const page = await open("patterns/stations.md")
+  const kept = async (field: string, typed: string) => {
+    await page.fill(field, typed)
+    const found = await cells(page, 0, 0)
+    await page.fill(field, "")
+    return found
+  }
+
+  await panel(page, 0)
+  seen.note = await page.textContent(".table-panel .table-note")
+  seen.quoteAtStart = await kept(note, '\\"id')
+  seen.equalQuotesInside = await kept(note, '"say \\"hi\\""')
+  seen.quotesKept = await kept(note, '\\"open\\"')
+  seen.backslash = await kept(note, "C:\\Users")
+  seen.literalBackslash = await kept(note, "a\\\\b")
+  seen.pattern = await kept(station, "n*th")
+  seen.startsWith = await kept(station, "no*")
+  seen.endsWith = await kept(station, "*th")
+  seen.oneCharacter = await kept(station, "s?uth")
+  seen.literalStar = await kept(note, "5\\*3")
+  seen.caseOf = await kept(station, "NO*")
+  seen.quotedStar = await kept(station, '"no*"')
+  seen.severalValues = await kept(status, '"open" | "review"')
+  seen.patternsAsValues = await kept(status, "op* | rev*")
+  seen.mixed = await kept(status, '"open" | clo')
+  seen.literalBar = await kept(note, "a\\|b")
+  seen.filterRows = await kept('.table-panel input[aria-label="Filter rows"]', '"north" | "south"')
+
+  await page.click(status)
+  await waitFor(async () => (await listed(page)) !== null)
+  await page.click('.table-value:has-text("open") >> nth=0')
+  await waitFor(async () => (await page.inputValue(status)) === '"open"')
+  seen.pick = [await page.inputValue(status), await listed(page)]
+  await page.click(status)
+  await waitFor(async () => (await listed(page)) !== null)
+  await page.click('.table-value:has-text("review")', { modifiers: ["Alt"] })
+  await waitFor(async () => (await page.inputValue(status)) === '"open" | "review"')
+  await page.click('.table-value:has-text("review")', { modifiers: ["Alt"] })
+  await page.waitForTimeout(300)
+  seen.altPick = [
+    await page.inputValue(status),
+    (await listed(page)) !== null,
+    await cells(page, 0, 0),
+  ]
+  await page.keyboard.press("Escape")
+  await page.fill(status, '"OPEN"')
+  await page.keyboard.press("Escape")
+  await page.click(status)
+  await waitFor(async () => (await listed(page)) !== null)
+  await page.click('.table-value:has-text("open") >> nth=0', { modifiers: ["Alt"] })
+  await page.waitForTimeout(300)
+  seen.altPickCase = await page.inputValue(status)
+  await page.keyboard.press("Escape")
+  await page.fill(status, "")
+  await page.keyboard.press("Escape")
+  await page.click(note)
+  await waitFor(async () => (await listed(page)) !== null)
+  seen.listedQuote = (await listed(page))?.includes('say "hi"')
+  await page.click('.table-value:has-text("say")')
+  await waitFor(async () => (await page.inputValue(note)) !== "")
+  seen.quotePick = [await page.inputValue(note), await cells(page, 0, 0)]
+  await page.fill(note, "")
+  await page.keyboard.press("Escape")
+  await page.click(status)
+  await page.keyboard.type("o*")
+  await page.waitForTimeout(300)
+  seen.narrowing = await listed(page)
+  await page.keyboard.press("Escape")
+  await page.fill(status, "")
+  await page.keyboard.press("Escape")
+  await page.fill(station, "n*th")
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("Escape")
+
+  const again = await context.newPage()
+  await again.goto(page.url())
+  await again.waitForSelector(".markdown-body table caption")
+  seen.address = await cells(again, 0, 0)
+  await again.close()
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.click('button[title="Freeze this page into one HTML file"]'),
+  ])
+  const saved = path.join(path.dirname(root), `folio-patterns-${process.pid}.html`)
+  await download.saveAs(saved)
+  await page.close()
+  const frozen = await context.newPage()
+  await frozen.goto(`file://${saved}`)
+  await frozen.waitForSelector(".markdown-body table")
+  await panel(frozen, 0)
+  await frozen.fill(station, "n*th")
+  seen.frozen = await cells(frozen, 0, 0)
+  await frozen.close()
+  fs.rmSync(saved)
+
+  const data = await openData("patterns/stations.csv")
+  await data.waitForSelector(".data-page > table > tbody > tr")
+  await data.hover(".data-page > table")
+  await data.click(".table-control")
+  await data.fill(station, "no*")
+  await data.waitForSelector(".data-page > table caption:has-text('of 6000 rows')")
+  seen.dataPage = await data.$eval(
+    ".data-page > table caption .table-count",
+    (shown) => shown.textContent,
+  )
+  await data.fill(station, "")
+  await data.waitForSelector(".data-page > table caption", { state: "detached" })
+  await data.keyboard.press("Escape")
+  await data.click('.data-switch:has-text("Records")')
+  await data.hover(".data-page table.data-list")
+  await data.click(".table-control")
+  await data.fill('.table-panel input[aria-label="Filter rows"]', '"no*"')
+  await data.waitForSelector(".data-page table.data-list caption:has-text('of 6000 rows')")
+  seen.records = await data.$eval(
+    ".data-page table.data-list caption .table-count",
+    (shown) => shown.textContent,
+  )
+  await data.close()
+
+  assert.deepEqual(seen, {
+    note: '"in quotes" = whole cell · * any text · ? one character · | or · \\ escapes',
+    quoteAtStart: ["east"],
+    equalQuotesInside: ["north"],
+    quotesKept: ["south"],
+    backslash: ["ninth"],
+    literalBackslash: ["month"],
+    pattern: ["north", "ninth", "north"],
+    startsWith: ["north", "north"],
+    endsWith: ["north", "south", "ninth", "month", "north", "south"],
+    oneCharacter: ["south", "south"],
+    literalStar: ["north"],
+    caseOf: ["north", "north"],
+    quotedStar: [],
+    severalValues: ["north", "south", "month", "north"],
+    patternsAsValues: ["north", "south", "month", "north"],
+    mixed: ["north", "east", "month", "south"],
+    literalBar: ["south"],
+    filterRows: ["north", "south", "north", "south"],
+    pick: ['"open"', null],
+    altPick: ['"open" | "review"', true, ["north", "south", "month", "north"]],
+    altPickCase: '"OPEN"',
+    listedQuote: true,
+    quotePick: ['"say \\"hi\\""', ["north"]],
+    narrowing: ["open"],
+    address: ["north", "ninth", "north"],
+    frozen: ["north", "ninth", "north"],
+    dataPage: "4000 of 6000 rows",
+    records: "0 of 6000 rows",
+  })
+})
+
+test("New sort, Reverse, then off, Replace, Add a level, A level reversed, A level leaves, A middle level leaves, Click on a level, Keyboard, Panel buttons, Side panel, Line above the table, Data page, Show as written, Address, Earlier address, Frozen page: a table sorts by several columns", async () => {
+  write({
+    "levels/daily.md":
+      "# Daily\n\n| date | station | rain_mm |\n|---|---|---|\n| 2026-10-01 | north | 4 |\n| 2026-10-02 | south | 0 |\n| 2026-10-03 | north | 9 |\n| 2026-10-04 | south | 2 |\n| 2026-10-05 | north | 4 |\n",
+    "levels/daily.csv": `n,station,date,rain_mm\n${Array.from({ length: 1000 }, (_, i) => `${i},${["north", "south", "east"][i % 3]},2026-10-${String((i % 28) + 1).padStart(2, "0")},${(i * 37) % 100}`).join("\n")}\n`,
+  })
+  const seen: Record<string, unknown> = {}
+  const header = (name: string) => `.markdown-body table >> nth=0 >> th:has-text('${name}')`
+  const state = async (page: Page) => ({
+    dates: await cells(page, 0, 0),
+    levels: await page.$$eval(".markdown-body table >> nth=0 >> thead th", (headers) =>
+      headers.map((th) => (th as HTMLElement).dataset.level ?? ""),
+    ),
+    caption: await caption(page, 0),
+  })
+  const page = await open("levels/daily.md")
+
+  await page.click(header("station"))
+  seen.newSort = await state(page)
+  await page.click(header("station"))
+  seen.reverse = (await state(page)).dates
+  await page.click(header("station"))
+  seen.off = await state(page)
+  await page.click(header("station"))
+  await page.click(header("rain_mm"))
+  seen.replace = await state(page)
+  await page.click(header("station"))
+  await page.click(header("rain_mm"), { modifiers: ["Alt"] })
+  seen.addLevel = await state(page)
+  await page.click(header("rain_mm"), { modifiers: ["Alt"] })
+  seen.levelReversed = await state(page)
+
+  const address = page.url()
+  await page.click(header("rain_mm"), { modifiers: ["Alt"] })
+  seen.levelLeaves = await state(page)
+  await page.click(header("date"), { modifiers: ["Alt"] })
+  await page.click(header("rain_mm"), { modifiers: ["Alt"] })
+  await page.click(header("date"), { modifiers: ["Alt"] })
+  await page.click(header("date"), { modifiers: ["Alt"] })
+  seen.middleLeaves = await state(page)
+  await page.click(header("rain_mm"))
+  seen.clickOnLevel = await state(page)
+  await page.click(header("station"))
+  await page.focus(header("rain_mm"))
+  await page.keyboard.press("Alt+Enter")
+  seen.keyboard = await state(page)
+  await page.click(header("station"))
+  // Option+Space on a Mac types a no-break space, so its key is that and only its code is Space.
+  await page.$eval(header("rain_mm"), (th) =>
+    th.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "\u00a0", code: "Space", altKey: true, bubbles: true }),
+    ),
+  )
+  seen.optionSpace = (await state(page)).levels
+  await page.click(header("station"))
+  await panel(page, 0)
+  await page.click('.table-panel button[title="Sort by rain_mm"]', { modifiers: ["Alt"] })
+  seen.panelButtons = await state(page)
+  await page.click(".table-panel .table-reset")
+  seen.showAsWritten = await state(page)
+  await page.keyboard.press("Escape")
+
+  const again = await context.newPage()
+  await again.goto(address)
+  await again.waitForSelector(".markdown-body table caption")
+  seen.address = await state(again)
+  const id = await again.$eval(
+    ".markdown-body > table",
+    (table) => (table as HTMLElement).dataset.folioId as string,
+  )
+  const earlier = {
+    [`levels/daily.md#^${id}`]: {
+      sort: { column: "rain_mm", descending: true },
+      filter: "",
+      columns: {},
+      hidden: [],
+      expanded: false,
+    },
+  }
+  await again.goto(
+    `${base}/levels/daily.md?view=${Buffer.from(JSON.stringify(earlier)).toString("base64url")}`,
+  )
+  await again.waitForSelector(".markdown-body table caption")
+  seen.earlierAddress = await state(again)
+  await again.close()
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.click('button[title="Freeze this page into one HTML file"]'),
+  ])
+  const saved = path.join(path.dirname(root), `folio-levels-${process.pid}.html`)
+  await download.saveAs(saved)
+  await page.close()
+  const frozen = await context.newPage()
+  await frozen.goto(`file://${saved}`)
+  await frozen.waitForSelector(".markdown-body table")
+  await frozen.click(header("station"))
+  await frozen.click(header("rain_mm"), { modifiers: ["Alt"] })
+  seen.frozen = await state(frozen)
+  await frozen.close()
+  fs.rmSync(saved)
+
+  const data = await openData("levels/daily.csv")
+  const first = () => cells(data, 0, 0).then((found) => found.slice(0, 3))
+  const settle = async (want: string[]) => {
+    for (let i = 0; i < 50 && JSON.stringify(await first()) !== JSON.stringify(want); i++) {
+      await data.waitForTimeout(100)
+    }
+    return first()
+  }
+  await data.waitForSelector(".data-page > table > tbody > tr")
+  await data.click(".data-page > table th:has-text('station')")
+  await data.click(".data-page > table th:has-text('date')", { modifiers: ["Alt"] })
+  seen.dataPage = await settle(["56", "140", "224"])
+  const field = (name: string) =>
+    data.click(`.outline .data-field:has(.data-field-name:text-is('${name}'))`)
+  await field("station")
+  await data.click('.outline .data-field-detail button:has-text("Smallest first")')
+  await field("station")
+  await field("rain_mm")
+  await data.click('.outline .data-field-detail button:has-text("Largest first")', {
+    modifiers: ["Alt"],
+  })
+  seen.sidePanel = [
+    await settle(["227", "527", "827"]),
+    await data.$eval(".data-page > table caption .table-count", (shown) => shown.textContent),
+  ]
+  await data.close()
+
+  const plain = { levels: ["", "", ""], caption: null }
+  assert.deepEqual(seen, {
+    newSort: {
+      dates: ["2026-10-01", "2026-10-03", "2026-10-05", "2026-10-02", "2026-10-04"],
+      ...plain,
+      caption: "5 rows · sorted by station",
+    },
+    reverse: ["2026-10-02", "2026-10-04", "2026-10-01", "2026-10-03", "2026-10-05"],
+    off: {
+      dates: ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"],
+      ...plain,
+    },
+    replace: {
+      dates: ["2026-10-02", "2026-10-04", "2026-10-01", "2026-10-05", "2026-10-03"],
+      ...plain,
+      caption: "5 rows · sorted by rain_mm",
+    },
+    addLevel: {
+      dates: ["2026-10-01", "2026-10-05", "2026-10-03", "2026-10-02", "2026-10-04"],
+      levels: ["", "1", "2"],
+      caption: "5 rows · sorted by station, then rain_mm",
+    },
+    levelReversed: {
+      dates: ["2026-10-03", "2026-10-01", "2026-10-05", "2026-10-04", "2026-10-02"],
+      levels: ["", "1", "2"],
+      caption: "5 rows · sorted by station, then rain_mm, descending",
+    },
+    levelLeaves: {
+      dates: ["2026-10-01", "2026-10-03", "2026-10-05", "2026-10-02", "2026-10-04"],
+      ...plain,
+      caption: "5 rows · sorted by station",
+    },
+    middleLeaves: {
+      dates: ["2026-10-01", "2026-10-05", "2026-10-03", "2026-10-02", "2026-10-04"],
+      levels: ["", "1", "2"],
+      caption: "5 rows · sorted by station, then rain_mm",
+    },
+    clickOnLevel: {
+      dates: ["2026-10-02", "2026-10-04", "2026-10-01", "2026-10-05", "2026-10-03"],
+      ...plain,
+      caption: "5 rows · sorted by rain_mm",
+    },
+    keyboard: {
+      dates: ["2026-10-01", "2026-10-05", "2026-10-03", "2026-10-02", "2026-10-04"],
+      levels: ["", "1", "2"],
+      caption: "5 rows · sorted by station, then rain_mm",
+    },
+    optionSpace: ["", "1", "2"],
+    panelButtons: {
+      dates: ["2026-10-01", "2026-10-05", "2026-10-03", "2026-10-02", "2026-10-04"],
+      levels: ["", "1", "2"],
+      caption: "5 rows · sorted by station, then rain_mm",
+    },
+    showAsWritten: {
+      dates: ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"],
+      ...plain,
+    },
+    address: {
+      dates: ["2026-10-03", "2026-10-01", "2026-10-05", "2026-10-04", "2026-10-02"],
+      levels: ["", "1", "2"],
+      caption: "5 rows · sorted by station, then rain_mm, descending",
+    },
+    earlierAddress: {
+      dates: ["2026-10-03", "2026-10-01", "2026-10-05", "2026-10-04", "2026-10-02"],
+      ...plain,
+      caption: "5 rows · sorted by rain_mm, descending",
+    },
+    frozen: {
+      dates: ["2026-10-01", "2026-10-05", "2026-10-03", "2026-10-02", "2026-10-04"],
+      levels: ["", "1", "2"],
+      caption: "5 rows · sorted by station, then rain_mm",
+    },
+    dataPage: ["56", "140", "224"],
+    sidePanel: [["227", "527", "827"], "1000 rows · sorted by station, then rain_mm, descending"],
+  })
+})
+
+test("The strip, And, Or, Column's list, And before or, Another badge, Edit a badge, Move, Remove, The panel's field, Any column, Show as written, No filter, Address, Earlier address, Frozen page, Data page, Records view: a table's filters combine with and and or on a strip above it", async () => {
+  write({
+    "strip/weather.md": [
+      "# Weather",
+      "| station | rain_mm | temp_c |\n|---|---|---|\n| north | 0 | 5 |\n| south | 3 | 7 |\n| north | 2 | 5 |\n| east | 0 | 9 |\n| south | 0 | 7 |",
+      "| other |\n|---|\n| x |",
+    ].join("\n\n"),
+    "strip/stations.csv": `n,station\n${Array.from({ length: 1000 }, (_, i) => `${i},${["north", "south", "east"][i % 3]}`).join("\n")}\n`,
+  })
+  const line = (shown: Page, table = 0) =>
+    shown.evaluate((t) => {
+      const strip = document
+        .querySelectorAll(".markdown-body table")
+        [t].querySelector(":scope > caption .table-filters")
+      return strip
+        ? {
+            badges: [...strip.querySelectorAll(".table-badge")].map((badge) => badge.textContent),
+            words: [...strip.querySelectorAll(".table-join")].map((word) => word.textContent),
+          }
+        : null
+    }, table)
+  const state = async (shown: Page) => ({ ...(await line(shown)), rows: await cells(shown, 0, 0) })
+  const listed = (shown: Page) =>
+    shown.evaluate(() => {
+      const list = document.querySelector(".table-values") as HTMLElement | null
+      return list && !list.hidden
+        ? [...list.querySelectorAll(".table-value")].map((option) =>
+            [...option.children].map((part) => part.textContent).join(" "),
+          )
+        : null
+    })
+  const station = '.table-panel input[aria-label="Filter station"]'
+  const seen: Record<string, unknown> = {}
+  const page = await open("strip/weather.md")
+
+  await panel(page, 0)
+  await page.fill(station, "north")
+  await page.keyboard.press("Escape")
+  seen.strip = await state(page)
+  await page.fill('.table-panel input[aria-label="Filter rain_mm"]', '"0"')
+  await page.keyboard.press("Escape")
+  seen.and = await state(page)
+  await page.click(".table-join")
+  seen.or = await state(page)
+  await page.click('.table-panel input[aria-label="Filter temp_c"]')
+  await waitFor(async () => (await listed(page)) !== null)
+  seen.columnList = await listed(page)
+  await page.keyboard.press("Escape")
+  await page.click(".table-join")
+  await page.click(".table-add")
+  await page.click('.table-choice:text-is("station")')
+  await page.keyboard.type("south")
+  await page.keyboard.press("Enter")
+  await page.click(".table-join >> nth=1")
+  seen.andBeforeOr = { ...(await state(page)), field: await page.inputValue(station) }
+  await page.click('.table-badge:has-text("station: south") .table-badge-edit')
+  seen.edit = await page.inputValue(".table-badge input")
+  await page.keyboard.press("Escape")
+  await page.dragAndDrop(".table-badge >> nth=2", ".table-badge >> nth=0", {
+    targetPosition: { x: 3, y: 5 },
+  })
+  seen.move = await state(page)
+  const address = page.url()
+  await page.click('.table-badge:has-text("station: north") .table-badge-remove')
+  seen.remove = { ...(await state(page)), field: await page.inputValue(station) }
+  await page.click('.table-badge:has-text("station: south") .table-badge-remove')
+  seen.removeLast = { ...(await line(page)), field: await page.inputValue(station) }
+  await page.fill('.table-panel input[aria-label="Filter rows"]', "north")
+  seen.anyColumn = await line(page)
+  await page.click(".table-panel .table-reset")
+  seen.showAsWritten = await line(page)
+  seen.noFilter = await line(page, 1)
+  await page.keyboard.press("Escape")
+  await page.close()
+
+  const again = await context.newPage()
+  await again.goto(address)
+  await again.waitForSelector(".markdown-body table caption .table-filters")
+  seen.address = await state(again)
+  const id = await again.$eval(
+    ".markdown-body > table",
+    (table) => (table as HTMLElement).dataset.folioId as string,
+  )
+  const earlier = {
+    [`strip/weather.md#^${id}`]: {
+      filter: "",
+      columns: { station: "north", rain_mm: '"0"' },
+      hidden: [],
+      expanded: false,
+    },
+  }
+  await again.goto(
+    `${base}/strip/weather.md?view=${Buffer.from(JSON.stringify(earlier)).toString("base64url")}`,
+  )
+  await again.waitForSelector(".markdown-body table caption .table-filters")
+  seen.earlierAddress = await state(again)
+  await again.goto(address)
+  await again.waitForSelector(".markdown-body table caption .table-filters")
+  const [download] = await Promise.all([
+    again.waitForEvent("download"),
+    again.click('button[title="Freeze this page into one HTML file"]'),
+  ])
+  const saved = path.join(path.dirname(root), `folio-strip-${process.pid}.html`)
+  await download.saveAs(saved)
+  await again.close()
+  const frozen = await context.newPage()
+  await frozen.goto(`file://${saved}`)
+  await frozen.waitForSelector(".markdown-body table caption .table-filters")
+  await frozen.click(".table-join")
+  const flipped = await state(frozen)
+  await frozen.click('.table-badge:has-text("rain_mm") .table-badge-remove')
+  seen.frozen = [flipped, await state(frozen)]
+  await frozen.close()
+  fs.rmSync(saved)
+
+  const data = await openData("strip/stations.csv")
+  await data.waitForSelector(".data-page > table > tbody > tr")
+  await data.hover(".data-page > table")
+  await data.click(".table-control")
+  await data.fill(station, '"north"')
+  await data.keyboard.press("Escape")
+  await data.click(".table-add")
+  await data.click('.table-choice:text-is("station")')
+  await data.keyboard.type('"south"')
+  await data.keyboard.press("Enter")
+  await data.click(".table-join")
+  await data.waitForSelector(".data-page > table caption:has-text('667 of 1000 rows')")
+  seen.dataPage = await data.$eval(
+    ".data-page > table caption .table-count",
+    (shown) => shown.textContent,
+  )
+  await data.keyboard.press("Escape")
+  await data.click('.data-switch:has-text("Records")')
+  await data.hover(".data-page table.data-list")
+  await data.click(".table-control")
+  await data.fill('.table-panel input[aria-label="Filter rows"]', "north")
+  await data.waitForSelector(".data-page table.data-list caption .table-count")
+  seen.records = await data.$$eval(
+    ".data-page table.data-list caption .table-filters",
+    (strips) => strips.length,
+  )
+  await data.close()
+
+  assert.deepEqual(seen, {
+    strip: { badges: ["station: north"], words: [], rows: ["north", "north"] },
+    and: { badges: ["station: north", 'rain_mm: "0"'], words: ["and"], rows: ["north"] },
+    or: {
+      badges: ["station: north", 'rain_mm: "0"'],
+      words: ["or"],
+      rows: ["north", "north", "east", "south"],
+    },
+    columnList: ["5 2", "7 1", "9 1"],
+    andBeforeOr: {
+      badges: ["station: north", 'rain_mm: "0"', "station: south"],
+      words: ["and", "or"],
+      rows: ["north", "south", "south"],
+      field: "north",
+    },
+    edit: "south",
+    move: {
+      badges: ["station: south", "station: north", 'rain_mm: "0"'],
+      words: ["and", "or"],
+      rows: ["north", "east", "south"],
+    },
+    remove: {
+      badges: ["station: south", 'rain_mm: "0"'],
+      words: ["or"],
+      rows: ["north", "south", "east", "south"],
+      field: "south",
+    },
+    removeLast: { badges: ['rain_mm: "0"'], words: [], field: "" },
+    anyColumn: { badges: ['rain_mm: "0"', "Any column: north"], words: ["and"] },
+    showAsWritten: null,
+    noFilter: null,
+    address: {
+      badges: ["station: south", "station: north", 'rain_mm: "0"'],
+      words: ["and", "or"],
+      rows: ["north", "east", "south"],
+    },
+    earlierAddress: {
+      badges: ["station: north", 'rain_mm: "0"'],
+      words: ["and"],
+      rows: ["north"],
+    },
+    frozen: [
+      {
+        badges: ["station: south", "station: north", 'rain_mm: "0"'],
+        words: ["or", "or"],
+        rows: ["north", "south", "north", "east", "south"],
+      },
+      {
+        badges: ["station: south", "station: north"],
+        words: ["or"],
+        rows: ["north", "south", "north", "south"],
+      },
+    ],
+    dataPage: "667 of 1000 rows",
+    records: 0,
+  })
+})
+
+test("The control, Headers, Filter to a value, Another value, Add a value, Other badges, A quote, A wildcard character, An empty cell, A link, A merged cell, Records view, Data page, Frozen page: a cell adds its value as a filter", async () => {
+  write({
+    "cells/weather.md": [
+      "# Weather",
+      '| station | rain_mm |\n|---|---|\n| north | 0 |\n| south | 3 |\n| say "hi" | 1 |\n| 5*3 | 2 |\n|  | 4 |\n| [east](other.md) | 5 |\n| north | 0 |',
+      '<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody><tr><td colspan="2">wide</td></tr><tr><td>x</td><td>y</td></tr></tbody></table>',
+    ].join("\n\n"),
+    "cells/other.md": "# Other",
+    "cells/stations.csv": `n,station\n${Array.from({ length: 1000 }, (_, i) => `${i},${["north", "south", "east"][i % 3]}`).join("\n")}\n`,
+  })
+  const cell = (table: number, row: number, column: number) =>
+    `.markdown-body table >> nth=${table} >> tbody tr >> nth=${row} >> td >> nth=${column}`
+  const badges = (shown: Page, table = 0) =>
+    shown.evaluate(
+      (t) =>
+        [
+          ...document
+            .querySelectorAll(".markdown-body table")
+            [t].querySelectorAll(":scope > caption .table-badge"),
+        ].map((badge) => badge.textContent),
+      table,
+    )
+  const filterBy = async (shown: Page, selector: string, alt = false) => {
+    await shown.hover(selector)
+    await shown.click(".table-cell-filter", alt ? { modifiers: ["Alt"] } : {})
+    await shown.waitForTimeout(200)
+  }
+  const reset = async (shown: Page, table = 0) => {
+    await panel(shown, table)
+    await shown.click(".table-panel .table-reset")
+    await shown.keyboard.press("Escape")
+  }
+  const station = '.table-panel input[aria-label="Filter station"]'
+  const seen: Record<string, unknown> = {}
+  const page = await open("cells/weather.md")
+
+  await page.hover(cell(0, 0, 0))
+  seen.control = await page.evaluate(() => {
+    const control = document.querySelector(".table-cell-filter") as HTMLElement
+    const box = control.getBoundingClientRect()
+    const shown = document
+      .querySelector(".markdown-body table tbody td")
+      ?.getBoundingClientRect() as DOMRect
+    return {
+      hidden: control.hidden,
+      right: Math.round(shown.right - box.right),
+      top: Math.round(box.top - shown.top),
+    }
+  })
+  await page.hover(".markdown-body table >> nth=0 >> th >> nth=0")
+  seen.headers = await page.$eval(
+    ".table-cell-filter",
+    (control) => (control as HTMLElement).hidden,
+  )
+  await filterBy(page, cell(0, 0, 0))
+  seen.filter = [await badges(page), await cells(page, 0, 0)]
+  await panel(page, 0)
+  await page.fill(station, "o")
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("Escape")
+  await filterBy(page, cell(0, 1, 0))
+  seen.another = [await badges(page), await cells(page, 0, 0)]
+  await panel(page, 0)
+  await page.fill(station, "o")
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("Escape")
+  await filterBy(page, cell(0, 0, 0), true)
+  seen.add = [await badges(page), await cells(page, 0, 0)]
+  await reset(page)
+  await panel(page, 0)
+  await page.fill('.table-panel input[aria-label="Filter rain_mm"]', '"0"')
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("Escape")
+  await filterBy(page, cell(0, 0, 0))
+  seen.otherBadges = [await badges(page), await cells(page, 0, 0)]
+  await reset(page)
+  await filterBy(page, cell(0, 2, 0))
+  seen.quote = [await badges(page), await cells(page, 0, 0)]
+  await reset(page)
+  await filterBy(page, cell(0, 3, 0))
+  seen.wildcard = [await badges(page), await cells(page, 0, 0)]
+  await reset(page)
+  await filterBy(page, cell(0, 4, 0))
+  seen.empty = [await badges(page), await cells(page, 0, 1)]
+  await reset(page)
+  await filterBy(page, cell(0, 5, 0))
+  seen.link = [await pathOf(page), await badges(page), await cells(page, 0, 0)]
+  await reset(page)
+  await filterBy(page, cell(1, 0, 0))
+  const merged = await badges(page, 1)
+  await reset(page, 1)
+  await panel(page, 1)
+  await page.uncheck('.table-panel label:has-text("a") input')
+  await page.keyboard.press("Escape")
+  await filterBy(page, cell(1, 0, 0))
+  seen.merged = [merged, await badges(page, 1)]
+  await reset(page, 1)
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.click('button[title="Freeze this page into one HTML file"]'),
+  ])
+  const saved = path.join(path.dirname(root), `folio-cells-${process.pid}.html`)
+  await download.saveAs(saved)
+  await page.close()
+  const frozen = await context.newPage()
+  await frozen.goto(`file://${saved}`)
+  await frozen.waitForSelector(".markdown-body table")
+  await filterBy(frozen, cell(0, 0, 0))
+  seen.frozen = [await badges(frozen), await cells(frozen, 0, 0)]
+  await frozen.close()
+  fs.rmSync(saved)
+
+  const data = await openData("cells/stations.csv")
+  await data.waitForSelector(".data-page > table > tbody > tr")
+  await data.hover(".data-page > table > tbody > tr >> nth=0 >> td >> nth=1")
+  await data.click(".table-cell-filter")
+  await data.waitForSelector(".data-page > table caption:has-text('of 1000 rows')")
+  seen.dataPage = await data.$eval(
+    ".data-page > table caption .table-count",
+    (shown) => shown.textContent,
+  )
+  await data.click('.data-switch:has-text("Records")')
+  await data.hover(".data-page table.data-list tbody td >> nth=0")
+  seen.records = await data.$eval(
+    ".table-cell-filter",
+    (control) => (control as HTMLElement).hidden,
+  )
+  await data.close()
+
+  assert.deepEqual(seen, {
+    control: { hidden: false, right: 1, top: 1 },
+    headers: true,
+    filter: [['station: "north"'], ["north", "north"]],
+    another: [['station: "south"'], ["south"]],
+    add: [['station: o | "north"'], ["north", "south", "north"]],
+    otherBadges: [
+      ['rain_mm: "0"', 'station: "north"'],
+      ["north", "north"],
+    ],
+    quote: [['station: "say \\"hi\\""'], ['say "hi"']],
+    wildcard: [['station: "5\\*3"'], ["5*3"]],
+    empty: [['station: ""'], ["4"]],
+    link: ["cells/weather.md", ['station: "east"'], ["east"]],
+    merged: [['a: "wide"'], ['b: "wide"']],
+    frozen: [['station: "north"'], ["north", "north"]],
+    dataPage: "334 of 1000 rows",
+    records: true,
+  })
+})
+
+test("Records field on a long file, A cleared field, A click while editing, Another table's strip: a table's strip keeps the filters it is given", async () => {
+  write({
+    "keep/two.md": [
+      "# Two",
+      "| station | rain_mm |\n|---|---|\n| north | 0 |\n| south | 3 |\n| north | 2 |\n| east | 0 |\n| south | 0 |",
+      "| other |\n|---|\n| x |\n| y |",
+    ].join("\n\n"),
+    "keep/stations.csv": `n,station\n${Array.from({ length: 1000 }, (_, i) => `${i},${["north", "south", "east"][i % 3]}`).join("\n")}\n`,
+  })
+  const line = (shown: Page, table: number) =>
+    shown.evaluate((t) => {
+      const strip = document
+        .querySelectorAll(".markdown-body table")
+        [t].querySelector(":scope > caption .table-filters")
+      return {
+        badges: [...(strip?.querySelectorAll(".table-badge") ?? [])].map((b) => b.textContent),
+        words: [...(strip?.querySelectorAll(".table-join") ?? [])].map((w) => w.textContent),
+      }
+    }, table)
+  const strip = (table: number) => `.markdown-body table >> nth=${table} >> .table-filters`
+  const station = '.table-panel input[aria-label="Filter station"]'
+  const seen: Record<string, unknown> = {}
+
+  const data = await openData("keep/stations.csv")
+  await data.waitForSelector(".data-page > table > tbody > tr")
+  await data.click('.data-switch:has-text("Records")')
+  await data.hover(".data-page table.data-list tbody td >> nth=0")
+  await data.click(".table-control")
+  await data.fill('.table-panel input[aria-label="Filter record"]', "north")
+  await data.waitForSelector(".data-page table.data-list caption .table-count")
+  await data.waitForTimeout(500)
+  seen.recordsField = await data.$eval(
+    ".data-page table.data-list caption .table-count",
+    (shown) => shown.textContent,
+  )
+  await data.close()
+
+  const page = await open("keep/two.md")
+  const errors: string[] = []
+  page.on("pageerror", (error) => errors.push(error.message))
+  const southAgain = async () => {
+    await page.click(`${strip(0)} >> .table-add`)
+    await page.click('.table-choice:text-is("station")')
+    await page.keyboard.type("south")
+    await page.keyboard.press("Enter")
+  }
+  await panel(page, 0)
+  await page.fill(station, "north")
+  await page.keyboard.press("Escape")
+  await southAgain()
+  await page.click('.table-badge:has-text("station: south") .table-badge-edit')
+  await page.click(`${strip(0)} >> .table-join`)
+  await page.waitForSelector(`${strip(0)} >> input`, { state: "detached" })
+  seen.clickWhileEditing = await line(page, 0)
+  await page.keyboard.press("Escape")
+  await panel(page, 1)
+  await page.fill('.table-panel input[aria-label="Filter other"]', "x")
+  await page.keyboard.press("Escape")
+  await page.keyboard.press("Escape")
+  await page.dragAndDrop(`${strip(0)} >> .table-badge >> nth=1`, `${strip(1)} >> .table-badge`)
+  await page.waitForTimeout(200)
+  seen.anotherStrip = [await line(page, 0), await line(page, 1), errors.length]
+  await page.click('.table-badge:has-text("station: south") .table-badge-edit')
+  await page.click(`${strip(0)} >> .table-badge >> nth=1 >> .table-badge-remove`)
+  await page.waitForSelector(`${strip(0)} >> input`, { state: "detached" })
+  seen.removeWhileEditing = await line(page, 0)
+  await southAgain()
+  await panel(page, 0)
+  await page.fill(station, "")
+  await page.keyboard.type("east")
+  await page.keyboard.press("Escape")
+  seen.clearedField = await line(page, 0)
+  await page.close()
+
+  assert.deepEqual(seen, {
+    recordsField: "334 of 1000 rows",
+    clickWhileEditing: { badges: ["station: north", "station: south"], words: ["or"] },
+    anotherStrip: [
+      { badges: ["station: north", "station: south"], words: ["or"] },
+      { badges: ["other: x"], words: [] },
+      0,
+    ],
+    removeWhileEditing: { badges: ["station: north"], words: [] },
+    clearedField: { badges: ["station: south", "station: east"], words: ["and"] },
+  })
+})
+
+test("After a click, A cell past the table's edge: a cell's filter button stays on the cell under the pointer", async () => {
+  write({
+    "cells/wide.md": `# Wide\n\n| station | note |\n|---|---|\n| north | ${"x".repeat(600)} |\n| south | short |\n`,
+  })
+  const page = await open("cells/wide.md")
+  const seen: Record<string, unknown> = {}
+
+  await page.hover(".markdown-body table tbody tr >> nth=0 >> td >> nth=0")
+  await page.click(".table-cell-filter")
+  await page.waitForTimeout(200)
+  seen.afterClick = await page.$eval(
+    ".table-cell-filter",
+    (button) => (button as HTMLElement).hidden,
+  )
+  await page.click(".table-badge-remove")
+  const box = await page.$eval(
+    ".markdown-body table",
+    (table) => table.getBoundingClientRect().right,
+  )
+  await page.mouse.move(
+    box - 30,
+    (await page.locator(".markdown-body table tbody tr >> nth=0 >> td >> nth=1").boundingBox())!.y +
+      10,
+  )
+  seen.pastEdge = await page.$eval(
+    ".table-cell-filter",
+    (button, right) =>
+      !(button as HTMLElement).hidden && button.getBoundingClientRect().right <= right,
+    box,
+  )
+  await page.close()
+
+  assert.deepEqual(seen, { afterClick: true, pastEdge: true })
 })

@@ -11,11 +11,12 @@ import { recordServing } from "../src/server/serving.ts"
 
 const CLI = new URL("../src/cli.ts", import.meta.url).pathname
 
-test("a running folio slow to work out health is waited for, and a failure is said rather than thrown", async () => {
+test("a running Folio slow to work out health is waited for, and a failure is said rather than thrown", async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-check-")))
   const socket = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "folio-check-socket-")), "s")
   let healthy = true
   const server = http.createServer((request, response) => {
+    response.setHeader("Content-Type", "application/json")
     if (request.url === "/?api") {
       response.end(JSON.stringify({ root }))
     } else if (healthy) {
@@ -35,7 +36,7 @@ test("a running folio slow to work out health is waited for, and a failure is sa
   })
   await new Promise<void>((resolve) => server.listen(socket, resolve))
   const unused = () => {
-    throw new Error("the running folio should have answered")
+    throw new Error("the running Folio should have answered")
   }
 
   try {
@@ -74,11 +75,12 @@ test("a running folio slow to work out health is waited for, and a failure is sa
   }
 })
 
-test("waiting on a running folio, the live line follows its reading and then its health, and is gone before the problems print", async () => {
+test("waiting on a running Folio, the live line follows its reading and then its health, and is gone before the problems print", async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-check-")))
   const socket = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "folio-check-socket-")), "s")
   const counts = [12, 340]
   const server = http.createServer((request, response) => {
+    response.setHeader("Content-Type", "application/json")
     if (request.url === "/?api") {
       response.end(JSON.stringify({ root }))
     } else if (request.url === "/?model") {
@@ -103,7 +105,7 @@ test("waiting on a running folio, the live line follows its reading and then its
       root,
       { port: 1, socket },
       () => {
-        throw new Error("the running folio should have answered")
+        throw new Error("the running Folio should have answered")
       },
       (line) => events.push(`print ${line}`),
       (text) => events.push(`line ${typeof text === "function" ? text() : text}`),
@@ -111,9 +113,9 @@ test("waiting on a running folio, the live line follows its reading and then its
 
     assert.equal(code, 0)
     assert.deepEqual(events, [
-      `line waiting for the folio on ${socket}, reading the folder: 12 documents`,
-      `line waiting for the folio on ${socket}, reading the folder: 340 documents`,
-      `line waiting for the folio on ${socket}, checking health`,
+      `line waiting for the Folio on ${socket}, reading the folder: 12 documents`,
+      `line waiting for the Folio on ${socket}, reading the folder: 340 documents`,
+      `line waiting for the Folio on ${socket}, checking health`,
       "line undefined",
       "print a.md:1  -  link  Links to b.md",
       "print folio check: 0 errors, 1 other problem",
@@ -128,6 +130,7 @@ test("a rule's warning prints as warning and any other problem that is no error 
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-check-")))
   const socket = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "folio-check-socket-")), "s")
   const server = http.createServer((request, response) => {
+    response.setHeader("Content-Type", "application/json")
     response.end(
       JSON.stringify(
         request.url === "/?api"
@@ -150,7 +153,7 @@ test("a rule's warning prints as warning and any other problem that is no error 
       root,
       { port: 1, socket },
       () => {
-        throw new Error("the running folio should have answered")
+        throw new Error("the running Folio should have answered")
       },
       (line) => said.push(line),
       () => {},
@@ -160,7 +163,10 @@ test("a rule's warning prints as warning and any other problem that is no error 
       "b.md:4  -        link  Links to c.md, which is not there",
     ])
 
-    const reference = fs.readFileSync(new URL("../docs/reference.md", import.meta.url), "utf8")
+    const reference = fs.readFileSync(
+      new URL("../docs/reference/command-line.md", import.meta.url),
+      "utf8",
+    )
     const described = reference.split("\n").find((line) => line.startsWith("`folio check` prints"))
     assert.match(described ?? "", /`error`, `warning` for a rule's warning, or `-`/)
   } finally {
@@ -169,7 +175,7 @@ test("a rule's warning prints as warning and any other problem that is no error 
   }
 })
 
-test("given no port or socket, folio check asks the folio its folder's record names; a record a killed folio left, or a port given, is not followed", async () => {
+test("given no port or socket, folio check asks the Folio its folder's record names; a record a killed Folio left, or a port given, is not followed", async () => {
   const env = {
     ...process.env,
     XDG_STATE_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "folio-check-state-")),
@@ -178,6 +184,7 @@ test("given no port or socket, folio check asks the folio its folder's record na
   fs.writeFileSync(path.join(root, "a.md"), "# A\n")
   const asked: string[] = []
   const server = http.createServer((request, response) => {
+    response.setHeader("Content-Type", "application/json")
     asked.push(request.url ?? "")
     response.end(
       JSON.stringify(
@@ -224,7 +231,7 @@ test("given no port or socket, folio check asks the folio its folder's record na
     const before = asked.length
     const killed = await run()
     assert.equal(killed.status, 0, killed.out)
-    assert.equal(asked.length, before, "the killed folio's port is never asked")
+    assert.equal(asked.length, before, "the killed Folio's port is never asked")
   } finally {
     server.close()
     fs.rmSync(root, { recursive: true, force: true })

@@ -10,6 +10,8 @@ import { singleValue, type Verdict, verdict } from "./claims.ts"
 import { withSource } from "./drawings.ts"
 import type { Theme } from "./render.ts"
 import { literal } from "./unresolved.ts"
+import { keepWhole } from "./words.ts"
+import { expandDrawing } from "./zoom.ts"
 
 export const TABLE = /^\s*\{table:\s*([^}\n]+?)\s*\}\s*$/
 /** A format follows a pipe set apart by spaces, so a key may hold a bare one. */
@@ -244,6 +246,7 @@ async function drawing(element: HTMLElement, theme: Theme): Promise<void> {
           element,
           () => element.querySelector(":scope > pre > code")?.textContent?.replace(/\n$/, "") ?? "",
           () => highlighted(element.querySelector(":scope > pre > code")),
+          [expandDrawing("chart", () => element.querySelector(":scope > .chart > svg"))],
         )
       })
       return
@@ -393,6 +396,7 @@ function steady(element: HTMLElement, change: () => void): void {
   const before = element.getBoundingClientRect()
 
   change()
+  keepWhole(element)
   element.dispatchEvent(new CustomEvent("folio:embedded", { bubbles: true }))
 
   if (element.isConnected && before.bottom <= line) {

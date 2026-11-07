@@ -747,7 +747,7 @@ test("a file turned to CRLF is no hand edit, and its region is written in CRLF",
   }
 })
 
-test("a folio killed while writing leaves no copy in the folder once it starts again", async () => {
+test("a Folio killed while writing leaves no copy in the folder once it starts again", async () => {
   const { root, store, model, data } = await servedFolder(indexer, {
     "FOLIO.md": `# Saved\n\n${fence("save:\n  - where: rota.md")}\n`,
     "rota.md": PLAN,
@@ -757,7 +757,7 @@ test("a folio killed while writing leaves no copy in the folder once it starts a
   await data.close()
   assert.equal(await killedWhileWriting(root, store), "SIGKILL")
   const leftovers = () => fs.readdirSync(root).filter((name) => name.endsWith(".folio"))
-  assert.equal(leftovers().length, 1, "the killed folio left its copy")
+  assert.equal(leftovers().length, 1, "the killed Folio left its copy")
   const { read, until, close } = await restarted(root, store)
 
   try {
@@ -768,13 +768,13 @@ test("a folio killed while writing leaves no copy in the folder once it starts a
   }
 })
 
-test("a folio killed halfway through writing over a hard-linked document finishes the write when it starts again, unless the document changed since", async () => {
+test("a Folio killed halfway through writing over a hard-linked document finishes the write when it starts again, unless the document changed since", async () => {
   const written = PLAN.replace(
     "<!-- folio view: #open -->\n",
     "<!-- folio view: #open -->\n\n| name | size |\n| --- | --- |\n| wire | 3 |\n\n",
   )
 
-  for (const edit of [undefined, "Edited by hand after folio stopped."]) {
+  for (const edit of [undefined, "Edited by hand after Folio stopped."]) {
     const { root, store, model, data } = await servedFolder(indexer, {
       "FOLIO.md": `# Saved\n\n${fence("save:\n  - where: rota.md")}\n`,
       "rota.md": PLAN,
@@ -785,7 +785,7 @@ test("a folio killed halfway through writing over a hard-linked document finishe
     fs.linkSync(path.join(root, "rota.md"), path.join(root, "rota.keep"))
     assert.equal(await killedWhileWriting(root, store, "in-place"), "SIGKILL")
     const half = fs.readFileSync(path.join(root, "rota.md"), "utf8")
-    assert.ok(half !== PLAN && half !== written, "the killed folio cut its write short")
+    assert.ok(half !== PLAN && half !== written, "the killed Folio cut its write short")
 
     if (edit) {
       fs.writeFileSync(path.join(root, "rota.md"), PLAN.replace("Kept by hand.", edit))
@@ -869,7 +869,7 @@ test("a carriage return inside a result is a line break written once, never rewr
   }
 })
 
-test("a data file changing beside a view that reads the folder's documents is no echo of folio's own write", async () => {
+test("a data file changing beside a view that reads the folder's documents is no echo of Folio's own write", async () => {
   const doc = [
     "# Status",
     "",
@@ -911,7 +911,7 @@ test("a data file changing beside a view that reads the folder's documents is no
   }
 })
 
-test("a program holding a file open to append is waited for even when folio wrote the file last", async () => {
+test("a program holding a file open to append is waited for even when Folio wrote the file last", async () => {
   const { root, model, data, read, write, until } = await served({
     "FOLIO.md": `# Saved\n\n${fence("save:\n  - where: rota.md")}\n`,
     "rota.md": PLAN,
@@ -1018,7 +1018,7 @@ test("on a kernel naming no inode, a program appending through another hard link
   }
 })
 
-test("a file dated in the future is still written, and one folio cannot write is reported without stopping the others", async () => {
+test("a file dated in the future is still written, and one Folio cannot write is reported without stopping the others", async () => {
   const { root, model, data, saved, read, write, until } = await served({
     "FOLIO.md": `# Saved\n\n${fence("save:\n  - where: '*.md'")}\n`,
     "ahead.md": "# Ahead\n\n<!-- folio view: tasks.csv -->\n<!-- /folio view -->\n",
@@ -1053,7 +1053,7 @@ test("a file dated in the future is still written, and one folio cannot write is
     assert.deepEqual(
       fs.readdirSync(root).filter((name) => name.endsWith(".folio")),
       [],
-      "the copy of the document folio could not write is gone",
+      "the copy of the document Folio could not write is gone",
     )
   } finally {
     fs.renameSync = rename
@@ -1062,7 +1062,7 @@ test("a file dated in the future is still written, and one folio cannot write is
   }
 })
 
-test("a change landing while folio checks for writers is no echo of its own write", async () => {
+test("a change landing while Folio checks for writers is no echo of its own write", async () => {
   const doc = [
     "# Status",
     "",
@@ -1138,7 +1138,7 @@ test("a digest that cannot be created is listed and stops no other view", async 
   }
 })
 
-test("a copy noted by a folio stopped before copies were named apart is swept too, and a lone CR in a cell keeps its row", async () => {
+test("a copy noted by a Folio stopped before copies were named apart is swept too, and a lone CR in a cell keeps its row", async () => {
   const { root, store, model, data } = await servedFolder(indexer, {
     "FOLIO.md": `# Saved\n\n${fence("save:\n  - where: rota.md")}\n`,
     "rota.md":
