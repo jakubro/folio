@@ -1,6 +1,6 @@
 {
   "name": "folio",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A live view of a folder of markdown and data. The MCP server whose read-only tools answer from the Folio serving the folder, run with npx, and the skill that writes documents using what Folio adds.",
   "author": {
     "name": "Jakub Roman"
@@ -26,7 +26,7 @@
       "command": "npx",
       "args": [
         "--yes",
-        "@jakubro/folio@0.4.0",
+        "@jakubro/folio@0.5.0",
         "mcp",
         "${user_config.folio}"
       ]

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.jakubro/folio",
+  "title": "Folio",
+  "description": "A live view of a folder of markdown and data, and read-only tools over what the folder holds.",
+  "repository": {
+    "url": "https://github.com/jakubro/folio",
+    "source": "github"
+  },
+  "websiteUrl": "https://jakubro.github.io/folio/",
+  "version": "0.5.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@jakubro/folio",
+      "version": "0.5.0",
+      "runtimeHint": "npx",
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        },
+        {
+          "type": "positional",
+          "valueHint": "folio",
+          "description": "The Folio to read: its address, such as localhost:8641, or the path of a unix socket it serves on. Left out, the Folio serving the agent's folder, or a folder above it",
+          "isRequired": false,
+          "format": "string"
+        }
+      ],
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

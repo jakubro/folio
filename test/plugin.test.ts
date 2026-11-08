@@ -1,4 +1,4 @@
-/** The Claude Code plugin agrees with the release it pins, its marketplace and its own skill. */
+/** The plugin and server.json agree with the release they pin, and the plugin with its marketplace and skill. */
 
 import assert from "node:assert/strict"
 import fs from "node:fs"
@@ -11,6 +11,7 @@ const PLUGIN_DIR = path.join(REPO, "plugin")
 const PACKAGE = read("package.json")
 const MARKETPLACE = read(".claude-plugin/marketplace.json")
 const PLUGIN = read("plugin/.claude-plugin/plugin.json")
+const SERVER = read("server.json")
 
 test("the plugin carries the package's version and runs folio mcp of that release with its setting", () => {
   assert.equal(PLUGIN.version, PACKAGE.version)
@@ -22,6 +23,26 @@ test("the plugin carries the package's version and runs folio mcp of that releas
     },
   })
   assert.equal(PACKAGE.name, "@jakubro/folio")
+})
+
+test("server.json is the package's mcpName, running folio mcp of the package's release", () => {
+  const [server, ...others] = SERVER.packages
+
+  assert.equal(SERVER.name, PACKAGE.mcpName)
+  assert.equal(SERVER.version, PACKAGE.version)
+  assert.deepEqual(others, [])
+  assert.deepEqual(
+    [server.registryType, server.identifier, server.version, server.runtimeHint, server.transport],
+    ["npm", PACKAGE.name, PACKAGE.version, "npx", { type: "stdio" }],
+  )
+  assert.deepEqual(server.packageArguments[0], { type: "positional", value: "mcp" })
+  assert.ok(
+    server.packageArguments.every(({ isRequired }: { isRequired?: boolean }) => !isRequired),
+  )
+})
+
+test("server.json's description fits the registry's 100 characters", () => {
+  assert.ok(SERVER.description.length <= 100, `${SERVER.description.length} characters`)
 })
 
 test("the marketplace's one plugin is the plugin directory", () => {

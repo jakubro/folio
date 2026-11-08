@@ -40,3 +40,28 @@ jobs:
 
       - name: Publish
         run: npm publish --access public
+
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSLo mcp-publisher.tar.gz \
+            https://github.com/modelcontextprotocol/registry/releases/download/v1.8.6/mcp-publisher_linux_amd64.tar.gz
+          echo "1fbe93fc0783c2394d8012c8d6e50a59e98cb2cc2d216264cc69f405d0e21340  mcp-publisher.tar.gz" \
+            | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+
+      - name: Stamp the tagged version into server.json
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          jq --arg v "$version" '.version = $v | .packages[0].version = $v' \
+            server.json > server.json.tmp
+          mv server.json.tmp server.json
+
+      - name: Publish to the MCP Registry
+        run: |
+          ./mcp-publisher login github-oidc
+          # The registry verifies ownership against npm, which can lag a just-published version.
+          for _ in 1 2 3 4 5; do
+            ./mcp-publisher publish && exit 0
+            sleep 30
+          done
+          exit 1
