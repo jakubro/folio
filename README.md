@@ -1,7 +1,7 @@
 # Folio
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](https://www.npmjs.com/package/@jakubro/folio)
+[![Version](https://img.shields.io/badge/version-0.5.1-blue.svg)](https://www.npmjs.com/package/@jakubro/folio)
 [![Status](https://img.shields.io/badge/status-actively_developed-green.svg)](#)
 
 **A live view of a folder of markdown and data.** Point Folio at a folder and read it in your browser: every page rendered with GitHub-flavoured markdown, math, highlighted code and diagrams, every page current the moment you save it, and the folder known as a whole - what you have not read yet, which figures no longer match their data, what links where and what is broken.

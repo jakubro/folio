@@ -56,12 +56,17 @@ jobs:
             server.json > server.json.tmp
           mv server.json.tmp server.json
 
-      - name: Publish to the MCP Registry
+      # The registry reads mcpName from the version npm serves, and npm serves a just-published
+      # version only once it has processed it, minutes later.
+      - name: Wait until npm serves the tagged version
         run: |
-          ./mcp-publisher login github-oidc
-          # The registry verifies ownership against npm, which can lag a just-published version.
-          for _ in 1 2 3 4 5; do
-            ./mcp-publisher publish && exit 0
+          for _ in $(seq 60); do
+            curl -fsSo /dev/null "https://registry.npmjs.org/@jakubro/folio/${GITHUB_REF_NAME#v}" && exit 0
             sleep 30
           done
           exit 1
+
+      - name: Publish to the MCP Registry
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
