@@ -1,9 +1,10 @@
 /** Headless Chromium run of fences drawn as maps and models: what each shows and fetches, and its source. */
 
 import assert from "node:assert/strict"
+import path from "node:path"
 import { test } from "node:test"
 import type { Page } from "playwright"
-import { base, context, open, write } from "./harness.ts"
+import { base, context, open, rewriteInPlace, root, write } from "./harness.ts"
 
 const SHAPES = JSON.stringify({
   type: "FeatureCollection",
@@ -207,6 +208,12 @@ test("Source, Themes, Pages without maps: a map switches to its source, reads in
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), SHAPES)
   await map.locator(".source-switch").click()
   assert.equal(await map.locator(".geo-map-canvas").isVisible(), true)
+  assert.match(
+    await map
+      .locator(".leaflet-control-zoom-in")
+      .evaluate((zoom) => getComputedStyle(zoom).fontFamily),
+    /^"JetBrains Mono"/,
+  )
 
   const looks: string[] = []
 
@@ -918,6 +925,24 @@ test("Contexts, Leading text, Not a model: a redrawn model, or one the reader le
     "a fence that is no model loads none of the 3D code",
   )
   await Promise.all([page.close(), unfit.close()])
+})
+
+test("a shown source survives a broken and a fixed save, each rewriting the file in place", async () => {
+  const flow = (...lines: string[]) => ["graph LR", ...lines.map((line) => `  ${line}`)].join("\n")
+  const fenced = (body: string) => ["# In place", "", "```mermaid", body, "```", ""].join("\n")
+  const file = path.join(root, "drawings/in-place.md")
+  write({ "drawings/in-place.md": fenced(flow("Up --> Down")) })
+  const page = await open("drawings/in-place.md")
+  await page.waitForSelector(".mermaid > svg")
+  await switchSource(page, ".mermaid", 0)
+  await rewriteInPlace(file, fenced(flow("Up -->")), 150)
+  await page.waitForSelector("pre.diagram-failed")
+  await rewriteInPlace(file, fenced(flow("Up --> Sideways")), 150)
+  await page.waitForFunction(() =>
+    document.querySelector(".mermaid > .drawn-source")?.textContent?.includes("Sideways"),
+  )
+  assert.deepEqual(await shownSources(page, ".mermaid, pre.diagram-failed"), [true])
+  await page.close()
 })
 
 test("Failed save, Included twice: a shown source survives a save that fails to draw, and each copy of a section keeps its own", async () => {

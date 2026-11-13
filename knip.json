@@ -9,6 +9,7 @@
     "src/server/sqlite-reader.ts",
     "src/server/draw-worker.ts",
     "src/server/embed-worker.ts",
+    "src/server/writers-worker.ts",
     "test/*.test.ts",
     "test/*-worker.ts",
     "e2e/*.test.ts"

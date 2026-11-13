@@ -6,7 +6,7 @@ import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
 import type { Page } from "playwright"
-import { context, serveFolder, writeIn } from "./harness.ts"
+import { context, serveFolder, waitFor, writeIn } from "./harness.ts"
 
 test("Found, Layering, Live, Broken, Inspect: a folder declares its conventions in FOLIO.md files", async () => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-declare-")))
@@ -52,6 +52,67 @@ test("Found, Layering, Live, Broken, Inspect: a folder declares its conventions 
     writeIn(folder, { "team/FOLIO.md": "# Team\n\nNothing declared.\n" })
     await health.waitForSelector(".health-declaration", { state: "detached" })
     await Promise.all([page.close(), declaration.close(), health.close()])
+  } finally {
+    served.stop()
+    fs.rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("health and a document's outline list frontmatter that is not YAML at its line", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-frontmatter-")))
+  const fence = (body: string) => `\`\`\`yaml folio\n${body}\n\`\`\``
+  const what = "The frontmatter is not YAML: Nested mappings are not allowed in compact mappings"
+  writeIn(folder, {
+    "FOLIO.md": `# Stations\n\n${fence("kinds:\n  station:\n    where: stations/*.md\n    fields:\n      elevation: {from: frontmatter, type: number}")}\n`,
+    "stations/north.md": "---\nelevation: 412\nnote: a: b\n---\n# North\n",
+    "stations/south.md": "---\nelevation: 380\n---\n# South\n",
+    "empty.md": "---\n---\n# Empty\n",
+  })
+  const served = await serveFolder(folder)
+  const json = async (address: string) => (await fetch(`${served.base}/${address}`)).json()
+
+  try {
+    await waitFor(async () => (await json("stations/?api=health")).problems?.length === 1)
+    const { blocks } = await json("stations/north.md?model")
+    const block = blocks.find(({ kind }: { kind: string }) => kind === "frontmatter").id
+    assert.deepEqual((await json("stations/?api=health")).problems, [
+      { kind: "frontmatter", path: "stations/north.md", line: 3, block, severity: "error", what },
+    ])
+
+    const health = await context.newPage()
+    await health.goto(`${served.base}/?health`)
+    await health.waitForSelector(".health-frontmatter li")
+    assert.equal(
+      await health.textContent(".health-frontmatter > summary"),
+      "Frontmatter that is not YAML - 1",
+    )
+    assert.equal(await health.textContent(".health-frontmatter li"), `stations/north.md:3 ${what}`)
+
+    const page = await context.newPage()
+    await page.goto(`${served.base}/stations/north.md`)
+    await page.waitForSelector(".outline-problem")
+    assert.deepEqual(await page.locator(".outline-problem").allTextContents(), [`3 ${what}`])
+    await page.click(".outline-problem")
+    await page.waitForURL(new RegExp(`#\\^${block}$`))
+    await page.waitForSelector(".markdown-body > pre.landed code.language-yaml")
+
+    await page.goto(`${served.base}/stations/south.md`)
+    await page.waitForSelector(".markdown-body h1")
+    await page.waitForTimeout(500)
+    assert.equal(await page.isVisible(".outline-problems"), false)
+
+    await page.goto(`${served.base}/stations/north.md`)
+    await page.waitForSelector(".outline-problem")
+    writeIn(folder, { "stations/north.md": '---\nelevation: 412\nnote: "a: b"\n---\n# North\n' })
+    await page.waitForSelector(".outline-problems", { state: "hidden" })
+    assert.deepEqual(
+      (await json("?api=query&sql=select path, elevation from kind.station order by path")).rows,
+      [
+        ["stations/north.md", 412],
+        ["stations/south.md", 380],
+      ],
+    )
+    await Promise.all([page.close(), health.close()])
   } finally {
     served.stop()
     fs.rmSync(folder, { recursive: true, force: true })

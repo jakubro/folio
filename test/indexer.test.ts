@@ -75,6 +75,8 @@ test("parsed blocks given identities on the worker match a split carrying the pr
 
 test("texts sent to indexers at once split side by side, each on a thread of its own", async () => {
   const indexers = new Indexers(new URL("./slow-worker.ts", import.meta.url), 10_000, 2)
+  // Both threads started first, so the time measured is the splits' and not a loaded machine's start-up.
+  await Promise.all([indexers.split("# Warm", "markdown"), indexers.split("# Up", "markdown")])
   const started = performance.now()
   const split = await Promise.all([
     indexers.split("# One", "markdown"),

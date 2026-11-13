@@ -1,9 +1,10 @@
-/** What a document reads from the folder's data: its embeds' references, its charts' data and its queries. */
+/** What a document reads from the folder's data: its embeds, charts, components and queries. */
 
 import type { Code, Nodes, Root } from "mdast"
 import remarkParse from "remark-parse"
 import { unified } from "unified"
 import { parse as parseYaml } from "yaml"
+import { readComponent } from "../client/component.ts"
 import { cycleIn } from "../client/cycles.ts"
 import { MARKED, unmarked } from "../client/unresolved.ts"
 import { gfm } from "./gfm.ts"
@@ -151,6 +152,10 @@ export function referencesIn(text: string): string[] {
     if (code.lang === "vega-lite") {
       found.push(...chartUrls(code.value))
     }
+
+    if (code.lang === "component") {
+      found.push(...componentData(code.value))
+    }
   }
 
   return found
@@ -206,6 +211,14 @@ function codeIn(tree: Root): Code[] {
 
   visit(tree)
   return found
+}
+
+export function componentData(source: string): string[] {
+  try {
+    return Object.values(readComponent(source).data)
+  } catch {
+    return []
+  }
 }
 
 function chartUrls(source: string): string[] {

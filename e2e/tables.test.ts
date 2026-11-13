@@ -1040,6 +1040,13 @@ test("Numbers and dates, Few values, One value, Free text, Gaps, Hover, Off, The
   )
   assert.equal(query, "select *\nfrom '/stats/runs.jsonl'\nwhere kind = 'write'")
   assert.equal(await page.locator(".outline .data-panel-query .code-copy").count(), 1)
+  assert.match(
+    await page.$eval(
+      ".outline .data-panel-query code",
+      (code) => getComputedStyle(code).fontFamily,
+    ),
+    /^"JetBrains Mono"/,
+  )
 
   await page.goBack()
   await waitFor(async () => (await filtered()) === "")
@@ -4422,11 +4429,11 @@ test("After a click, A cell past the table's edge: a cell's filter button stays 
     ".markdown-body table",
     (table) => table.getBoundingClientRect().right,
   )
-  await page.mouse.move(
-    box - 30,
-    (await page.locator(".markdown-body table tbody tr >> nth=0 >> td >> nth=1").boundingBox())!.y +
-      10,
-  )
+  const cell = await page
+    .locator(".markdown-body table tbody tr >> nth=0 >> td >> nth=1")
+    .boundingBox()
+  assert.ok(cell, "the first row's second cell is on screen")
+  await page.mouse.move(box - 30, cell.y + 10)
   seen.pastEdge = await page.$eval(
     ".table-cell-filter",
     (button, right) =>

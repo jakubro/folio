@@ -149,9 +149,9 @@ health:
     skip: [link]
 ```
 
-- Each entry names `where` - path patterns - and `skip`, `error` or both: `all`, or kinds of check among `figure`, `link`, `include`, `loop`, `diagram`, `chart`, `query`, `data`, `declaration`, `field`, `rule` and `view`.
+- Each entry names `where` - path patterns - and `skip`, `error` or both: `all`, or kinds of check among `figure`, `link`, `include`, `loop`, `diagram`, `chart`, `component`, `query`, `data`, `declaration`, `frontmatter`, `field`, `rule` and `view`.
 - **skip** leaves those problems of the documents it places out of the health view; the documents are still served, indexed and queried. `skip: all` also keeps their attention rows, and the errors of attention queries declared among them, off Folio's front page.
-- **error** makes those problems errors, which fail `folio check`. With no such entry, only violations of rules whose severity is `error` fail it - declare the rest to make `folio check` a gate for every kind of breakage.
+- **error** makes those problems errors, which fail `folio check`. With no such entry, only frontmatter that is not YAML and violations of rules whose severity is `error` fail it - declare the rest to make `folio check` a gate for every kind of breakage.
 - Deeper declarations add entries for their own folders.
 
 ## Attention

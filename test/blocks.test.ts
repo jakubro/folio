@@ -172,6 +172,28 @@ test("records each markdown link of a block, references resolved, with the text 
   assert.ok((list[1].links?.[0].context.length ?? 0) < long.length + 30)
 })
 
+test("a chart or query in a tilde fence reads what its backtick form reads", () => {
+  const fenced = (fence: string) =>
+    blocks(
+      [
+        `${fence}vega-lite`,
+        '{"data": {"url": "a.csv"}, "mark": "bar"}',
+        fence,
+        "",
+        `${fence}sql query totals`,
+        "select 1",
+        fence,
+      ].join("\n"),
+      "markdown",
+    ).map(({ references, queries }) => ({ references, queries }))
+
+  assert.deepEqual(fenced("~~~"), [
+    { references: ["a.csv"], queries: undefined },
+    { references: undefined, queries: ["select 1"] },
+  ])
+  assert.deepEqual(fenced("~~~~"), fenced("```"))
+})
+
 test("a link's context reads as the page shows it: a tied figure as its figure, a value embed as ..., however it is cut", () => {
   const long = "word ".repeat(40).trim()
   const list = blocks(

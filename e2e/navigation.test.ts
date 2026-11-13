@@ -513,6 +513,7 @@ test("Saved later: the not-found page becomes the document once one is saved at 
   write({ "notes/later.md": "# Later\n\nSaved after all." })
   await page.waitForSelector(".markdown-body > h1:text('Later')")
   assert.equal(await page.evaluate(() => (window as { kept?: boolean }).kept), true)
+  await waitFor(async () => (await page.title()) === "Later | later.md")
   assert.equal(await page.title(), "Later | later.md")
   assert.equal(await page.textContent(".markdown-body > p"), "Saved after all.")
   await page.close()

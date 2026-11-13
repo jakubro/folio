@@ -12,6 +12,7 @@ import { digest } from "./digest.ts"
 import { confine } from "./files.ts"
 import type { Model } from "./model.ts"
 import { alive, startOf } from "./processes.ts"
+import { writers } from "./writers.ts"
 
 export interface ViewProblem {
   line: number
@@ -64,6 +65,7 @@ const ECHOES = 3
 const DIGEST_MS = 60_000
 const DAY_MS = 86_400_000
 const SAVED = new WeakMap<Model, Saved>()
+const JOURNALS = new Map<string, Promise<void>>()
 
 export function savedOf(model: Model, data: Data): Saved {
   let saved = SAVED.get(model)
@@ -86,6 +88,7 @@ export class Saved {
   readonly #file: string
   readonly #journal: string
   readonly #listeners = new Set<(urlPath: string) => void>()
+  readonly #writes = new Set<(file: string) => void>()
   readonly #failed = new Map<string, ViewProblem[]>()
   readonly #refused = new Map<string, ViewProblem[]>()
   readonly #echoes = new Map<string, number>()
@@ -95,6 +98,7 @@ export class Saved {
   readonly #ownFolders = new Map<string, { until: number; seen: string }>()
   readonly #wroteAt = new Map<string, number>()
   readonly #wrote = new Map<string, string>()
+  readonly #writingIn = new Set<string>()
   #later: NodeJS.Timeout | undefined
   #retry: NodeJS.Timeout | undefined
   #boundary: NodeJS.Timeout | undefined
@@ -102,22 +106,31 @@ export class Saved {
   #kept: Record<string, Kept> | undefined
   #timer: NodeJS.Timeout | undefined
   #running: Promise<void> | undefined
+  #swept: Promise<void> | undefined
   #again = false
 
   readonly #digestMs: number
   readonly #now: () => number
+  readonly #held: (file: string, stat: fs.Stats) => Promise<boolean>
 
-  constructor(model: Model, data: Data, digestMs = DIGEST_MS, now = Date.now) {
+  constructor(
+    model: Model,
+    data: Data,
+    digestMs = DIGEST_MS,
+    now = Date.now,
+    held = (file: string, stat: fs.Stats) => writers.held(file, stat),
+  ) {
     this.#model = model
     this.#data = data
     this.#digestMs = digestMs
     this.#now = now
+    this.#held = held
     this.#file = path.join(model.store, "views.json")
     this.#journal = path.join(model.store, "writing.json")
   }
 
   start(): void {
-    this.#sweep()
+    this.#swept = this.#sweep()
     this.#model.listen((changed) => {
       this.#heard(changed)
       this.#schedule()
@@ -126,7 +139,8 @@ export class Saved {
       const own = this.#ownFolders.get(dir)
       const seen = own && own.until >= Date.now() ? folderState(dir) : undefined
 
-      if (seen === undefined || seen !== own?.seen) {
+      // A change heard while Folio writes here is its own copy; another's is caught once the write ends.
+      if (!this.#writingIn.has(dir) && (seen === undefined || seen !== own?.seen)) {
         this.#othersHeard++
       }
 
@@ -141,6 +155,10 @@ export class Saved {
 
   listen(listener: (urlPath: string) => void): void {
     this.#listeners.add(listener)
+  }
+
+  listenWrites(listener: (file: string) => void): void {
+    this.#writes.add(listener)
   }
 
   problems(urlPath: string): ViewProblem[] {
@@ -176,7 +194,7 @@ export class Saved {
             this.#schedule()
           }
         })
-    }, SETTLE_MS)
+    })
   }
 
   #heard(changed: readonly string[] | undefined): void {
@@ -190,6 +208,8 @@ export class Saved {
   }
 
   async #pass(): Promise<void> {
+    await this.#swept
+
     if (!this.#model.ready) {
       return
     }
@@ -198,7 +218,7 @@ export class Saved {
     this.#kept ??= await readKept(this.#file)
     const conventions = conventionsOf(this.#model)
     const seen = new Set<string>()
-    const digests = this.#digests(conventions.digests())
+    const digests = await this.#digests(conventions.digests())
 
     for (const urlPath of new Set([...digests.keys(), ...this.#model.paths()])) {
       const file = path.join(this.#model.root, urlPath)
@@ -210,7 +230,11 @@ export class Saved {
 
       if (text?.includes(MARK)) {
         seen.add(urlPath)
-        await this.#document(urlPath, file, text, heard, digests.get(urlPath))
+
+        // Before the model reads Folio's own write, a view over the document tables sees the text before it.
+        if ((this.#own.get(urlPath) ?? 0) < Date.now()) {
+          await this.#document(urlPath, file, text, heard, digests.get(urlPath))
+        }
       }
     }
 
@@ -223,7 +247,7 @@ export class Saved {
     }
   }
 
-  #digests(declared: Digest[]): Map<string, DigestAsked> {
+  async #digests(declared: Digest[]): Promise<Map<string, DigestAsked>> {
     const found = new Map<string, DigestAsked>()
     const refused = new Map<string, ViewProblem[]>()
     const root = this.#model.root
@@ -276,7 +300,10 @@ export class Saved {
         const there = fs.statSync(file, { throwIfNoEntry: false })
 
         if (!there) {
-          this.#replace(file, Buffer.from(`# Digest\n\n${MARK} digest -->\n<!-- /folio view -->\n`))
+          await this.#replace(
+            file,
+            Buffer.from(`# Digest\n\n${MARK} digest -->\n<!-- /folio view -->\n`),
+          )
         } else if (!there.isFile()) {
           failed = there.isDirectory() ? "EISDIR" : "EEXIST"
         }
@@ -560,7 +587,7 @@ export class Saved {
     const age = Date.now() - stat.mtimeMs
     const stirring = this.#wrote.get(file) !== stamp(stat) && age >= 0 && age < QUIET_MS
 
-    if (stirring || heldForWriting(file, stat)) {
+    if (stirring || (await this.#held(file, stat))) {
       this.#retryIn(stirring ? Math.max(SETTLE_MS, QUIET_MS - age) : QUIET_MS)
       return false
     }
@@ -571,16 +598,29 @@ export class Saved {
     }
 
     const until = Date.now() + OWN_MS
+    const dir = path.dirname(file)
     this.#own.set(urlPath, until)
     this.#own.set(path.relative(root, file).split(path.sep).join("/"), until)
-    this.#replace(file, Buffer.from(next, "latin1"), stat)
-    this.#wrote.set(file, stamp(fs.statSync(file)))
+    this.#writingIn.add(dir)
 
-    if (folderState(path.dirname(file), file) !== folderBefore) {
-      this.#othersHeard++
+    try {
+      await this.#replace(file, Buffer.from(next, "latin1"), stat)
+
+      for (const listener of this.#writes) {
+        listener(file)
+      }
+
+      this.#wrote.set(file, stamp(fs.statSync(file)))
+
+      if (folderState(dir, file) !== folderBefore) {
+        this.#othersHeard++
+      }
+
+      this.#ownFolders.set(dir, { until, seen: folderState(dir) })
+    } finally {
+      this.#writingIn.delete(dir)
     }
 
-    this.#ownFolders.set(path.dirname(file), { until, seen: folderState(path.dirname(file)) })
     return true
   }
 
@@ -599,48 +639,45 @@ export class Saved {
    * A rename would part a file from its other hard links, or from an owner Folio cannot give a new file,
    * so such a file is written over in place instead.
    */
-  #replace(file: string, bytes: Buffer, stat?: fs.Stats): void {
+  async #replace(file: string, bytes: Buffer, stat?: fs.Stats): Promise<void> {
     if (stat && stat.nlink > 1) {
-      this.#inPlace(file, bytes)
+      await this.#inPlace(file, bytes)
       return
     }
 
     // Named apart from the document, so a document's name of any length leaves room for it.
     const temporary = path.join(path.dirname(file), `.${randomUUID()}.folio`)
-    this.#writing(temporary, true)
-    let handle: number | undefined
+    await this.#writing(temporary, true)
+    let handle: fs.promises.FileHandle | undefined
 
     try {
-      handle = fs.openSync(temporary, "wx")
-      fs.writeFileSync(handle, bytes)
+      handle = await fs.promises.open(temporary, "wx")
+      await handle.writeFile(bytes)
 
       if (stat) {
-        fs.fchmodSync(handle, stat.mode & 0o7777)
-        const made = fs.fstatSync(handle)
+        await handle.chmod(stat.mode & 0o7777)
+        const made = await handle.stat()
 
         if (made.uid !== stat.uid || made.gid !== stat.gid) {
           try {
-            fs.fchownSync(handle, stat.uid, stat.gid)
+            await handle.chown(stat.uid, stat.gid)
           } catch {
-            fs.closeSync(handle)
+            await handle.close()
             handle = undefined
-            this.#inPlace(file, bytes)
+            await this.#inPlace(file, bytes)
             return
           }
         }
       }
 
-      fs.fsyncSync(handle)
-      fs.closeSync(handle)
+      await handle.sync()
+      await handle.close()
       handle = undefined
       fs.renameSync(temporary, file)
     } finally {
-      if (handle !== undefined) {
-        fs.closeSync(handle)
-      }
-
-      fs.rmSync(temporary, { force: true })
-      this.#writing(temporary, false)
+      await handle?.close()
+      await fs.promises.rm(temporary, { force: true })
+      await this.#writing(temporary, false)
     }
   }
 
@@ -648,41 +685,47 @@ export class Saved {
    * The document's old and new text are kept beside it, flushed, until the write is done, so a write cut short
    * by Folio stopping is finished when it starts again.
    */
-  #inPlace(file: string, bytes: Buffer): void {
+  async #inPlace(file: string, bytes: Buffer): Promise<void> {
     const id = randomUUID()
     const fresh = path.join(path.dirname(file), `.${id}.folio`)
     const old = path.join(path.dirname(file), `.old.${id}.folio`)
-    this.#writing(fresh, true)
-    this.#writing(old, true)
+    await this.#writing(fresh, true)
+    await this.#writing(old, true)
 
     try {
-      durably(old, fs.readFileSync(file))
-      durably(fresh, bytes)
-      this.#writing(fresh, true, { target: file, old })
+      await durably(old, await fs.promises.readFile(file))
+      await durably(fresh, bytes)
+      await this.#writing(fresh, true, { target: file, old })
+      // At once, so nothing in Folio reads it half written: the writers check skips Folio.
       inPlace(file, bytes)
     } finally {
-      fs.rmSync(fresh, { force: true })
-      fs.rmSync(old, { force: true })
-      this.#writing(fresh, false)
-      this.#writing(old, false)
+      await fs.promises.rm(fresh, { force: true })
+      await fs.promises.rm(old, { force: true })
+      await this.#writing(fresh, false)
+      await this.#writing(old, false)
     }
   }
 
-  /** Noted before it is made, so one left by a Folio killed before renaming it is removed, not committed. */
-  #writing(temporary: string, made: boolean, mend?: Mend): void {
-    const noted = readJournal(this.#journal)
-
-    if (made) {
-      noted[temporary] = { pid: process.pid, start: startOf("self"), ...(mend && { mend }) }
-    } else {
-      delete noted[temporary]
-    }
-
-    writeJournal(this.#journal, noted)
+  /**
+   * Noted before it is made, so one a killed Folio left unrenamed is removed, not committed.
+   * A note dropped once the write is done is not flushed: kept by a crash, it names a file gone.
+   */
+  #writing(temporary: string, made: boolean, mend?: Mend): Promise<void> {
+    return journaled(
+      this.#journal,
+      (noted) => {
+        if (made) {
+          noted[temporary] = { pid: process.pid, start: startOf("self"), ...(mend && { mend }) }
+        } else {
+          delete noted[temporary]
+        }
+      },
+      made,
+    )
   }
 
-  #sweep(): void {
-    const noted = readJournal(this.#journal)
+  async #sweep(): Promise<void> {
+    const noted = await readJournal(this.#journal)
     const gone = Object.entries(noted).filter(([, { pid, start }]) => !alive(pid, start))
 
     for (const [fresh, { mend }] of gone) {
@@ -695,11 +738,17 @@ export class Saved {
       if (TEMPORARY.test(path.basename(temporary))) {
         fs.rmSync(temporary, { force: true })
       }
-
-      delete noted[temporary]
     }
 
-    writeJournal(this.#journal, noted)
+    await journaled(
+      this.#journal,
+      (current) => {
+        for (const [temporary] of gone) {
+          delete current[temporary]
+        }
+      },
+      true,
+    )
   }
 
   #mend(file: string, fresh: string, old: string): void {
@@ -858,94 +907,6 @@ function contained(body: string): string {
 }
 
 /**
- * Linux names every file a process holds open; elsewhere only the file's stillness tells. fdinfo names a
- * descriptor's mount and inode, so only one on the document's own filesystem is looked at - a hung mount
- * elsewhere cannot stall the check - and its device and inode decide, as btrfs subvolumes share a mount
- * device while repeating inode numbers. Another hard link counts too. Without a mount, its path decides.
- */
-function heldForWriting(file: string, { dev, ino }: fs.Stats): boolean {
-  let pids: string[]
-
-  try {
-    pids = fs.readdirSync("/proc").filter((pid) => /^\d+$/.test(pid) && Number(pid) !== process.pid)
-  } catch {
-    return false
-  }
-
-  const mounts = new Map<string, string>()
-  const device = ownDevice(file, mounts)
-
-  for (const pid of pids) {
-    let descriptors: string[]
-
-    try {
-      descriptors = fs.readdirSync(`/proc/${pid}/fd`)
-    } catch {
-      continue
-    }
-
-    for (const descriptor of descriptors) {
-      try {
-        const at = `/proc/${pid}/fd/${descriptor}`
-        const info = fs.readFileSync(`/proc/${pid}/fdinfo/${descriptor}`, "utf8")
-        const flags = Number.parseInt(/^flags:\s*(\d+)/m.exec(info)?.[1] ?? "0", 8)
-        const held = /^ino:\s*(\d+)/m.exec(info)?.[1]
-
-        // The access mode's two bits: write only or read and write.
-        if ((flags & 3) === 0 || (held !== undefined && Number(held) !== ino)) {
-          continue
-        }
-
-        if (device === undefined) {
-          if (fs.readlinkSync(at) === file) {
-            return true
-          }
-        } else if (deviceOf(pid, info, mounts) === device) {
-          const target = fs.statSync(at)
-
-          if (target.dev === dev && target.ino === ino) {
-            return true
-          }
-        }
-      } catch {
-        // The process or its descriptor went meanwhile.
-      }
-    }
-  }
-
-  return false
-}
-
-/** Read from the mount table as another program's descriptor is, not from stat, whose device can differ. */
-function ownDevice(file: string, mounts: Map<string, string>): string | undefined {
-  let handle: number | undefined
-
-  try {
-    handle = fs.openSync(file, "r")
-    return deviceOf("self", fs.readFileSync(`/proc/self/fdinfo/${handle}`, "utf8"), mounts)
-  } catch {
-    return undefined
-  } finally {
-    if (handle !== undefined) {
-      fs.closeSync(handle)
-    }
-  }
-}
-
-function deviceOf(pid: string, info: string, mounts: Map<string, string>): string | undefined {
-  const mount = /^mnt_id:\s*(\d+)/m.exec(info)?.[1]
-
-  if (!mounts.has(pid)) {
-    mounts.set(pid, fs.readFileSync(`/proc/${pid}/mountinfo`, "utf8"))
-  }
-
-  return (mounts.get(pid) as string)
-    .split("\n")
-    .find((line) => line.startsWith(`${mount} `))
-    ?.split(" ")[2]
-}
-
-/**
  * What a folder holds, Folio's own copies left out, so a later look tells another program's change apart.
  * Every name leading to the document is left out too: a hard link or a link to it moves with each write.
  */
@@ -1025,28 +986,48 @@ async function writeKept(file: string, kept: Record<string, Kept>): Promise<void
   await fs.promises.rename(`${file}.tmp`, file)
 }
 
-function readJournal(file: string): Journal {
+/** One change at a time to each journal: two interleaved would read the same notes and lose one. */
+function journaled(
+  file: string,
+  change: (noted: Journal) => void,
+  flushed: boolean,
+): Promise<void> {
+  const run = (JOURNALS.get(file) ?? Promise.resolve()).then(async () => {
+    const noted = await readJournal(file)
+    change(noted)
+    await writeJournal(file, noted, flushed)
+  })
+
+  JOURNALS.set(
+    file,
+    run.catch(() => {}),
+  )
+  return run
+}
+
+async function readJournal(file: string): Promise<Journal> {
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8"))
+    return JSON.parse(await fs.promises.readFile(file, "utf8"))
   } catch {
     return {}
   }
 }
 
-function writeJournal(file: string, noted: Journal): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  durably(`${file}.tmp`, Buffer.from(JSON.stringify(noted)), "w")
-  fs.renameSync(`${file}.tmp`, file)
+async function writeJournal(file: string, noted: Journal, flushed: boolean): Promise<void> {
+  const bytes = Buffer.from(JSON.stringify(noted))
+  await fs.promises.mkdir(path.dirname(file), { recursive: true })
+  await (flushed ? durably(`${file}.tmp`, bytes, "w") : fs.promises.writeFile(`${file}.tmp`, bytes))
+  await fs.promises.rename(`${file}.tmp`, file)
 }
 
-function durably(file: string, bytes: Buffer, flags = "wx"): void {
-  const handle = fs.openSync(file, flags)
+async function durably(file: string, bytes: Buffer, flags = "wx"): Promise<void> {
+  const handle = await fs.promises.open(file, flags)
 
   try {
-    fs.writeFileSync(handle, bytes)
-    fs.fsyncSync(handle)
+    await handle.writeFile(bytes)
+    await handle.sync()
   } finally {
-    fs.closeSync(handle)
+    await handle.close()
   }
 }
 

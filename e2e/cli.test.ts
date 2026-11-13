@@ -39,7 +39,7 @@ test("Help, Command help, Version: laid out, coloured on a terminal, and exit 0"
       assert.match(stdout, new RegExp(`\\n${section}\\n`), `${flag}: ${section}`)
     }
 
-    assert.match(stdout, /\n {2}--verbose {6}Print every request and update/)
+    assert.match(stdout, /\n {2}--verbose {10}Print every request and update/)
   }
 
   for (const command of ["check", "lsp", "mcp"]) {
@@ -76,6 +76,43 @@ test("Bad option, Not a folder: one line naming what is wrong, after a bad optio
   const missing = folio(["/nope-not-a-folder"])
   assert.equal(missing.status, 2)
   assert.equal(missing.stderr, "Not a folder: /nope-not-a-folder\n")
+})
+
+test("a components folder outside the served folder, or none at all, stops Folio before it starts; a check reads the folders it is given", () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-components-")))
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-outside-")))
+
+  try {
+    for (const command of [[], ["check"], ["lsp"]]) {
+      const refused = folio([...command, folder, "--components", outside])
+
+      assert.equal(refused.status, 2, command.join(" "))
+      assert.equal(
+        refused.stderr,
+        `A components folder must lie inside the folder Folio serves: ${outside} is outside ${folder}.\n`,
+      )
+    }
+
+    const absent = folio([folder, "--components", path.join(folder, "absent")])
+    assert.equal(absent.status, 2)
+    assert.equal(absent.stderr, `Not a folder: ${path.join(folder, "absent")}\n`)
+
+    writeIn(folder, {
+      "page.md": "# Page\n\n```component levels\n```\n",
+      "comps/levels.js": "export default () => {}\n",
+    })
+    const unnamed = folio(["check", folder])
+    assert.match(
+      unnamed.stdout,
+      /^page\.md:3 +- +component +No components folder holds levels\.js: none was named with --components\.$/m,
+    )
+    const named = folio(["check", folder, "--components", path.join(folder, "comps")])
+    assert.equal(named.status, 0)
+    assert.ok(!named.stdout.includes("component"), named.stdout)
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
 })
 
 test("Start, Opening pages, Problems, Every request, Piped: a running Folio prints what a person watching wants", async () => {
@@ -161,6 +198,10 @@ test("Start, Opening pages, Problems, Every request, Piped: a running Folio prin
       "TIME opened /gone.md",
       "TIME opened /b.md",
     ])
+
+    fs.mkdirSync(path.join(folder, "lib/components"), { recursive: true })
+    const drawing = await serve("--components", path.join(folder, "lib/components"))
+    assert.equal(lines(drawing.said())[2], "  components from lib/components")
 
     const verbose = await serve("--verbose")
     await browse(verbose.base)

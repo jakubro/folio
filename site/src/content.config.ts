@@ -1,10 +1,12 @@
 import { defineCollection } from "astro:content"
 import { readFileSync } from "node:fs"
-import { docsSchema } from "@astrojs/starlight/schema"
+import { i18nLoader } from "@astrojs/starlight/loaders"
+import { docsSchema, i18nSchema } from "@astrojs/starlight/schema"
 import { glob, type Loader } from "astro/loaders"
 
 const LEADING_HEADING_RE = /^#\s+(.+)$/m
 const OUTLINELESS_RE = /^(guide|reference)\//
+const NOT_FOUND = "404"
 
 // docsLoader() cannot be repointed off src/content/docs; glob() can. `parseData` synthesizes
 // Starlight's required `title` from each file's H1 - a remark plugin runs after it, too late.
@@ -34,6 +36,11 @@ function titledDocsLoader(): Loader {
             props.data = { ...props.data, tableOfContents: false }
           }
 
+          // Starlight's own 404 route draws this page; as a draft it is not routed a second time.
+          if (props.id === NOT_FOUND) {
+            props.data = { ...props.data, draft: true }
+          }
+
           return context.parseData(props)
         },
       }),
@@ -42,4 +49,5 @@ function titledDocsLoader(): Loader {
 
 export const collections = {
   docs: defineCollection({ loader: titledDocsLoader(), schema: docsSchema() }),
+  i18n: defineCollection({ loader: i18nLoader(), schema: i18nSchema() }),
 }

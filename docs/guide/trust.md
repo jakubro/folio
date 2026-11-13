@@ -4,7 +4,7 @@
 
 ![The report's table with its provenance open beside its ⓘ: its lines, the query and the data file it reads with when each changed, and the declaration applying to the page](../images/provenance.png)
 
-**Health** - the warning button lists everything wrong in the folder, in documents you never opened too: contradicted figures, broken links and includes, diagrams and charts that do not draw, failing queries, data that cannot be read, values that do not fit their field and broken rules. Each entry opens its document at the problem, and the list follows as things break and get fixed. A warning sign in the tree marks every file health lists a problem for, and every folder holding one - pointing at a file gives the count - and a document's outline lists its own problems after its headings, each a click from its line.
+**Health** - the warning button lists everything wrong in the folder, in documents you never opened too: contradicted figures, broken links and includes, diagrams, charts and components that do not draw, failing queries, data that cannot be read, frontmatter that is not YAML, values that do not fit their field and broken rules. Each entry opens its document at the problem, and the list follows as things break and get fixed. A warning sign in the tree marks every file health lists a problem for, and every folder holding one - pointing at a file gives the count - and a document's outline lists its own problems after its headings, each a click from its line.
 
 ![The health view grouping a contradicted figure, a broken link, a missing include, a value that is not a date and a rule error, each under its folder](../images/health.png)
 

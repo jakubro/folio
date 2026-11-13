@@ -12,10 +12,16 @@ import {
   type NeedsState,
   needsFrom,
   problemNeeds,
+  problemNeedsIn,
 } from "./needs.ts"
 import { type ChangedDocument, changesState } from "./versions.ts"
 
 type Part = "problems" | "attention" | "changed" | "health" | "changes"
+
+interface Answered<T> {
+  state: T | undefined
+  fresh: boolean
+}
 
 interface ChangesState {
   documents: ChangedDocument[]
@@ -28,10 +34,48 @@ const SHOWNS = new WeakMap<Model, Shown>()
 const LATE = Symbol("late")
 
 export async function shownNeeds(model: Model, data: Data): Promise<NeedsState> {
+  const problems = shownOf(model).answer<NeedsPart>("problems", problemNeeds(model, data))
+  const { checking: _, ...needs } = await neededNow(model, data, problems)
+  return needs
+}
+
+/** As shownNeeds, saying whether a part is still worked out, a path's problems first; unready while read. */
+export async function latestNeeds(
+  model: Model,
+  data: Data,
+  at?: string,
+): Promise<NeedsState & { checking: boolean }> {
+  if (!model.ready) {
+    return { ...needsFrom([undefined]), checking: true }
+  }
+
+  const health = healthOf(model, data)
+  const problems =
+    at === undefined
+      ? shownOf(model)
+          .answer<NeedsPart>("problems", problemNeeds(model, data))
+          .then(async (answered) =>
+            answered.fresh || !health.checked
+              ? answered
+              : { state: await problemNeedsIn(model, health.checked), fresh: false },
+          )
+      : health
+          .checkedAt(at)
+          .then((checked) => problemNeedsIn(model, checked))
+          .then((state) => ({ state, fresh: state !== undefined }))
+
+  return neededNow(model, data, problems)
+}
+
+async function neededNow(
+  model: Model,
+  data: Data,
+  problems: Promise<Answered<NeedsPart>>,
+): Promise<NeedsState & { checking: boolean }> {
   const shown = shownOf(model)
   const [parts] = await Promise.all([
     Promise.all([
-      shown.answer<NeedsPart>("problems", problemNeeds(model, data)),
+      problems,
       shown.answer<NeedsPart>("attention", attentionNeeds(model, data)),
       shown.answer<NeedsPart>("changed", changedNeeds(model, data)),
     ]),
@@ -39,36 +83,46 @@ export async function shownNeeds(model: Model, data: Data): Promise<NeedsState> 
     shownHealth(model, data),
   ])
 
-  return needsFrom(parts)
+  return {
+    ...needsFrom(parts.map(({ state }) => state)),
+    checking: parts.some(({ fresh }) => !fresh),
+  }
 }
 
 /** The folder's health as worked out now, or else as last kept; unready only with nothing kept. */
 export async function shownHealth(model: Model, data: Data): Promise<HealthState> {
+  return (await healthPart(model, data)).state ?? { ready: false, problems: [], version: "" }
+}
+
+/** As shownHealth, saying whether a check is still to come; unready while the folder is read. */
+export async function latestHealth(
+  model: Model,
+  data: Data,
+): Promise<HealthState & { checking: boolean }> {
+  const { state, fresh } = model.ready
+    ? await healthPart(model, data)
+    : { state: undefined, fresh: false }
+  const latest = fresh || !model.ready ? state : (healthOf(model, data).checked ?? state)
+
+  return { ...(latest ?? { ready: false, problems: [], version: "" }), checking: !fresh }
+}
+
+/** The catch-up list as worked out now, or else as last kept; empty only with nothing kept. */
+export async function shownChanges(model: Model, data: Data): Promise<ChangesState> {
+  const work = model.ready ? changesState(model.root, model, data) : Promise.resolve(undefined)
+  const { state } = await shownOf(model).answer<ChangesState>("changes", work)
+
+  return state ?? { documents: [], version: "" }
+}
+
+function healthPart(model: Model, data: Data): Promise<Answered<HealthState>> {
   const work = model.ready
     ? healthOf(model, data)
         .state()
         .then((state) => (state.ready ? state : undefined))
     : Promise.resolve(undefined)
 
-  return (
-    (await shownOf(model).answer<HealthState>("health", work)) ?? {
-      ready: false,
-      problems: [],
-      version: "",
-    }
-  )
-}
-
-/** The catch-up list as worked out now, or else as last kept; empty only with nothing kept. */
-export async function shownChanges(model: Model, data: Data): Promise<ChangesState> {
-  const work = model.ready ? changesState(model.root, model, data) : Promise.resolve(undefined)
-
-  return (
-    (await shownOf(model).answer<ChangesState>("changes", work)) ?? {
-      documents: [],
-      version: "",
-    }
-  )
+  return shownOf(model).answer<HealthState>("health", work)
 }
 
 /** The one record of a model, so every page and the update hub share what is kept. */
@@ -106,9 +160,7 @@ class Shown {
    * What the work finds within a moment, or else the part as last kept - undefined with none - while
    * the work goes on. Work finding undefined cannot tell yet, and leaves what is kept alone.
    */
-  async answer<T>(part: Part, work: Promise<T | undefined>): Promise<T | undefined> {
-    this.#loaded ??= this.#load()
-    await this.#loaded
+  async answer<T>(part: Part, work: Promise<T | undefined>): Promise<Answered<T>> {
     const done = work.then((state) => {
       if (state !== undefined) {
         this.#keep(part, state)
@@ -116,20 +168,19 @@ class Shown {
 
       return state
     })
+    // A failure after the page was answered has no request left to fail.
+    done.catch(() => {})
+    this.#loaded ??= this.#load()
+    await this.#loaded
     let timer: NodeJS.Timeout | undefined
     const late = new Promise<typeof LATE>((resolve) => {
       timer = setTimeout(() => resolve(LATE), WAIT_MS)
     })
     const first = await Promise.race([done, late]).finally(() => clearTimeout(timer))
 
-    if (first === LATE) {
-      // A failure after the page was answered has no request left to fail.
-      done.catch(() => {})
-    }
-
     return first !== LATE && first !== undefined
-      ? first
-      : (this.#kept.get(part)?.state as T | undefined)
+      ? { state: first, fresh: true }
+      : { state: this.#kept.get(part)?.state as T | undefined, fresh: false }
   }
 
   #keep(part: Part, state: unknown): void {

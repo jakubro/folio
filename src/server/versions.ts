@@ -6,10 +6,11 @@ import path from "node:path"
 import type { Data } from "./data.ts"
 import { type Entry, listing } from "./files.ts"
 import { impactOf, type Upstream } from "./impact.ts"
-import { expand } from "./includes.ts"
+import { expand, expandText } from "./includes.ts"
 import type { Backlink, Model, PageBlock } from "./model.ts"
 import { drawnOf, partsOf } from "./parts.ts"
 import type { Changed, LinkMark, Mark, Removed } from "./reads.ts"
+import { steadyRead, writers } from "./writers.ts"
 
 export interface PageState {
   text: string
@@ -18,6 +19,7 @@ export interface PageState {
   version: string
   blocks: PageBlock[]
   layout: PageLayout
+  emptyIncludes: string[]
 }
 
 export interface PageLayout {
@@ -30,9 +32,29 @@ export interface FolderState {
   version: string
 }
 
-export function pageState(root: string, file: string, model?: Model): PageState {
-  const expansion = expand(root, file, model && ((target, text) => model.blocksReady(target, text)))
-  const { text, files, instances, owners } = expansion
+export interface SettledPage {
+  page: PageState
+  own: { text: string } | undefined
+}
+
+/** The page once in-place rewrites of its file and its includes end; returned at once unless one reads empty. */
+export function settledPage(
+  root: string,
+  file: string,
+  model?: Model,
+): SettledPage | Promise<SettledPage> {
+  const steady = steadyRead(file)
+
+  return steady?.text === ""
+    ? writers.settled(file).then((own) => withIncludes(root, file, model, own))
+    : withIncludes(root, file, model, steady)
+}
+
+export function pageState(root: string, file: string, model?: Model, own?: string): PageState {
+  const blocksOf = model && ((target: string, held: string) => model.blocksReady(target, held))
+  const expansion =
+    own === undefined ? expand(root, file, blocksOf) : expandText(root, file, own, blocksOf)
+  const { text, files, instances, owners, emptyIncludes } = expansion
   const placed = model?.page(instances) ?? { blocks: [], partial: false }
   const partial = expansion.partial || placed.partial
 
@@ -51,7 +73,24 @@ export function pageState(root: string, file: string, model?: Model): PageState 
       })),
       owners,
     },
+    emptyIncludes,
   }
+}
+
+function withIncludes(
+  root: string,
+  file: string,
+  model: Model | undefined,
+  own: { text: string } | undefined,
+): SettledPage | Promise<SettledPage> {
+  const page = pageState(root, file, model, own?.text)
+
+  return page.emptyIncludes.length === 0
+    ? { page, own }
+    : Promise.all(page.emptyIncludes.map((included) => writers.settled(included))).then(() => ({
+        page: pageState(root, file, model, own?.text),
+        own,
+      }))
 }
 
 export function linksState(

@@ -25,6 +25,18 @@ from 'data/daily.csv'
 
 ![A report page with a value in its first sentence, a contradicted figure underlined with the data's value beside it, a query's result, a table and a line chart of daily rain](../images/report.png)
 
+**Components** - a ` ```component levels ` fence draws whatever a script in a folder Folio starts with, `folio ~/notes --components ~/notes/components`, makes of the data its fence names - a calendar, a timeline, a form - and the script gets the new rows each time the data changes, keeping its own state. A component may hand Folio markdown - a diagram, a table, a formula - which Folio draws as on a page, as all of its drawing or among its own elements. Besides Folio's own, only the scripts of the folders it starts with run on a page. What the component asks to change leaves the page as an event for a browser extension's content script to carry out, and Folio writes nothing. See [Components](../reference/components.md).
+
+````markdown
+```component levels
+data:
+  readings: data/daily.csv
+title: Rain by station
+```
+````
+
+![A page drawing the levels component: a rain gauge per station under the title Rain by station, the north station open on its days, each with a Flag button](../images/component.png)
+
 **Figures checked against their data** - tie a figure in your prose to the value it quotes, `<data value="#totals#0.temp_c">9.4</data> °C`, and Folio checks it at the precision you typed it with. A figure the data contradicts is underlined in red with the data's value beside it, and a warning sign marks its block; one that agrees reads as plain text. Keep units outside the tag. On GitHub only the figure shows.
 
 **Documents as data** - the folder's own documents are tables too, with nothing to set up: `select path, text from folio.tasks where not done` lists every open task in the folder, and `folio.documents`, `folio.headings`, `folio.links`, `folio.frontmatter` and `folio.tables` hold the rest of their structure.

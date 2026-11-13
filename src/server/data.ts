@@ -22,12 +22,21 @@ import {
   RAW_JSON,
   type Readers,
   type Reference,
+  type Runner,
   resolve,
   Unreadable,
+  Walks,
 } from "./queries.ts"
 import { fileVersion } from "./versions.ts"
 
 export type Cell = string | number | boolean | null
+
+interface PlannedFiles {
+  files: string[]
+  documents: string[]
+  dirs: string[]
+  linked: boolean
+}
 
 interface Column {
   name: string
@@ -61,6 +70,7 @@ export interface Embedded {
   grid?: Grid
   value?: unknown
   error?: string
+  waiting?: string
 }
 
 export interface DataPage {
@@ -99,6 +109,8 @@ const FIRST_ROWS = 10
 const QUERY_MS = 10_000
 const COPY_WAIT_MS = 1000
 const NESTING = 5
+const PLANNED_KEPT = 256
+const PLANNING = 2
 const COPY_BATCH = 5000
 /** Below Node's four worker threads, so one is always free to carry a running query's interruption. */
 const RUNNING = 3
@@ -111,6 +123,7 @@ const CLOSE_POLL_MS = 50
 /** An engine interruption lands within milliseconds; what is still running by then is no engine work. */
 const CLOSE_WAIT_MS = 2000
 const MISSING = "missing"
+const READING = "Folio is still reading the folder."
 const TREE_BYTES = 20 * 1024 * 1024
 const DEPTH = 1000
 const YAML_BYTES = 2 * 1024 * 1024
@@ -169,6 +182,7 @@ type Connection = Awaited<ReturnType<Instance["connect"]>>
 
 /** The folder's documents as tables, and a version that moves whenever any of them may have changed. */
 export interface DocumentTables {
+  readonly ready: boolean
   versionOf(tables: readonly string[]): string
   table(schema: "folio" | "kind", name: string): DocumentTable | undefined
 }
@@ -288,6 +302,19 @@ export class Data {
   readonly #root: string
   #blocksOf: BlocksOf | undefined
   #documents: DocumentTables | undefined
+  #walks: Walks | undefined
+  #watches: (dir: string) => boolean = () => false
+  #heardCount = 0
+  readonly #planned = new Map<
+    string,
+    { heard: number; read: string[]; done: Promise<PlannedFiles> }
+  >()
+  #planning = 0
+  readonly #planQueue: (() => void)[] = []
+  readonly #parser: Runner = {
+    runAndReadAll: (text, values) =>
+      this.#with((connection) => connection.runAndReadAll(text, values)),
+  }
   /** This process's own folder for spill files and copies; another process serving the folder has its own. */
   readonly #own: string
   readonly #copies = new Map<string, { source: string; holders: number; stale: boolean }>()
@@ -504,7 +531,9 @@ export class Data {
         ? { version, value: walk(records(read.grid), part) }
         : { version, grid: read.grid }
     } catch (error) {
-      return { version, error: this.#message(error) }
+      return error instanceof Reading
+        ? { version, waiting: READING }
+        : { version, error: this.#message(error) }
     }
   }
 
@@ -514,7 +543,9 @@ export class Data {
       const { grid } = await this.#shared(sql, folder, version)
       return part ? { version, value: walk(records(grid), part) } : { version, grid }
     } catch (error) {
-      return { version, error: this.#message(error) }
+      return error instanceof Reading
+        ? { version, waiting: READING }
+        : { version, error: this.#message(error) }
     }
   }
 
@@ -565,7 +596,11 @@ export class Data {
         return { grid, files: [...run.files] }
       } catch (error) {
         // The part an error escaped is kept against the error object, which a new Error would lose.
-        if (partOf(error) !== undefined || error instanceof Unreadable) {
+        if (
+          partOf(error) !== undefined ||
+          error instanceof Unreadable ||
+          error instanceof Reading
+        ) {
           throw error
         }
 
@@ -600,6 +635,22 @@ export class Data {
   /** Lend the folder's documents as tables, so queries read `folio.<name>` and `kind.<name>`. */
   useDocuments(documents: DocumentTables): void {
     this.#documents = documents
+  }
+
+  /** Lend the folders the model watches, so a pattern's walk is kept until a change in its folders is heard. */
+  useFolders(folders: {
+    watches(dir: string): boolean
+    listenFolders(listener: (dir: string) => void): void
+  }): void {
+    this.#watches = (dir) => folders.watches(dir)
+    this.#walks = new Walks(this.#watches)
+    folders.listenFolders((dir) => this.heard(dir))
+  }
+
+  /** Hear a folder in which a file changed before the model does, so no walk or plan through it is reused. */
+  heard(dir: string): void {
+    this.#walks?.heard(dir)
+    this.#heardCount++
   }
 
   /** A piece of a document's text as its page shows it, includes expanded. */
@@ -697,7 +748,10 @@ export class Data {
   }> {
     try {
       const { files, sql, documents, dirs } = await this.#readsOf(from, reference)
-      const moved = documents.length > 0 ? `${sql}\0${this.#documents?.versionOf(documents)}` : sql
+      // While the folder is read the tables move with every document; what reads them moves once it is whole.
+      const tables =
+        this.#documents?.ready === false ? READING : this.#documents?.versionOf(documents)
+      const moved = documents.length > 0 ? `${sql}\0${tables}` : sql
       return {
         files,
         version: versionOf(files, moved),
@@ -705,8 +759,28 @@ export class Data {
         ...(dirs.length > 0 && { dirs }),
       }
     } catch (error) {
-      const { missing, dirs } = error as { missing?: string; dirs?: string[] }
-      return { files: [], version: MISSING, ...(missing && { missing }), ...(dirs && { dirs }) }
+      const {
+        missing,
+        dirs,
+        read = [],
+      } = error as {
+        missing?: string
+        dirs?: string[]
+        read?: string[]
+      }
+
+      // Asked again on any change to the documents, so the end of the folder's first reading is heard.
+      if (error instanceof Reading) {
+        return { files: read, version: versionOf(read, READING), tables: [] }
+      }
+
+      // A query file that fails stays read, so fixing it is heard and moves the version.
+      return {
+        files: read,
+        version: read.length > 0 ? versionOf(read, MISSING) : MISSING,
+        ...(missing && { missing }),
+        ...(dirs && { dirs }),
+      }
     }
   }
 
@@ -1452,7 +1526,12 @@ export class Data {
         return { files: [], sql: "", documents: [], dirs: [] }
       }
 
-      const { files, documents, dirs } = await this.#queryFiles(fence.sql, folder, [])
+      const read: string[] = []
+      const { files, documents, dirs } = await this.#queryFiles(fence.sql, folder, [], read).catch(
+        (error) => {
+          throw Object.assign(error, { read })
+        },
+      )
       return { files: absolute(files), sql: fence.sql, documents, dirs }
     }
 
@@ -1462,8 +1541,16 @@ export class Data {
       return { files: [file], sql: "", documents: [], dirs: [] }
     }
 
+    const read = [file]
     const text = fs.readFileSync(file, "utf8")
-    const { files, documents, dirs } = await this.#queryFiles(text, path.dirname(file), [file])
+    const { files, documents, dirs } = await this.#queryFiles(
+      text,
+      path.dirname(file),
+      [file],
+      read,
+    ).catch((error) => {
+      throw Object.assign(error, { read })
+    })
     return { files: [file, ...absolute(files)], sql: "", documents, dirs }
   }
 
@@ -1491,28 +1578,98 @@ export class Data {
     )
   }
 
+  /**
+   * Callers asking alike before another folder change is heard share one plan; one whose folders were all
+   * watched is kept until then. At most two run at once, so a burst of them never starves the folder model.
+   */
   async #queryFiles(
     sql: string,
     folder: string,
     nesting: string[],
+    read: string[] = [],
   ): Promise<{ files: string[]; documents: string[]; dirs: string[] }> {
-    return this.#with((connection) => this.#filesOf(connection, sql, folder, nesting))
+    const key = `${folder}\0${nesting.join("\0")}\0${sql}`
+    let held = this.#planned.get(key)
+
+    if (held?.heard !== this.#heardCount) {
+      const planned: string[] = []
+      const planning = {
+        heard: this.#heardCount,
+        read: planned,
+        done: this.#planSlot(() => this.#filesOf(this.#parser, sql, folder, nesting, planned)),
+      }
+      held = planning
+      this.#planned.delete(key)
+      this.#planned.set(key, planning)
+      planning.done.then(
+        (planned) => {
+          const read = [
+            ...planned.files.map((file) => path.join(this.#root, file)),
+            ...planning.read,
+          ]
+          const watched =
+            !planned.linked &&
+            planned.dirs.every((dir) => this.#watches(dir)) &&
+            read.every((file) => this.#watches(path.dirname(file)))
+
+          if (!watched && this.#planned.get(key) === planning) {
+            this.#planned.delete(key)
+          }
+        },
+        () => {
+          if (this.#planned.get(key) === planning) {
+            this.#planned.delete(key)
+          }
+        },
+      )
+
+      for (const old of this.#planned.keys()) {
+        if (this.#planned.size <= PLANNED_KEPT) {
+          break
+        }
+
+        this.#planned.delete(old)
+      }
+    }
+
+    try {
+      return await held.done
+    } finally {
+      read.push(...held.read)
+    }
   }
 
-  /** Nested queries are planned on the same connection, so planning never waits on itself for one. */
+  async #planSlot<T>(work: () => Promise<T>): Promise<T> {
+    if (this.#planning >= PLANNING) {
+      await new Promise<void>((start) => this.#planQueue.push(start))
+    } else {
+      this.#planning++
+    }
+
+    try {
+      return await work()
+    } finally {
+      const next = this.#planQueue.shift()
+
+      if (next) {
+        next()
+      } else {
+        this.#planning--
+      }
+    }
+  }
+
+  /** Only a parse takes an engine place, and only while it runs, so nested planning never waits on itself. */
   async #filesOf(
-    connection: Connection,
+    parser: Runner,
     sql: string,
     folder: string,
     nesting: string[],
-  ): Promise<{ files: string[]; documents: string[]; dirs: string[] }> {
-    const nested: { files: string[]; documents: string[]; dirs: string[] } = {
-      files: [],
-      documents: [],
-      dirs: [],
-    }
+    read: string[],
+  ): Promise<PlannedFiles> {
+    const nested: PlannedFiles = { files: [], documents: [], dirs: [], linked: false }
     const planned = await plan(
-      connection,
+      parser,
       sql,
       this.#root,
       folder,
@@ -1521,25 +1678,35 @@ export class Data {
           Array.isArray(reference) || "readers" in reference ? { file: "", format: "" } : reference
 
         if (format === "sql" && !nesting.includes(file) && nesting.length < NESTING) {
+          read.push(file)
           const text = fs.readFileSync(file, "utf8")
-          const inner = await this.#filesOf(connection, text, path.dirname(file), [
-            ...nesting,
-            file,
-          ])
+          const inner = await this.#filesOf(
+            parser,
+            text,
+            path.dirname(file),
+            [...nesting, file],
+            read,
+          )
           nested.files.push(...inner.files)
           nested.documents.push(...inner.documents)
           nested.dirs.push(...inner.dirs)
+          nested.linked ||= inner.linked
         }
 
         return "folio_unread"
       },
-      this.#documents && (async () => "folio_unread"),
+      {
+        documents: this.#documents && (async () => "folio_unread"),
+        walks: this.#walks,
+        filesOnly: true,
+      },
     )
 
     return {
       files: [...planned.files, ...nested.files],
       documents: [...planned.documents, ...nested.documents],
       dirs: [...planned.dirs, ...nested.dirs],
+      linked: planned.linked || nested.linked,
     }
   }
 
@@ -1564,11 +1731,14 @@ export class Data {
       this.#root,
       folder,
       (reference, written) => this.#source(run, reference, nesting, written),
-      this.#documents && ((schema, name) => this.#documentView(run, schema, name)),
-      (readers) => {
-        run.readers += readers
+      {
+        documents: this.#documents && ((schema, name) => this.#documentView(run, schema, name)),
+        reserve: (readers) => {
+          run.readers += readers
+        },
+        absolute,
+        walks: this.#walks,
       },
-      absolute,
     )
 
     for (const file of planned.files) {
@@ -1584,6 +1754,12 @@ export class Data {
    */
   async #documentView(run: Run, schema: "folio" | "kind", name: string): Promise<string> {
     const documents = this.#documents as DocumentTables
+
+    // Until the folder is read whole a table lacks documents, and a kind may lack its declaration.
+    if (!documents.ready) {
+      throw new Reading(READING)
+    }
+
     const folder = path.join(this.#own, "documents")
     const stem = `${schema}.${name}@`
     const target = path.join(folder, `${stem}${documents.versionOf([`${schema}.${name}`])}.jsonl`)
@@ -1919,7 +2095,7 @@ export class Data {
         throw new Error(`${path.basename(file)} is too large to query.`)
       }
 
-      const { json, error } = await yamlJson(file, fs.readFileSync(file, "utf8"))
+      const { json, error } = await yamlJson(fs.readFileSync(file, "utf8"))
 
       if (json === undefined || error) {
         throw new Error(error ?? "The file holds no value.")
@@ -2394,7 +2570,7 @@ async function nested(file: string, format: Format, size: number): Promise<Parti
       return { error: message(error), text: text.slice(0, START_BYTES) }
     }
   } else {
-    const { json, error } = await yamlJson(file, text)
+    const { json, error } = await yamlJson(text)
     read =
       json === undefined || error?.startsWith("The file refers to itself")
         ? { error: error ?? "The file holds no value.", text: text.slice(0, START_BYTES) }
@@ -2430,10 +2606,9 @@ function deeperThan(value: unknown, limit: number): boolean {
   return false
 }
 
-/** Parsed once per version of a file, however many pages, embeds and queries ask at once. */
-function yamlJson(file: string, text: string): Promise<{ json?: string; error?: string }> {
-  const stat = fs.statSync(file)
-  const key = `${file}\0${stat.mtimeMs}\0${stat.size}`
+/** Parsed once per text, however many pages, embeds and queries ask at once. */
+function yamlJson(text: string): Promise<{ json?: string; error?: string }> {
+  const key = createHash("sha1").update(text).digest("hex")
   let parsed = YAML_PARSED.get(key)
 
   if (!parsed) {
@@ -3336,3 +3511,5 @@ function message(error: unknown): string {
     .filter((line) => line.trim() && !/^LINE \d+:/.test(line) && !/^\s*\^+\s*$/.test(line))
     .join(" ")
 }
+
+class Reading extends Error {}

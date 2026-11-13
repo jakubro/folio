@@ -1319,6 +1319,235 @@ test("a read a tab waits on starts at once while slow work no tab waits on fills
   }
 })
 
+test("what a query reads is worked out while every engine place is taken, once its text was read before", async () => {
+  const busy = new Data(root, fs.mkdtempSync(path.join(os.tmpdir(), "folio-planned-")), 4000)
+  const slow = "select sum(hash(a.range + b.range)) from range(200000) a, range(200000) b"
+
+  try {
+    const first = await busy.reads(file("report.md"), "queries/twice.sql")
+    const background = [1, 2, 3].map(() =>
+      urgently(() => busy.query(slow, root)).catch((error: Error) => error),
+    )
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const started = Date.now()
+    const again = await busy.reads(file("report.md"), "queries/twice.sql")
+
+    assert.ok(Date.now() - started < 1000, `the reads waited ${Date.now() - started} ms`)
+    assert.deepEqual(again, first)
+    await Promise.all(background)
+  } finally {
+    await busy.close()
+  }
+})
+
+test("a pattern's walk is kept until a change in a folder it walked is heard, and an unwatched folder is read each time", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-walks-")))
+  const write = (name: string, text: string) => {
+    fs.mkdirSync(path.dirname(path.join(folder, name)), { recursive: true })
+    fs.writeFileSync(path.join(folder, name), text)
+  }
+  write("logs/a/x.csv", "n\n1\n")
+  write("logs/b/deep/y.csv", "n\n2\n")
+  write("logs/b/notes.txt", "not data")
+  const watched = new Set<string>()
+  const listeners: ((dir: string) => void)[] = []
+  const walking = new Data(folder, fs.mkdtempSync(path.join(os.tmpdir(), "folio-walks-data-")))
+  walking.useFolders({
+    watches: (dir) => watched.has(dir),
+    listenFolders: (listener) => listeners.push(listener),
+  })
+  const reads = new Map<string, number>()
+  const readdir = fs.promises.readdir
+  const counting = mock.method(fs.promises, "readdir", (dir: string, options: never) => {
+    reads.set(dir, (reads.get(dir) ?? 0) + 1)
+    return readdir(dir, options)
+  })
+  const matched = async () =>
+    (await walking.queryReads(path.join(folder, "q.md"), "select * from 'logs/**/*.csv'")).files
+  const heard = (dir: string) => {
+    for (const listener of listeners) {
+      listener(path.join(folder, dir))
+    }
+  }
+
+  try {
+    assert.deepEqual(await matched(), ["logs/a/x.csv", "logs/b/deep/y.csv"])
+    for (const dir of ["logs", "logs/a", "logs/b", "logs/b/deep"]) {
+      watched.add(path.join(folder, dir))
+    }
+    assert.deepEqual(await matched(), ["logs/a/x.csv", "logs/b/deep/y.csv"])
+    reads.clear()
+
+    assert.deepEqual(await matched(), ["logs/a/x.csv", "logs/b/deep/y.csv"])
+    assert.deepEqual([...reads.keys()], [], "nothing is read again while nothing is heard")
+
+    write("logs/c/z.csv", "n\n3\n")
+    assert.deepEqual(await matched(), ["logs/a/x.csv", "logs/b/deep/y.csv"], "not heard yet")
+    heard("logs")
+    assert.deepEqual(await matched(), ["logs/a/x.csv", "logs/b/deep/y.csv", "logs/c/z.csv"])
+    assert.deepEqual(
+      [...reads.keys()].map((dir) => path.relative(folder, dir)),
+      ["logs", "logs/c"],
+      "only the folder heard, and the folder new in it, are read",
+    )
+
+    reads.clear()
+    assert.deepEqual(await matched(), ["logs/a/x.csv", "logs/b/deep/y.csv", "logs/c/z.csv"])
+    assert.deepEqual(
+      [...reads.keys()].map((dir) => path.relative(folder, dir)),
+      ["logs/c"],
+      "a folder read before the model watched it is read each time",
+    )
+
+    fs.rmSync(path.join(folder, "logs/b"), { recursive: true })
+    heard("logs")
+    assert.deepEqual(await matched(), ["logs/a/x.csv", "logs/c/z.csv"])
+  } finally {
+    counting.mock.restore()
+    await walking.close()
+  }
+})
+
+test("two walks of one pattern at once both see every match, before and after a change is heard", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-walks-twice-")))
+
+  for (let n = 0; n < 200; n++) {
+    fs.mkdirSync(path.join(folder, `code/pkg${n % 10}/mod${n}`), { recursive: true })
+    fs.writeFileSync(path.join(folder, `code/pkg${n % 10}/mod${n}/index.ts`), "x")
+  }
+
+  for (let n = 0; n < 6; n++) {
+    fs.mkdirSync(path.join(folder, `code/team${n}`), { recursive: true })
+    fs.writeFileSync(path.join(folder, `code/team${n}/rows.csv`), "n\n1\n")
+  }
+
+  const listeners: ((dir: string) => void)[] = []
+  const walking = new Data(
+    folder,
+    fs.mkdtempSync(path.join(os.tmpdir(), "folio-walks-twice-data-")),
+  )
+  walking.useFolders({ watches: () => true, listenFolders: (listener) => listeners.push(listener) })
+  const twice = async () =>
+    (
+      await Promise.all(
+        ["select * from 'code/**/rows.csv'", "select count(*) from 'code/**/rows.csv'"].map(
+          async (sql) => (await walking.queryReads(path.join(folder, "q.md"), sql)).files.length,
+        ),
+      )
+    ).join(" and ")
+
+  try {
+    assert.equal(await twice(), "6 and 6")
+    fs.writeFileSync(path.join(folder, "code/team3/rows.csv"), "n\n2\n")
+
+    for (const listener of listeners) {
+      listener(path.join(folder, "code/team3"))
+    }
+
+    assert.equal(await twice(), "6 and 6")
+  } finally {
+    await walking.close()
+  }
+})
+
+test("a pattern's match reached through a link is read again once its target's folder is heard", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-walks-linked-")))
+  fs.mkdirSync(path.join(folder, "logs"))
+  fs.mkdirSync(path.join(folder, "archive"))
+  fs.writeFileSync(path.join(folder, "logs/a.csv"), "n\n1\n")
+  fs.writeFileSync(path.join(folder, "archive/x.csv"), "n\n2\n")
+  fs.symlinkSync(path.join(folder, "archive/x.csv"), path.join(folder, "logs/x.csv"))
+  const listeners: ((dir: string) => void)[] = []
+  const walking = new Data(
+    folder,
+    fs.mkdtempSync(path.join(os.tmpdir(), "folio-walks-linked-data-")),
+  )
+  walking.useFolders({ watches: () => true, listenFolders: (listener) => listeners.push(listener) })
+  const read = async () =>
+    (await walking.queryReads(path.join(folder, "q.md"), "select * from 'logs/*.csv'")).files
+
+  try {
+    assert.deepEqual(await read(), ["logs/a.csv", "archive/x.csv"])
+    fs.rmSync(path.join(folder, "archive/x.csv"))
+
+    for (const listener of listeners) {
+      listener(path.join(folder, "archive"))
+    }
+
+    assert.deepEqual(await read(), ["logs/a.csv"])
+  } finally {
+    await walking.close()
+  }
+})
+
+test("a pattern's link to a file not there yet is read again once the file is made", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-walks-dangling-")))
+  fs.mkdirSync(path.join(folder, "logs"))
+  fs.mkdirSync(path.join(folder, "archive"))
+  fs.writeFileSync(path.join(folder, "logs/a.csv"), "n\n1\n")
+  fs.symlinkSync(path.join(folder, "archive/x.csv"), path.join(folder, "logs/x.csv"))
+  const listeners: ((dir: string) => void)[] = []
+  const walking = new Data(
+    folder,
+    fs.mkdtempSync(path.join(os.tmpdir(), "folio-walks-dangling-data-")),
+  )
+  walking.useFolders({ watches: () => true, listenFolders: (listener) => listeners.push(listener) })
+  const read = async () =>
+    (await walking.queryReads(path.join(folder, "q.md"), "select * from 'logs/*.csv'")).files
+
+  try {
+    assert.deepEqual(await read(), ["logs/a.csv"])
+    fs.writeFileSync(path.join(folder, "archive/x.csv"), "n\n2\n")
+
+    for (const listener of listeners) {
+      listener(path.join(folder, "archive"))
+    }
+
+    assert.deepEqual(await read(), ["logs/a.csv", "archive/x.csv"])
+  } finally {
+    await walking.close()
+  }
+})
+
+test("a pattern follows a folder link it starts through, and a match through a chain of links, when either is repointed", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-walks-chain-")))
+  const write = (name: string, text: string) => {
+    fs.mkdirSync(path.dirname(path.join(folder, name)), { recursive: true })
+    fs.writeFileSync(path.join(folder, name), text)
+  }
+  write("first/a.csv", "n\n1\n")
+  write("second/a.csv", "n\n2\n")
+  write("second/b.csv", "n\n3\n")
+  write("rows/one.csv", "n\n10\n")
+  write("rows/two.csv", "n\n20\n")
+  fs.symlinkSync(path.join(folder, "first"), path.join(folder, "current"))
+  fs.mkdirSync(path.join(folder, "mid"))
+  fs.mkdirSync(path.join(folder, "logs"))
+  fs.symlinkSync(path.join(folder, "rows/one.csv"), path.join(folder, "mid/latest.csv"))
+  fs.symlinkSync(path.join(folder, "mid/latest.csv"), path.join(folder, "logs/latest.csv"))
+  const walking = new Data(
+    folder,
+    fs.mkdtempSync(path.join(os.tmpdir(), "folio-walks-chain-data-")),
+  )
+  walking.useFolders({ watches: () => true, listenFolders: () => {} })
+  const read = async (sql: string) =>
+    (await walking.queryReads(path.join(folder, "q.md"), sql)).files
+
+  try {
+    assert.deepEqual(await read("select * from 'current/*.csv'"), ["first/a.csv"])
+    assert.deepEqual(await read("select * from 'logs/*.csv'"), ["rows/one.csv"])
+    fs.rmSync(path.join(folder, "current"))
+    fs.symlinkSync(path.join(folder, "second"), path.join(folder, "current"))
+    fs.rmSync(path.join(folder, "mid/latest.csv"))
+    fs.symlinkSync(path.join(folder, "rows/two.csv"), path.join(folder, "mid/latest.csv"))
+
+    assert.deepEqual(await read("select * from 'current/*.csv'"), ["second/a.csv", "second/b.csv"])
+    assert.deepEqual(await read("select * from 'logs/*.csv'"), ["rows/two.csv"])
+  } finally {
+    await walking.close()
+  }
+})
+
 test("a sorted page and a shared embed a tab waits on go first, though work no tab waits on asked for them first", async () => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-joined-")))
   const rows = path.join(folder, "rows.csv")
@@ -1601,6 +1830,72 @@ test("a large YAML file is read without holding up other work, and one past 2 MB
   assert.ok(larger.text?.startsWith("- id: 0\n"))
 })
 
+test("a YAML file read empty just before its write ends is parsed again once written, in an embed and a query", async () => {
+  const writtenAfterRead = (name: string, text: string) => {
+    const readFile = fs.readFileSync
+    fs.writeFileSync(file(name), "")
+    fs.readFileSync = ((at: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+      const read = (readFile as (...args: unknown[]) => unknown)(at, ...rest)
+
+      if (at === file(name)) {
+        fs.readFileSync = readFile
+        fs.writeFileSync(file(name), text)
+      }
+
+      return read
+    }) as typeof fs.readFileSync
+  }
+
+  writtenAfterRead("lanes.yaml", "- {lane: doing, n: 2}\n")
+  assert.equal((await data.embed(file("lanes.yaml"), "v1", "0.n")).error, "Nothing at 0.")
+  assert.equal((await data.embed(file("lanes.yaml"), "v1", "0.n")).value, 2)
+
+  writtenAfterRead("rota.yaml", "- {name: ada, n: 3}\n")
+  await assert.rejects(data.query("select n from 'rota.yaml'", root))
+  assert.deepEqual((await data.query("select n from 'rota.yaml'", root)).grid.rows, [[3]])
+  fs.rmSync(file("lanes.yaml"))
+  fs.rmSync(file("rota.yaml"))
+})
+
+test("a query over documents waits while the folder is read, its version held still, then answers once", async () => {
+  const reading = new Data(root, fs.mkdtempSync(path.join(os.tmpdir(), "folio-data-reading-")))
+  let ready = false
+  let revision = 0
+  reading.useDocuments({
+    get ready() {
+      return ready
+    },
+    versionOf: () => String(revision),
+    table: (schema, name) =>
+      schema === "kind" && name === "station"
+        ? { columns: [{ name: "path", type: "VARCHAR" }], rows: [{ path: "stations/north.md" }] }
+        : undefined,
+  })
+  fs.writeFileSync(
+    file("stations.md"),
+    "# Stations\n\n```sql query open\nselect path from kind.station\n```\n",
+  )
+
+  try {
+    const first = await reading.reads(file("stations.md"), "#open")
+    revision++
+    assert.equal((await reading.reads(file("stations.md"), "#open")).version, first.version)
+    assert.ok(first.tables, "it is asked again when the documents change")
+    assert.deepEqual(await reading.embedReference(file("stations.md"), "#open"), {
+      version: first.version,
+      waiting: "Folio is still reading the folder.",
+    })
+
+    ready = true
+    const read = await reading.embedReference(file("stations.md"), "#open")
+    assert.notEqual(read.version, first.version)
+    assert.deepEqual(read.grid?.rows, [["stations/north.md"]])
+  } finally {
+    fs.rmSync(file("stations.md"))
+    await reading.close()
+  }
+})
+
 test("ten embeds of one large YAML file all read, through one parse", async () => {
   let text = ""
 
@@ -1855,6 +2150,27 @@ test("an embed of a document's own query moves with the query's text, not only w
 
   assert.deepEqual(after.files, before.files)
   assert.notEqual(after.version, before.version)
+})
+
+test("a query file that fails to plan, alone or nested, stays among what its embed reads, and its edits move the version", async () => {
+  fs.mkdirSync(file("plans/inner"), { recursive: true })
+  fs.writeFileSync(file("plans/page.md"), "# Plans\n")
+  fs.writeFileSync(file("plans/inner/broken.sql"), "selec 1")
+  fs.writeFileSync(file("plans/outer.sql"), "select * from 'inner/broken.sql'")
+  const page = file("plans/page.md")
+  const read = async (reference: string) => {
+    const { files, version } = await data.reads(page, reference)
+    return { files: files.map((at) => path.relative(root, at)), version }
+  }
+
+  const alone = await read("inner/broken.sql")
+  const nested = await read("outer.sql")
+  fs.writeFileSync(file("plans/inner/broken.sql"), "selec 2")
+
+  assert.deepEqual(alone.files, ["plans/inner/broken.sql"])
+  assert.deepEqual(nested.files, ["plans/outer.sql", "plans/inner/broken.sql"])
+  assert.notEqual((await read("inner/broken.sql")).version, alone.version)
+  assert.notEqual((await read("outer.sql")).version, nested.version)
 })
 
 test("rarer files read as a person reads them: deep nesting refused, sets listed, a line being written left out", async () => {

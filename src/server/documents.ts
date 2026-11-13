@@ -5,10 +5,10 @@
 
 import path from "node:path"
 import GithubSlugger from "github-slugger"
-import { parse as parseYaml } from "yaml"
 import { type Block, titleOf } from "./blocks.ts"
 import { type Conventions, conventionsOf, DECLARATION, type Document } from "./conventions.ts"
 import { linkTarget } from "./files.ts"
+import { frontmatterOf } from "./kinds.ts"
 import type { Model } from "./model.ts"
 
 export interface DocumentTable {
@@ -84,6 +84,10 @@ export class Documents {
     this.#model = model
     this.#conventions = conventions
     model.listen((changed) => this.#changed(changed))
+  }
+
+  get ready(): boolean {
+    return this.#model.ready
   }
 
   /** Names the state of the tables read: it moves only when a change reaches one of them. */
@@ -257,7 +261,7 @@ export class Documents {
           block.kind === "list" || block.kind === "quote" ? tasksOf(urlPath, block) : [],
         )
       case "frontmatter":
-        return frontmatterOf(urlPath, blocks)
+        return frontmatterRows(urlPath, blocks)
       default:
         return blocks.flatMap((block) =>
           block.kind === "table"
@@ -446,23 +450,12 @@ function tasksOf(urlPath: string, block: Block): Record<string, unknown>[] {
   })
 }
 
-function frontmatterOf(urlPath: string, blocks: Block[]): Record<string, unknown>[] {
-  const block = blocks.find((found) => found.kind === "frontmatter")
-  let value: unknown
-
-  try {
-    value = block && parseYaml(block.text.replace(/^---\r?\n/, "").replace(/\r?\n---\s*$/, ""))
-  } catch {
-    return []
-  }
-
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? Object.entries(value).map(([key, held]) => ({
-        path: urlPath,
-        key,
-        value: typeof held === "string" ? held : JSON.stringify(held),
-      }))
-    : []
+function frontmatterRows(urlPath: string, blocks: Block[]): Record<string, unknown>[] {
+  return Object.entries(frontmatterOf(blocks)?.value ?? {}).map(([key, held]) => ({
+    path: urlPath,
+    key,
+    value: typeof held === "string" ? held : JSON.stringify(held),
+  }))
 }
 
 function quotedTables(urlPath: string, block: Block): Record<string, unknown>[] {

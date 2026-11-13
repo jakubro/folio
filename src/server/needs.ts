@@ -7,7 +7,7 @@ import { createHash } from "node:crypto"
 import { conventionsOf } from "./conventions.ts"
 import type { Data } from "./data.ts"
 import { recordsOf, runDeclared } from "./declared.ts"
-import { healthOf } from "./health.ts"
+import { type HealthState, healthOf } from "./health.ts"
 import type { Model } from "./model.ts"
 import { changesState } from "./versions.ts"
 
@@ -65,8 +65,13 @@ export function needsFrom(parts: (NeedsPart | undefined)[]): NeedsState {
 
 /** Undefined until health is known, which is not the same as nothing wrong. */
 export async function problemNeeds(model: Model, data: Data): Promise<NeedsPart | undefined> {
-  const health = await healthOf(model, data).state()
+  return problemNeedsIn(model, await healthOf(model, data).state())
+}
 
+export async function problemNeedsIn(
+  model: Model,
+  health: HealthState,
+): Promise<NeedsPart | undefined> {
   if (!health.ready) {
     return undefined
   }

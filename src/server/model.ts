@@ -20,6 +20,7 @@ import type { Log } from "./http.ts"
 import type { Instance } from "./includes.ts"
 import { type Indexer, IndexerDown } from "./indexer.ts"
 import { Reads } from "./reads.ts"
+import { readTime, writers } from "./writers.ts"
 
 interface Document {
   path: string
@@ -84,6 +85,9 @@ export class Model {
   /** The documents held in each folder, by the folder's path on disk. */
   readonly #inFolder = new Map<string, Set<string>>()
   readonly #watches = new Map<string, fs.FSWatcher>()
+  /** Folders whose watch heard the folder itself go: one made again under the name needs a new watch. */
+  readonly #renewing = new Set<string>()
+  readonly #identities = new Map<string, string | undefined>()
   #watchesMoved = 0
   readonly #changed = new Set<string>()
   #work = Promise.resolve()
@@ -320,6 +324,11 @@ export class Model {
       return prepared.blocks
     }
 
+    // An empty text may be a rewrite caught midway, so only indexing, which waits writes out, records one.
+    if (text === "") {
+      return []
+    }
+
     this.#prepare(urlPath, text, version)
     return undefined
   }
@@ -374,7 +383,7 @@ export class Model {
     this.#listeners.add(listener)
   }
 
-  /** Hear each watched folder in which any file changed, documents or not, once the model has read it. */
+  /** Hear each folder once read: a watched one where any file changed, or one watched in a moved one's place. */
   listenFolders(listener: (dir: string) => void): void {
     this.#folderListeners.add(listener)
   }
@@ -415,9 +424,16 @@ export class Model {
   }
 
   /** A folder's event says only that something in it changed, so the whole folder is read again. */
-  async #rescan(dir: string): Promise<void> {
+  async #rescan(dir: string): Promise<string[]> {
     if (!fs.existsSync(dir)) {
-      return this.#forget(dir)
+      await this.#forget(dir)
+      return []
+    }
+
+    if (this.#renewing.delete(dir)) {
+      this.#watches.get(dir)?.close()
+      this.#watches.delete(dir)
+      this.#watch(dir)
     }
 
     const files = new Set<string>()
@@ -437,8 +453,15 @@ export class Model {
     }
 
     const folders = new Set(subfolders(dir))
+    const replaced: string[] = []
 
     for (const sub of folders) {
+      // A watch follows its folder when it is moved away, so one made under the name is not watched by it.
+      if (this.#watches.has(sub) && this.#identities.get(sub) !== identityOf(sub)) {
+        await this.#forget(sub)
+        replaced.push(sub)
+      }
+
       if (!this.#watches.has(sub)) {
         await this.#scan(sub)
       }
@@ -449,6 +472,10 @@ export class Model {
         await this.#forget(watched)
       }
     }
+
+    return [...this.#watches.keys()].filter((watched) =>
+      replaced.some((sub) => watched === sub || watched.startsWith(sub + path.sep)),
+    )
   }
 
   async #forget(dir: string): Promise<void> {
@@ -456,6 +483,7 @@ export class Model {
       if (watched === dir || watched.startsWith(dir + path.sep)) {
         watcher.close()
         this.#watches.delete(watched)
+        this.#identities.delete(watched)
         this.#watchesMoved++
       }
     }
@@ -470,20 +498,20 @@ export class Model {
   /** Read inside the document's turn, so a page's parse of newer text never runs between read and put. */
   #index(urlPath: string, kind: Document["kind"], previous?: Document): Promise<void> {
     return this.#serially(urlPath, async () => {
-      let text: string
+      const read = await writers.settled(path.join(this.#root, urlPath))
 
-      try {
-        text = await fs.promises.readFile(path.join(this.#root, urlPath), "utf8")
-      } catch {
+      if (!read) {
         return this.#remove(urlPath)
       }
+
+      const { text, at } = read
 
       const version = hash(text)
       const moved = (this.#documents.get(urlPath) ?? previous) ? undefined : this.#movedTo(version)
       const known = this.#documents.get(urlPath) ?? previous ?? moved
 
       if (!this.#ready) {
-        void this.history.firstSeen(urlPath, text, mtimeOf(path.join(this.#root, urlPath)))
+        void this.history.firstSeen(urlPath, text, at)
       }
 
       if (moved) {
@@ -501,7 +529,7 @@ export class Model {
         return
       }
 
-      this.#saved(urlPath, text, known)
+      this.#saved(urlPath, text, known, at)
 
       if (this.#failed.get(urlPath) === version) {
         return
@@ -553,7 +581,8 @@ export class Model {
           this.#dated({ path: urlPath, kind, hash: version, blocks: split }, known),
         )
       } else if (this.#documents.get(urlPath) === held) {
-        this.#saved(urlPath, text, known)
+        const file = path.join(this.#root, urlPath)
+        this.#saved(urlPath, text, known, readTime(file, text) ?? mtimeOf(file))
         this.#put(this.#dated({ path: urlPath, kind, hash: version, blocks: split }, known))
         this.#notify([urlPath])
         await this.#persist(urlPath)
@@ -819,9 +848,9 @@ export class Model {
   }
 
   /** A save is kept from the moment Folio first knew the document; the first walk knows them all. */
-  #saved(urlPath: string, text: string, known: Document | undefined): void {
+  #saved(urlPath: string, text: string, known: Document | undefined, at: number): void {
     if (known ? known.hash !== "" : this.#ready) {
-      void this.history.saved(urlPath, text, mtimeOf(path.join(this.#root, urlPath)))
+      void this.history.saved(urlPath, text, at)
     }
   }
 
@@ -831,13 +860,20 @@ export class Model {
     }
 
     try {
-      const watcher = fs.watch(dir, { persistent: false }, () => this.#heard(dir))
+      const watcher = fs.watch(dir, { persistent: false }, (_, name) => {
+        if (name === path.basename(dir)) {
+          this.#renewing.add(dir)
+        }
+
+        this.#heard(dir)
+      })
       watcher.on("error", () => {
         watcher.close()
         this.#watches.delete(dir)
         this.#watchesMoved++
       })
       this.#watches.set(dir, watcher)
+      this.#identities.set(dir, identityOf(dir))
       this.#watchesMoved++
     } catch (error) {
       this.log(`model: cannot watch ${dir}: ${(error as NodeJS.ErrnoException).code}`, "warning")
@@ -863,10 +899,13 @@ export class Model {
       void this.#queue(async () => {
         for (const changed of dirs) {
           await turn()
-          await this.#rescan(changed)
 
-          for (const listener of this.#folderListeners) {
-            listener(changed)
+          const watchedAnew = await this.#rescan(changed)
+
+          for (const heard of [...watchedAnew, changed]) {
+            for (const listener of this.#folderListeners) {
+              listener(heard)
+            }
           }
         }
       }).then(taken)
@@ -974,4 +1013,9 @@ function excerpt(text: string): string {
 
 function hash(text: string): string {
   return createHash("sha1").update(text).digest("hex").slice(0, 16)
+}
+
+function identityOf(dir: string): string | undefined {
+  const stat = fs.statSync(dir, { throwIfNoEntry: false })
+  return stat && `${stat.dev}:${stat.ino}`
 }

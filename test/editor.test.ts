@@ -135,6 +135,28 @@ test("renaming a heading or moving a file edits every link to it, and the moved 
   }
 })
 
+test("frontmatter that is not YAML is an error at its line while the buffer is the saved file", async () => {
+  const saved = "---\nwhy: a: b\n---\n# T\n"
+  const { root, model, data } = await served(indexer, { "t.md": saved })
+  const editor = (typed: string): Editor => ({ root, model, data, indexer, textOf: () => typed })
+
+  try {
+    assert.deepEqual(await findings(editor(saved), "t.md"), [
+      {
+        line: 1,
+        start: 0,
+        end: 9,
+        severity: "error",
+        what: "The frontmatter is not YAML: Nested mappings are not allowed in compact mappings",
+      },
+    ])
+    assert.deepEqual(await findings(editor('---\nwhy: "a: b"\n---\n# T\n'), "t.md"), [])
+  } finally {
+    model.close()
+    await data.close()
+  }
+})
+
 test("code is not linked, anchors renumber, includes and self-links follow, unsaved files never crash", async () => {
   const typed = {
     "notes/new.md": "# New\n\n```md\n[x](missing.md)\n```\n",

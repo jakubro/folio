@@ -95,6 +95,8 @@ export const FILES: Record<string, string> = {
 }
 
 let server: ChildProcess
+/** Filled at a test file's top level: its Folio starts with them before its first test. */
+export const SERVE_ARGS: string[] = []
 export let port = 0
 export let base = ""
 export let output = ""
@@ -105,7 +107,11 @@ before(async () => {
   write(FILES)
   port = await freePort()
   base = `http://localhost:${port}`
-  server = spawn(process.execPath, [CLI, root, "--port", String(port), "--verbose"], { env: ENV })
+  server = spawn(
+    process.execPath,
+    [CLI, root, "--port", String(port), "--verbose", ...SERVE_ARGS],
+    { env: ENV },
+  )
   server.stdout?.on("data", (chunk) => {
     output += chunk
   })
@@ -241,6 +247,17 @@ export function writeIn(folder: string, files: Record<string, string | Buffer>):
   }
 }
 
+export async function rewriteInPlace(file: string, text: string, holdMs: number): Promise<void> {
+  const handle = fs.openSync(file, "w")
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, holdMs))
+    fs.writeSync(handle, text)
+  } finally {
+    fs.closeSync(handle)
+  }
+}
+
 export async function mark(page: Page): Promise<void> {
   await page.evaluate(() => {
     ;(document.querySelector(".markdown-body") as HTMLElement).dataset.mark = ""
@@ -364,10 +381,11 @@ export function snapshotOf(folder: string): string[] {
 /** A Folio of its own on a fresh folder and port, sharing the suite's state folder. */
 export async function serveFolder(
   folder: string,
+  args: string[] = [],
 ): Promise<{ base: string; stop: () => void; stopped: Promise<unknown> }> {
   const own = await freePort()
   let said = ""
-  const child = spawn(process.execPath, [CLI, folder, "--port", String(own)], { env: ENV })
+  const child = spawn(process.execPath, [CLI, folder, "--port", String(own), ...args], { env: ENV })
   child.stdout?.on("data", (chunk) => {
     said += chunk
   })

@@ -13,5 +13,6 @@
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true
   },
-  "include": ["src", "test", "e2e", "visual", "playwright.config.ts"]
+  "include": ["src", "test", "e2e", "visual", "playwright.config.ts"],
+  "exclude": ["visual/ridge/components"]
 }

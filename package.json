@@ -1,6 +1,6 @@
 {
   "name": "@jakubro/folio",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "A live view of a folder of markdown and data in the browser, and a model of the whole folder that agents, editors and CI read too.",
   "mcpName": "io.github.jakubro/folio",
   "license": "GPL-3.0-only",
@@ -73,5 +73,8 @@
   },
   "overrides": {
     "katex": "$katex"
+  },
+  "allowScripts": {
+    "esbuild": false
   }
 }

@@ -181,3 +181,31 @@ test("names an unknown option or a missing value in one line, then the usage", (
     message: /^--help takes no value\.\nUsage: folio check/,
   })
 })
+
+test("takes components folders to serve, check and edit with, refusing them to mcp", () => {
+  assert.deepEqual(parseOptions(["notes", "--components", "a", "--components", "b"]), {
+    command: "serve",
+    folder: "notes",
+    port: 8640,
+    components: ["a", "b"],
+  })
+  assert.deepEqual(parseOptions(["check", "notes", "--components", "a"]), {
+    command: "check",
+    folder: "notes",
+    port: 8640,
+    components: ["a"],
+  })
+  assert.deepEqual(parseOptions(["lsp", "--components", "a"]), {
+    command: "lsp",
+    folder: ".",
+    port: 8640,
+    components: ["a"],
+  })
+  assert.throws(
+    () => parseOptions(["--components", ""]),
+    /^Error: A components folder needs a path\./,
+  )
+  assert.throws(() => parseOptions(["mcp", "--components", "a"]), {
+    message: `folio mcp takes no --components: the Folio it reads draws with its own.\n${MCP_USAGE}`,
+  })
+})

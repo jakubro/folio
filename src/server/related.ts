@@ -176,8 +176,10 @@ export class Related {
     }
   }
 
-  close(): void {
+  /** Resolves once every vector embedded so far is on disk, so a start after it embeds none of them again. */
+  async close(): Promise<void> {
     this.#embedder.close()
+    await this.#writing
   }
 
   #version(): string {

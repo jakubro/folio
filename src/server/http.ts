@@ -7,6 +7,7 @@ import { unmarked } from "../client/unresolved.ts"
 import { api, PAUSED, Refusal } from "./api.ts"
 import { titleOf } from "./blocks.ts"
 import { ask } from "./check.ts"
+import { componentsOf } from "./components.ts"
 import { conventionsOf } from "./conventions.ts"
 import { type Compared, type Data, type Filter, type Order, type Search, urgently } from "./data.ts"
 import { digest } from "./digest.ts"
@@ -20,7 +21,14 @@ import { provenance } from "./provenance.ts"
 import { shell, TAB_ICON_SVG } from "./shell.ts"
 import { shownChanges, shownHealth, shownNeeds } from "./shown.ts"
 import { staleOf } from "./stale.ts"
-import { fileVersion, folderState, linksState, pageState, readState } from "./versions.ts"
+import {
+  fileVersion,
+  folderState,
+  linksState,
+  pageState,
+  readState,
+  settledPage,
+} from "./versions.ts"
 
 export type Level = "request" | "update" | "opened" | "info" | "warning" | "error"
 /** A line for whoever watches Folio, an error unless it says otherwise. */
@@ -125,6 +133,17 @@ export function createHandler(
 
     if (asset !== null) {
       return serveAsset(request, response, assetsDir, asset.replace(/^\//, ""))
+    }
+
+    const component = url.searchParams.get("component")
+
+    if (component !== null) {
+      const { drawn } = componentsOf(model).find(component)
+      return drawn ? serveFile(request, response, drawn, ASSET_TYPES[".js"]) : notFound(response)
+    }
+
+    if (url.searchParams.has("components")) {
+      return sendJson(response, componentsOf(model).list())
     }
 
     if (url.searchParams.has("digest-data")) {
@@ -451,36 +470,35 @@ export function createHandler(
         return notFound(response)
       }
 
-      const { text, version, blocks, layout } = within("model", () =>
-        pageState(root, textual.file, model),
-      )
+      return answer(response, "model", async () => {
+        const { page, own } = await settledPage(root, textual.file, model)
+        const { text, version, blocks, layout } = page
 
-      if (!url.searchParams.has("ahead")) {
-        for (const source of new Set([urlPath, ...blocks.map((block) => block.source)])) {
-          const held = model.held(source)
+        if (!url.searchParams.has("ahead")) {
+          for (const source of new Set([urlPath, ...blocks.map((block) => block.source)])) {
+            const held = model.held(source)
 
-          if (held) {
-            void model.history.prepare(source, held)
+            if (held) {
+              void model.history.prepare(source, held)
+            }
           }
         }
-      }
 
-      return answer(response, "model", () =>
-        urgently(() => readState(model, urlPath, blocks, data)).then((read) => ({
+        const read = await urgently(() => readState(model, urlPath, blocks, data))
+
+        return {
           text,
           version,
           title:
             titleOf(
-              model.held(urlPath) ??
-                model.blocksReady(textual.file, fs.readFileSync(textual.file, "utf8")) ??
-                [],
+              (own && model.blocksReady(textual.file, own.text)) ?? model.held(urlPath) ?? [],
             ) ?? null,
           blocks,
           layout,
           links: linksState(model, urlPath, blocks),
           read,
-        })),
-      )
+        }
+      })
     }
 
     if (url.searchParams.has("raw")) {

@@ -1,4 +1,4 @@
-/** A page frozen into one HTML file: its text, diagrams, charts, data and styles, with tables that still sort. */
+/** A page frozen into one HTML file: its text, drawings, data and styles, with tables that still sort. */
 
 import type { Theme } from "./render.ts"
 import type { TableViews } from "./tableviews.ts"
@@ -60,6 +60,20 @@ export async function freeze(
     fold.replaceWith(...fold.childNodes)
   }
 
+  // Filled after Folio's own clean-up of the page, which a component's markup is no part of; the markdown
+  // Folio drew for a component is, and stays beside its shadow root for the slots there to show.
+  const hosts = [...article.querySelectorAll("folio-component")]
+  const inert = document.implementation.createHTMLDocument("")
+  const shadows: Element[] = []
+
+  for (const [at, held] of [...copy.querySelectorAll("folio-component")].entries()) {
+    const root = hosts[at]?.shadowRoot
+
+    if (root) {
+      held.prepend(shadowOf(root, inert, shadows))
+    }
+  }
+
   // A picture's sources load in place of its own image, which is inlined like any other.
   for (const source of copy.querySelectorAll("picture > source")) {
     source.remove()
@@ -76,6 +90,14 @@ export async function freeze(
 
   for (const sheet of copy.querySelectorAll("style")) {
     sheet.textContent = offline(sheet.textContent ?? "")
+  }
+
+  // The browser opening the file attaches each drawing as a shadow root again, the innermost first.
+  for (const held of shadows.reverse()) {
+    const shadow = document.createElement("template")
+    shadow.setAttribute("shadowrootmode", "open")
+    shadow.content.append(...held.childNodes)
+    held.replaceWith(shadow)
   }
 
   const html = `<!doctype html>
@@ -100,6 +122,95 @@ ${(document.querySelector('link[rel="icon"]') as HTMLLinkElement).outerHTML}
   link.download = `${name.replace(/\.[^.]+$/, "")}.html`
   link.click()
   setTimeout(() => URL.revokeObjectURL(link.href), 0)
+}
+
+function shadowOf(root: ShadowRoot, inert: Document, shadows: Element[]): Element {
+  const held = inert.createElement("div")
+  const sheets = root.adoptedStyleSheets.map((sheet) =>
+    [...sheet.cssRules].map((rule) => rule.cssText).join("\n"),
+  )
+
+  shadows.push(held)
+
+  if (sheets.length > 0) {
+    held.append(Object.assign(inert.createElement("style"), { textContent: sheets.join("\n") }))
+  }
+
+  for (const child of root.childNodes) {
+    held.append(...frozenOf(child, inert, shadows))
+  }
+
+  return held
+}
+
+function frozenOf(node: Node, inert: Document, shadows: Element[]): Node[] {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return [inert.createTextNode(node.textContent ?? "")]
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return []
+  }
+
+  const element = node as Element
+
+  if (["script", "iframe", "object", "embed"].includes(element.localName)) {
+    return []
+  }
+
+  if (element.localName === "canvas") {
+    try {
+      return [
+        Object.assign(inert.createElement("img"), {
+          src: (element as HTMLCanvasElement).toDataURL(),
+          width: (element as HTMLCanvasElement).width,
+          height: (element as HTMLCanvasElement).height,
+        }),
+      ]
+    } catch {
+      // A canvas drawn from another site's picture cannot be read, and travels blank.
+      return [inert.importNode(element, false)]
+    }
+  }
+
+  // Imported into a document of its own, where its pictures do not load and its handlers never run.
+  const copy = inert.importNode(element, false) as Element
+
+  for (const { name, value } of [...copy.attributes]) {
+    if (/^on/i.test(name) || /^\s*javascript:/i.test(value)) {
+      copy.removeAttribute(name)
+    }
+  }
+
+  if (element.shadowRoot) {
+    copy.append(shadowOf(element.shadowRoot, inert, shadows))
+  }
+
+  if (element instanceof HTMLTemplateElement) {
+    for (const child of element.content.childNodes) {
+      ;(copy as HTMLTemplateElement).content.append(...frozenOf(child, inert, shadows))
+    }
+  }
+
+  if (element instanceof HTMLTextAreaElement) {
+    copy.textContent = element.value
+    return [copy]
+  }
+
+  if (element instanceof HTMLInputElement) {
+    copy.toggleAttribute("checked", element.checked)
+    copy.setAttribute("value", element.value)
+  }
+
+  if (element instanceof HTMLOptionElement) {
+    copy.toggleAttribute("selected", element.selected)
+  }
+
+  for (const child of element.childNodes) {
+    copy.append(...frozenOf(child, inert, shadows))
+  }
+
+  return [copy]
 }
 
 async function asset(name: string): Promise<string> {

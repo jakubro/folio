@@ -1,7 +1,7 @@
 {
   "path": ["src", "test", "e2e", "visual", "scripts", "build.mjs"],
   "format": ["javascript", "typescript", "css"],
-  "ignore": ["**/node_modules/**"],
+  "ignore": ["**/node_modules/**", "visual/ridge/components/*.js"],
   "minTokens": 100,
   "mode": "weak",
   "reporters": ["console"],

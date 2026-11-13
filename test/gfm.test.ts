@@ -101,9 +101,10 @@ test("a 160,000-character line of dots, underscores, `](`, asterisks, tildes, ad
   }
 
   for (const [name, line] of Object.entries(lines)) {
-    const started = performance.now()
+    const started = process.threadCpuUsage()
     LINEAR.parse(line)
-    const took = performance.now() - started
+    const { user, system } = process.threadCpuUsage(started)
+    const took = (user + system) / 1000
 
     assert.ok(took < 3000, `${name} took ${Math.round(took)} ms`)
   }

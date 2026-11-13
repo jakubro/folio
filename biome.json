@@ -6,6 +6,7 @@
       "test/**",
       "e2e/**",
       "visual/*.ts",
+      "visual/ridge/components/src/**",
       "build.mjs",
       "playwright.config.ts",
       "site/*.mjs",

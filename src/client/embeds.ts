@@ -1,46 +1,52 @@
 /**
  * Data a document embeds: `{table: ...}` on a line of its own, `{value: ...}` in a sentence, a
- * `vega-lite` fence, and a figure tied to data by `<data value="...">`, each drawn from the folder's
- * data once the page has rendered.
+ * `vega-lite` or `component` fence, and a figure tied to data by `<data value="...">`, each drawn from
+ * the folder's data once the page has rendered.
  */
 
 import type { ElementContent, Element as HastElement, Nodes as HastNodes, Text } from "hast"
 import type { Embedded } from "../server/data.ts"
 import { singleValue, type Verdict, verdict } from "./claims.ts"
+import type { Script } from "./components.ts"
 import { withSource } from "./drawings.ts"
 import type { Theme } from "./render.ts"
 import { literal } from "./unresolved.ts"
+import { Waiting } from "./waiting.ts"
 import { keepWhole } from "./words.ts"
 import { expandDrawing } from "./zoom.ts"
 
 export const TABLE = /^\s*\{table:\s*([^}\n]+?)\s*\}\s*$/
 /** A format follows a pipe set apart by spaces, so a key may hold a bare one. */
 export const VALUE = /\{value:\s*([^}\n]+?)(?:\s+\|\s+([^}\n]*?))?\s*\}/g
+export type Fences = Map<number, { kind: "query" | "component"; name: string }>
+export const HANDED = "Markdown from a component takes no includes, data references or queries."
 const CHART = "language-vega-lite"
 const WAIT_MS = 300
 const VERSIONS = new WeakMap<HTMLElement, Map<string, string>>()
+const SCRIPTS = new WeakMap<HTMLElement, Script>()
 const FLIGHT = new WeakMap<HTMLElement, Promise<void>>()
 
 /**
  * Turn the embeds in a top-level block, at any depth, into placeholders; run after sanitizing, so a page
- * cannot forge one. `queries` holds the page lines `sql query` fences open on; `lineIn` maps a page line
- * to its line in `from`.
+ * cannot forge one. `fences` holds the page lines `sql query` and `component` fences open on; `lineIn`
+ * maps a page line to its line in `from`. Without `from`, as in markdown a component hands over, every
+ * placeholder but a chart's refuses to draw, and a chart reads no file.
  */
 export function markEmbeds(
   node: HastElement,
-  from: string,
-  queries: Map<number, string>,
+  from: string | undefined,
+  fences: Fences,
   lineIn: (line: number) => number,
 ): void {
-  if (!mark(node, from, queries, lineIn)) {
-    values(node, from, (child) => mark(child, from, queries, lineIn))
+  if (!mark(node, from, fences, lineIn)) {
+    values(node, from, (child) => mark(child, from, fences, lineIn))
   }
 }
 
 function mark(
   node: HastElement,
-  from: string,
-  queries: Map<number, string>,
+  from: string | undefined,
+  fences: Fences,
   lineIn: (line: number) => number,
 ): boolean {
   const alone = node.children.length === 1 && node.children[0]
@@ -78,28 +84,37 @@ function mark(
   }
 
   const line = node.position?.start.line
-  const query = node.tagName === "pre" && line !== undefined ? queries.get(line) : undefined
+  const fence = node.tagName === "pre" && line !== undefined ? fences.get(line) : undefined
 
-  if (query !== undefined && line !== undefined) {
-    markQuery(node, from, query || `@${lineIn(line)}`)
+  if (fence?.kind === "query" && line !== undefined) {
+    markQuery(node, from, fence.name || `@${lineIn(line)}`)
+    return true
+  }
+
+  if (fence?.kind === "component") {
+    holdFence(node, placeholder("component", fence.name, from))
     return true
   }
 
   const code = node.tagName === "pre" ? node.children[0] : undefined
 
   if (code?.type === "element" && classes(code).includes(CHART)) {
-    Object.assign(node, {
-      tagName: "div",
-      properties: { ...node.properties, ...placeholder("chart", "", from) },
-      children: [{ ...node, tagName: "pre", properties: {} }],
-    })
+    holdFence(node, placeholder("chart", "", from))
     return true
   }
 
   return false
 }
 
-function markQuery(node: HastElement, from: string, key: string): void {
+function holdFence(node: HastElement, properties: HastElement["properties"]): void {
+  Object.assign(node, {
+    tagName: "div",
+    properties: { ...node.properties, ...properties },
+    children: [{ ...node, tagName: "pre", properties: {} }],
+  })
+}
+
+function markQuery(node: HastElement, from: string | undefined, key: string): void {
   Object.assign(node, {
     tagName: "div",
     properties: { ...node.properties, ...placeholder("query", `#${key}`, from) },
@@ -159,14 +174,44 @@ export function redrawEmbeds(
           (FLIGHT.has(element) && element.dataset.ref === reference)),
     )
     .map(async (element) => {
-      while (FLIGHT.has(element)) {
-        await FLIGHT.get(element)
-      }
+      await landed(element)
 
       if (VERSIONS.get(element)?.get(reference) !== version) {
         await draw(element, theme)
       }
     })
+}
+
+export function componentVersions(within: HTMLElement): Record<string, string | null> {
+  return Object.fromEntries(
+    [...within.querySelectorAll<HTMLElement>('[data-embed="component"]')].flatMap((element) => {
+      const script = SCRIPTS.get(element)
+      return script ? [[script.name, script.version]] : []
+    }),
+  )
+}
+
+export function redrawComponents(
+  article: HTMLElement,
+  name: string,
+  theme: Theme,
+  version: string | null,
+): Promise<void>[] {
+  return [...article.querySelectorAll<HTMLElement>('[data-embed="component"]')]
+    .filter((element) => SCRIPTS.get(element)?.name === name)
+    .map(async (element) => {
+      await landed(element)
+
+      if (SCRIPTS.get(element)?.version !== version) {
+        await draw(element, theme)
+      }
+    })
+}
+
+async function landed(element: HTMLElement): Promise<void> {
+  while (FLIGHT.has(element)) {
+    await FLIGHT.get(element)
+  }
 }
 
 export async function drawEmbeds(blocks: Node[], theme: Theme): Promise<void> {
@@ -211,7 +256,7 @@ async function drawing(element: HTMLElement, theme: Theme): Promise<void> {
       const result = Object.assign(document.createElement("div"), { className: "query-result" })
       result.append(...notes, gridTable(grid))
       steady(element, () => {
-        element.querySelector(":scope > .query-result")?.remove()
+        element.querySelector(":scope > :is(.query-result, .embed-waiting)")?.remove()
         element.append(result)
         element.classList.remove("embed-missing")
       })
@@ -238,7 +283,7 @@ async function drawing(element: HTMLElement, theme: Theme): Promise<void> {
 
       steady(element, () => {
         element.querySelector(":scope > .chart")?.remove()
-        element.querySelector(":scope > .chart-reason")?.remove()
+        element.querySelector(":scope > :is(.chart-reason, .embed-waiting)")?.remove()
         element.append(chart)
         element.classList.add("drawn")
         element.classList.remove("embed-missing")
@@ -247,6 +292,39 @@ async function drawing(element: HTMLElement, theme: Theme): Promise<void> {
           () => element.querySelector(":scope > pre > code")?.textContent?.replace(/\n$/, "") ?? "",
           () => highlighted(element.querySelector(":scope > pre > code")),
           [expandDrawing("chart", () => element.querySelector(":scope > .chart > svg"))],
+        )
+      })
+      return
+    }
+
+    if (kind === "component") {
+      if (element.dataset.from === undefined) {
+        throw new Error(HANDED)
+      }
+
+      const { drawComponent } = await import("./components.ts")
+      const { partial } = await drawComponent(
+        element,
+        theme,
+        (reference) => fetchEmbed(element, from, reference),
+        SCRIPTS,
+      )
+
+      steady(element, () => {
+        element.querySelector(":scope > :is(.component-reason, .embed-waiting)")?.remove()
+        element.querySelector(":scope > .data-info")?.remove()
+        element.classList.add("drawn")
+        element.classList.remove("embed-missing")
+        element.removeAttribute("title")
+
+        if (partial) {
+          element.append(note("Drawn from the first rows of a longer result."))
+        }
+
+        withSource(
+          element,
+          () => element.querySelector(":scope > pre > code")?.textContent?.replace(/\n$/, "") ?? "",
+          () => {},
         )
       })
       return
@@ -326,7 +404,13 @@ async function drawing(element: HTMLElement, theme: Theme): Promise<void> {
   } catch (error) {
     const reason = (error as Error).message
 
+    if (error instanceof Waiting) {
+      steady(element, () => waiting(element, kind, reason))
+      return
+    }
+
     steady(element, () => {
+      element.querySelector(":scope > .embed-waiting")?.remove()
       element.classList.add("embed-missing")
       element.title = reason
 
@@ -350,6 +434,17 @@ async function drawing(element: HTMLElement, theme: Theme): Promise<void> {
             textContent: reason,
           }),
         )
+      } else if (kind === "component") {
+        element.querySelector(":scope > .component-reason")?.remove()
+        element.querySelector(":scope > .data-info")?.remove()
+        element.querySelector(":scope > .drawn-toolbar")?.remove()
+        element.classList.remove("drawn", "showing-source")
+        element.append(
+          Object.assign(document.createElement("p"), {
+            className: "component-reason",
+            textContent: reason,
+          }),
+        )
       } else if (kind === "claim") {
         element.querySelector(":scope > .claim-live")?.remove()
         element.classList.remove("claim-contradicted")
@@ -357,6 +452,30 @@ async function drawing(element: HTMLElement, theme: Theme): Promise<void> {
         element.textContent = reason.includes(ref) ? reason : `${ref}: ${reason}`
       }
     })
+  }
+}
+
+function waiting(element: HTMLElement, kind: string | undefined, reason: string): void {
+  const inline = kind === "value" || kind === "claim"
+  const shown = Object.assign(document.createElement(inline ? "span" : "p"), {
+    className: "panel-waiting embed-waiting",
+  })
+  shown.append(Object.assign(document.createElement("span"), { className: "spinner" }), reason)
+
+  element.classList.remove("embed-missing", "drawn", "showing-source", "claim-contradicted")
+  element.removeAttribute("title")
+  element
+    .querySelectorAll(
+      ":scope > :is(.embed-waiting, .query-result, .chart, .chart-reason, .component-reason, .data-info, .drawn-toolbar, .claim-live, folio-component)",
+    )
+    .forEach((old) => {
+      old.remove()
+    })
+
+  if (kind === "value" || kind === "table") {
+    element.replaceChildren(shown)
+  } else if (kind !== "claim") {
+    element.append(shown)
   }
 }
 
@@ -404,27 +523,16 @@ function steady(element: HTMLElement, change: () => void): void {
   }
 }
 
-export function rowsOf(embedded: Embedded): Record<string, unknown>[] {
-  if (embedded.grid) {
-    const { columns, rows } = embedded.grid
-    return rows.map((row) => Object.fromEntries(columns.map(({ name }, i) => [name, row[i]])))
-  }
-
-  if (Array.isArray(embedded.value)) {
-    return embedded.value.map((item) =>
-      item !== null && typeof item === "object" ? item : { value: item },
-    )
-  }
-
-  throw new Error("Not a list of rows.")
-}
-
 /** The server answers a missing reference with its reason in the body; that reason rejects. */
 async function fetchEmbed(
   element: HTMLElement,
   from: string,
   reference: string,
 ): Promise<Embedded> {
+  if (element.dataset.from === undefined) {
+    throw new Error(HANDED)
+  }
+
   const address = from.split("/").map(encodeURIComponent).join("/")
   const response = await fetch(`/${address}?embed=${encodeURIComponent(reference)}`)
   const embedded: Embedded = response.ok
@@ -432,6 +540,10 @@ async function fetchEmbed(
     : { version: "", error: "Not found." }
 
   VERSIONS.set(element, (VERSIONS.get(element) ?? new Map()).set(reference, embedded.version))
+
+  if (embedded.waiting) {
+    throw new Waiting(embedded.waiting)
+  }
 
   if (embedded.error) {
     throw new Error(embedded.error)
@@ -456,7 +568,11 @@ function listOf(value: unknown): unknown {
   return entries.map(([key, item]) => ({ key, value: item }))
 }
 
-function values(node: HastNodes, from: string, marked: (node: HastElement) => boolean): void {
+function values(
+  node: HastNodes,
+  from: string | undefined,
+  marked: (node: HastElement) => boolean,
+): void {
   if (node.type !== "element" && node.type !== "root") {
     return
   }
@@ -478,7 +594,7 @@ function values(node: HastNodes, from: string, marked: (node: HastElement) => bo
   }) as typeof node.children
 }
 
-function split(text: Text, from: string): ElementContent[] {
+function split(text: Text, from: string | undefined): ElementContent[] {
   const parts: ElementContent[] = []
   let last = 0
 
@@ -516,12 +632,16 @@ function note(text: string): HTMLParagraphElement {
   return Object.assign(document.createElement("p"), { className: "data-info", textContent: text })
 }
 
-function placeholder(kind: string, reference: string, from: string): HastElement["properties"] {
+function placeholder(
+  kind: string,
+  reference: string,
+  from: string | undefined,
+): HastElement["properties"] {
   return {
     className: ["embed", `embed-${kind}`],
     dataEmbed: kind,
     ...(reference && { dataRef: reference }),
-    dataFrom: from,
+    ...(from !== undefined && { dataFrom: from }),
   }
 }
 

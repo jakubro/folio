@@ -206,7 +206,7 @@ async function pastVersion(urlPath: string, id: string, theme: Theme): Promise<H
   }
 
   const kind = /\.(mermaid|mmd)$/i.test(urlPath) ? "mermaid" : "markdown"
-  const article = await render(found.text, NO_SOURCES, kind, theme, document, true)
+  const article = await render(found.text, NO_SOURCES, kind, theme, document, "still")
   const banner = document.createElement("p")
 
   banner.className = "history-banner"

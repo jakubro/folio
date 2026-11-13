@@ -1,6 +1,6 @@
 ---
 name: folio
-description: Folio serves a folder of markdown and data files to its reader's browser as live pages, and keeps a model of the whole folder that agents query too. Write documents there that use what Folio adds, so numbers and shared text follow their sources instead of going stale as copies do - includes of files, sections and blocks; links to any block; data files and SQL results embedded as tables, values and Vega-Lite charts; figures checked against their data; results saved back into the markdown; FOLIO.md kinds, fields and rules - and check them against Folio's health. Use whenever a FOLIO.md sits in the working folder or above it, Folio's MCP tools (folio_document, folio_health, folio_query) are connected, documents are linked at a Folio address such as http://localhost:8640/, or the user names Folio - before writing or editing markdown there, before quoting a number from a data file, before moving or renaming a file, and when asked which page the reader has open, what they have read or what changed.
+description: Folio serves a folder of markdown and data files to its reader's browser as live pages, and keeps a model of the whole folder that agents query too. Write documents there that use what Folio adds, so numbers and shared text follow their sources where copies go stale - includes of files, sections and blocks; links to any block; data files and SQL results embedded as tables, values and Vega-Lite charts; figures checked against their data; results saved into the markdown; FOLIO.md kinds, fields and rules; components drawing data with scripts - and check them against Folio's health. Use whenever a FOLIO.md sits at or above the working folder, Folio's MCP tools (folio_health, folio_query) are connected, documents are linked at a Folio address such as http://localhost:8640/, or the user names Folio - before writing or editing markdown or a component there, before quoting a number from a data file, before moving or renaming a file, and when asked which page the reader has open, what they have read or what changed.
 ---
 
 # Writing for Folio
@@ -20,7 +20,7 @@ Where nothing marks the folder as Folio's - no `FOLIO.md` at or above it, no Fol
 
 In the raw text of this skill every include example carries a backslash before its brace, so Folio does not resolve the examples when it serves these files. Write includes without the backslash.
 
-Declaring a folder's conventions in `FOLIO.md`: [references/conventions.md](references/conventions.md). Every limit and edge case is in Folio's reference: [Command line](https://jakubro.github.io/folio/reference/command-line/), [Addresses](https://jakubro.github.io/folio/reference/addresses/), [Model API](https://jakubro.github.io/folio/reference/model-api/), [Data files](https://jakubro.github.io/folio/reference/data-files/), [Embedded data](https://jakubro.github.io/folio/reference/embedded-data/), [Queries](https://jakubro.github.io/folio/reference/queries/), [Reading](https://jakubro.github.io/folio/reference/reading/), [History](https://jakubro.github.io/folio/reference/history/), [Digests](https://jakubro.github.io/folio/reference/digests/), [Conventions](https://jakubro.github.io/folio/reference/conventions/), [Saved views](https://jakubro.github.io/folio/reference/saved-views/), [Markdown](https://jakubro.github.io/folio/reference/markdown/) and [Security and limits](https://jakubro.github.io/folio/reference/security-and-limits/).
+Declaring a folder's conventions in `FOLIO.md`: [references/conventions.md](references/conventions.md). Writing a component: [references/components.md](references/components.md). Every limit and edge case is in Folio's reference: [Command line](https://jakubro.github.io/folio/reference/command-line/), [Addresses](https://jakubro.github.io/folio/reference/addresses/), [Model API](https://jakubro.github.io/folio/reference/model-api/), [Data files](https://jakubro.github.io/folio/reference/data-files/), [Embedded data](https://jakubro.github.io/folio/reference/embedded-data/), [Components](https://jakubro.github.io/folio/reference/components/), [Queries](https://jakubro.github.io/folio/reference/queries/), [Reading](https://jakubro.github.io/folio/reference/reading/), [History](https://jakubro.github.io/folio/reference/history/), [Digests](https://jakubro.github.io/folio/reference/digests/), [Conventions](https://jakubro.github.io/folio/reference/conventions/), [Saved views](https://jakubro.github.io/folio/reference/saved-views/), [Markdown](https://jakubro.github.io/folio/reference/markdown/) and [Security and limits](https://jakubro.github.io/folio/reference/security-and-limits/).
 
 ## Find Folio
 
@@ -116,8 +116,18 @@ encoding:
 - **Value** - `{value: ref}` anywhere in a paragraph, heading, list item or table cell, outside code. A space, `|`, a space and a [d3-format](https://d3js.org/d3-format) specifier format a number: `{value: ref | .1%}`, `{value: ref | ,.0f}`.
 - **Figure** - `<data value="ref">48.2</data>` keeps the typed figure in the text and checks it against the data. A number matches within half a unit of its last typed digit; thousands separators, a sign, a currency mark and `k`, `K`, `M`, `B` or `bn` are allowed, and a figure ending in `%` reads a data value between -1 and 1 as a fraction. A date matches on the parts typed. A range such as `29-56%` is not checked, and health never lists it. Keep units outside the tag. A contradicted figure is underlined red with the data's value beside it and listed in health.
 - **Chart** - a `vega-lite` fence holding a Vega-Lite description in JSON or YAML; every `data.url`, at any depth, is a reference. In YAML, quote a reference starting with `#` - unquoted, it is a comment.
+- **Component** - a `component <name>` fence holding YAML: `data` maps each entry name to a reference, every other key is an option. A Folio started with `--components PATH` draws it with `<name>.js` from that folder; `curl -s 'http://localhost:8640/?components'` lists the components it has, and a fence naming none of them is listed in health. The folder holds built `.js` files only, each compiled from its sources in that folder's own build; writing one, in plain JavaScript or in TypeScript and React: [references/components.md](references/components.md).
 
-Use a value where the sentence should always carry the data's current number, and a figure where the number belongs to the prose and must stay true. Every embed, chart and query result redraws on each open page when a file it reads changes. One whose file or part is missing shows the reference and why, marked red, and the rest of the page draws.
+````markdown
+```component levels
+data:
+  readings: data/daily.csv
+  totals: '#totals'
+title: Rain by station
+```
+````
+
+Use a value where the sentence should always carry the data's current number, and a figure where the number belongs to the prose and must stay true. Every embed, chart, component and query result redraws on each open page when a file it reads changes. One whose file or part is missing shows the reference and why, marked red, and the rest of the page draws.
 
 ## Query the folder
 
@@ -196,7 +206,7 @@ select s.id, s.owner, s.calibrated from kind.station s where s.status = 'active'
 
 ## Edit so the reader can catch up
 
-Folio remembers which blocks the reader has read, and marks each block added (green), changed (amber, the text as read a click away) or removed (a red tick) since - a table by its rows, a list by its items, code by its lines; the tree puts a dot after each document holding a mark. A block showing an embed, chart or query result is marked when its data changes, and a block an include brings in when its file changes.
+Folio remembers which blocks the reader has read, and marks each block added (green), changed (amber, the text as read a click away) or removed (a red tick) since - a table by its rows, a list by its items, code by its lines; the tree puts a dot after each document holding a mark. A block showing an embed, chart, component or query result is marked when its data changes, and a block an include brings in when its file changes.
 
 - Change only the blocks whose content changes. Rewrapping a paragraph, repadding a table, line endings and moving a block whole count for nothing; rewording a block, or reordering the items or rows inside it, marks it.
 - A moved or reworded block keeps its identity, its links and its history.
@@ -206,14 +216,15 @@ Folio remembers which blocks the reader has read, and marks each block added (gr
 
 ## Check the work
 
-While Folio runs, `/?api=health` - `folio_health` among the tools - lists everything wrong in the folder, each problem with its document, line and block, and `/<path>?api=health` - `folio_health` given `path` - only the problems of that document or of the documents under that folder; while it answers `"ready": false`, Folio is still reading the folder, so ask again. Read every problem in a file you touched. A tool's answer too long for one has its lists cut to fit and says, in `omitted` and `narrow`, how many entries each list left out and how to ask for less. Without a running Folio, or to gate a commit:
+While Folio runs, `/?api=health` - `folio_health` among the tools - lists everything wrong in the folder, each problem with its document, line and block, and `/<path>?api=health` - `folio_health` given `path` - only the problems of that document or of the documents under that folder, once what changed there is checked; while it answers `"ready": false`, Folio is still reading the folder or has never checked it, so ask again. The whole folder answers at once with the problems as last checked, and `"checking": true` while Folio is still checking changes: give the path of what you edited for its current problems; `folio_needs` answers the same way. Read every problem in a file you touched. A tool's answer too long for one has its lists cut to fit and says, in `omitted` and `narrow`, how many entries each list left out and how to ask for less. Without a running Folio, or to gate a commit:
 
 ```sh
 folio check ROOT
 ```
 
+- **Components** - `folio check ROOT --components PATH`, the folders the user's Folio starts with, checks component fences against their scripts when no Folio serves the folder; a check working alone without the option lists every component fence as missing.
 - **Check the folder Folio serves, never one inside it.** `folio check` takes the folder it is given as the served folder: a folder inside it is checked without the `FOLIO.md` declarations above it, so their rules and health entries never run and it can report a clean folder over their violations. It asks the Folio serving exactly that folder - wherever it serves, or on `--port N` or `--socket PATH` when given - and otherwise works the health out itself.
-- It prints one problem a line - `path:line`, the severity (`error`, `warning` for a rule's warning, `-` for any other problem), the kind and what is wrong - then a count. It exits 1 only when a problem is an error: a violation of a rule whose severity is `error`, or a problem of a kind of check a `health` entry declares an error. Contradicted figures, broken links, missing includes, failing queries and diagrams or charts that do not draw are listed but do not fail it unless declared, so read every line naming a file you touched - exit 0 is not a clean folder. It exits 2 when no health can be worked out.
+- It prints one problem a line - `path:line`, the severity (`error`, `warning` for a rule's warning, `-` for any other problem), the kind and what is wrong - then a count. It exits 1 only when a problem is an error: frontmatter that is not YAML, a violation of a rule whose severity is `error`, or a problem of a kind of check a `health` entry declares an error. Contradicted figures, broken links, missing includes, failing queries and diagrams, charts or components that do not draw are listed but do not fail it unless declared, so read every line naming a file you touched - exit 0 is not a clean folder. It exits 2 when no health can be worked out.
 - **A draft in a dot-folder**, such as `.drafts/`, or under `node_modules` is left out of health, `folio check`, the folder's lists and digests, yet `?api=document`, `?api=provenance`, `?api=embed` and `?api=reads` - `folio_document`, `folio_provenance`, `folio_embed` and `folio_reads` - read it when asked and answer as for any document: read its block ids and resolve its references there, then check its problems once it moves into place.
 
 While Folio runs, the same answers come per resource:
@@ -221,7 +232,7 @@ While Folio runs, the same answers come per resource:
 | Address | Answers |
 |---|---|
 | `/?api` | The folder Folio serves as `root`, and every resource |
-| `/?api=health`, `<path>?api=health` | Everything wrong in the folder, or in a document or under a folder, each problem with its document, line and block |
+| `/?api=health`, `<path>?api=health` | Everything wrong in the folder as last checked, with `checking`, or in a document or under a folder once checked, each problem with its document, line and block; `/?api=health&wait` once every change heard is checked |
 | `<path>?raw` | A document's text with its includes expanded |
 | `<path>?api=document` | A document's blocks with their ids, its kind and fields, and the data it reads |
 | `<path>?api=embed&reference=<ref>` | What a reference written in the document reads |

@@ -9,13 +9,14 @@ import { digest } from "./digest.ts"
 import { type Part, partOf, within } from "./failures.ts"
 import { belowRoot, confine, isDocument, isPruned, renderable } from "./files.ts"
 import { healthOf } from "./health.ts"
+import { BLOCK_VERSIONS } from "./history.ts"
 import { impactOf } from "./impact.ts"
 import type { Model } from "./model.ts"
-import { needsOf } from "./needs.ts"
 import { presenceOf } from "./presence.ts"
 import { provenance } from "./provenance.ts"
 import { Unreadable } from "./queries.ts"
 import { relatedOf } from "./related.ts"
+import { latestHealth, latestNeeds } from "./shown.ts"
 import { staleOf } from "./stale.ts"
 import { changesState, pageState, readState } from "./versions.ts"
 
@@ -60,7 +61,8 @@ export const RESOURCES: Record<
     address: "/<folder>/?api=documents",
     answers: "Every document under the folder, with its kind when a declaration places it",
     part: "model",
-    read: ({ model, urlPath }) => {
+    read: ({ root, model, urlPath }) => {
+      folderAt(root, urlPath)
       const prefix = urlPath && !urlPath.endsWith("/") ? `${urlPath}/` : urlPath
       const conventions = conventionsOf(model)
 
@@ -157,6 +159,7 @@ export const RESOURCES: Record<
       "The result of one SELECT, run from the folder as a query in it runs, reading data files and the document tables",
     part: "data engine",
     read: async ({ root, data, urlPath, query }) => {
+      folderAt(root, urlPath)
       const { grid, files } = await data
         .query(required(query, "sql"), path.join(root, urlPath), { absolute: true })
         .catch((error: Error) => {
@@ -197,18 +200,20 @@ export const RESOURCES: Record<
     answers:
       "The kinds, rules and health entries applying at a path, layered as the declarations layer them",
     part: "declarations",
-    read: ({ model, urlPath }) => {
-      const { kinds, rules, health } = conventionsOf(model).layered(urlPath)
+    read: ({ root, model, urlPath }) => {
+      const at =
+        urlPath && !urlPath.endsWith("/") && isFolder(root, urlPath) ? `${urlPath}/` : urlPath
+      const { kinds, rules, health } = conventionsOf(model).layered(at)
       const from = ({ from: declared }: { from: { path: string } }) => declared.path
 
       return {
         declarations: conventionsOf(model)
-          .applying(urlPath)
+          .applying(at)
           .map((declaration) => declaration.path),
         kinds: kinds.map((kind) => ({
           name: kind.name,
           declaredIn: from(kind),
-          where: kind.definition.where.map(String),
+          where: kind.definition.globs,
           fields: kind.definition.fields,
         })),
         rules: rules.map((rule) => ({
@@ -218,7 +223,7 @@ export const RESOURCES: Record<
         })),
         health: health.map((entry) => ({
           declaredIn: from(entry),
-          where: entry.definition.where.map(String),
+          where: entry.definition.globs,
           skip: entry.definition.skip,
           error: entry.definition.error,
         })),
@@ -226,12 +231,25 @@ export const RESOURCES: Record<
     },
   },
   health: {
-    address: "/?api=health, /<path>?api=health",
+    address: "/?api=health, /<path>?api=health, /?api=health&wait",
     answers:
-      "Everything wrong in the folder, or in a document or the folder under it - each problem's kind, document, line, block, severity and what is wrong",
+      "Everything wrong in the folder as last checked, and whether a check is under way; for a document or the folder under it, once what changed there is checked; with wait, once every change heard before it is checked - each problem's kind, document, line, block, severity and what is wrong",
     part: "health",
-    read: async ({ root, model, data, urlPath }) =>
-      narrowed(root, urlPath, "problems", await healthOf(model, data).state()),
+    read: async ({ root, model, data, urlPath, query }) => {
+      const health = healthOf(model, data)
+
+      if (urlPath) {
+        placeable(root, urlPath)
+      }
+
+      const state = query.has("wait")
+        ? await health.state()
+        : urlPath
+          ? await health.checkedAt(urlPath)
+          : await latestHealth(model, data)
+
+      return narrowed(root, urlPath, "problems", { checking: !state.ready, ...state })
+    },
   },
   presence: {
     address: "/?api=presence",
@@ -259,11 +277,19 @@ export const RESOURCES: Record<
   needs: {
     address: "/?api=needs, /<path>?api=needs",
     answers:
-      "What needs the reader, ranked: errors, problems in documents they read, rows of the folder's attention queries, and changes to what they read; for a path, only what lies there",
+      "What needs the reader, ranked: errors, problems in documents they read, rows of the folder's attention queries, and changes to what they read, as last worked out, and whether any of it is still being worked out; for a path, only what lies there, its problems checked first",
     part: "needs",
     read: async ({ root, model, data, urlPath }) => {
-      const { ready, needs, version } = await needsOf(model, data)
-      return narrowed(root, urlPath, "needs", { ready, needs, version })
+      if (urlPath) {
+        placeable(root, urlPath)
+      }
+
+      const { ready, needs, version, checking } = await latestNeeds(
+        model,
+        data,
+        urlPath || undefined,
+      )
+      return narrowed(root, urlPath, "needs", { ready, needs, version, checking })
     },
   },
   stale: {
@@ -292,8 +318,10 @@ export const RESOURCES: Record<
     read: async ({ root, model, data, urlPath }) => {
       await model.reads.load()
 
-      if (!urlPath || urlPath.endsWith("/")) {
-        return { documents: model.reads.documents(urlPath) }
+      if (!urlPath || urlPath.endsWith("/") || isFolder(root, urlPath)) {
+        folderAt(root, urlPath)
+        const folder = urlPath && !urlPath.endsWith("/") ? `${urlPath}/` : urlPath
+        return { documents: model.reads.documents(folder) }
       }
 
       const file = documentFile(root, urlPath)
@@ -306,22 +334,33 @@ export const RESOURCES: Record<
     answers:
       "A document's versions, newest first; with version, that version's text; with block, each text the block has had; with reference, each result the embed has shown",
     part: "history",
-    read: async ({ model, urlPath, query }) => {
+    read: async ({ root, model, urlPath, query }) => {
       const history = model.history
       const version = query.get("version")
       const block = query.get("block")
       const reference = query.get("reference")
+      const versions = await history.versions(urlPath)
+
+      if (versions.length === 0) {
+        throw new Refusal(
+          404,
+          `${urlPath || "/"} is no document of the served folder, ${root}, now or in its history: ${PATHS}.`,
+        )
+      }
 
       if (version !== null) {
         return { path: urlPath, version, text: (await history.text(urlPath, version)) ?? null }
       }
 
       if (block !== null) {
-        return {
-          path: urlPath,
-          block,
-          versions: timed(await history.block(urlPath, block, model.held(urlPath) ?? [])),
+        const texts = await history.block(urlPath, block, model.held(urlPath) ?? [])
+
+        if (texts.every(({ text }) => text === undefined)) {
+          const read = versions.length > BLOCK_VERSIONS ? ` among its newest ${BLOCK_VERSIONS}` : ""
+          throw new Refusal(404, `No version of ${urlPath}${read} holds the block ${block}.`)
         }
+
+        return { path: urlPath, block, versions: timed(texts) }
       }
 
       if (reference !== null) {
@@ -332,17 +371,30 @@ export const RESOURCES: Record<
         }
       }
 
-      return { path: urlPath, versions: timed(await history.versions(urlPath)) }
+      return { path: urlPath, versions: timed(versions) }
     },
   },
   "used-by": {
     address: "/<path>?api=used-by",
     answers: "The documents including the file, or whose embeds and queries read it",
     part: "used-by",
-    read: async ({ model, data, urlPath }) =>
-      model.ready
-        ? { ready: true, documents: await impactOf(model, data).dependents(urlPath) }
-        : { ready: false, documents: [] },
+    read: async ({ root, model, data, urlPath }) => {
+      if (!model.ready) {
+        return { ready: false, documents: [] }
+      }
+
+      const documents = await impactOf(model, data).dependents(urlPath)
+      const found = confine(root, urlPath)
+
+      if (documents.length === 0 && !(found && fs.statSync(found).isFile())) {
+        throw new Refusal(
+          404,
+          `${urlPath || "/"} is no file of the served folder, ${root}, and nothing reads it: ${PATHS}.`,
+        )
+      }
+
+      return { ready: true, documents }
+    },
   },
   digest: {
     address: "/?api=digest[&from=<time>&to=<time>]",
@@ -446,18 +498,7 @@ function narrowed<
     return state
   }
 
-  const found = confine(root, urlPath)
-
-  if (
-    !found ||
-    !(isDocument(renderable(root, urlPath)?.kind) || fs.statSync(found).isDirectory())
-  ) {
-    throw new Refusal(
-      404,
-      `${urlPath} is no document or folder of the served folder, ${root}: ${PATHS}.`,
-    )
-  }
-
+  placeable(root, urlPath)
   const at = urlPath.replace(/\/$/, "")
   const kept = state[key].filter(({ path: entry }) => entry === at || entry.startsWith(`${at}/`))
 
@@ -469,6 +510,26 @@ function narrowed<
       .digest("hex")
       .slice(0, 16),
   }
+}
+
+function placeable(root: string, urlPath: string): void {
+  if (!(isDocument(renderable(root, urlPath)?.kind) || isFolder(root, urlPath))) {
+    throw new Refusal(
+      404,
+      `${urlPath} is no document or folder of the served folder, ${root}: ${PATHS}.`,
+    )
+  }
+}
+
+function folderAt(root: string, urlPath: string): void {
+  if (urlPath && !isFolder(root, urlPath)) {
+    throw new Refusal(404, `${urlPath} is no folder of the served folder, ${root}: ${PATHS}.`)
+  }
+}
+
+function isFolder(root: string, urlPath: string): boolean {
+  const found = confine(root, urlPath)
+  return found !== undefined && fs.statSync(found).isDirectory()
 }
 
 /**

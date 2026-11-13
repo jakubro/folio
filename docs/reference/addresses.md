@@ -13,6 +13,8 @@ Every file's address is its path in the folder, so links between files work as t
 | `/<folder>/` | The folder's listing; the address without its closing slash redirects to it |
 | Any other address | Folio's not-found page, with a 404: the address, a link to the history of a document that lived there - wherever it moved since - and the documents of the folder with the same file name. Saving a document at the address turns the page into it. An address with a query that names nothing answers a plain-text 404 |
 | `/<path>?raw` | The file's text with its includes expanded |
+| `/?component=<name>` | The script a component of that name draws with, from the first components folder holding it |
+| `/?components` | The components folders, as JSON, and each component by its name: the script it is drawn from, its version, and any script of the same name a later folder holds |
 | `/<path>?table=<name>` to a database | One table of the database, 200 rows at a time |
 | `/<path>?filter=<filter>` to a data file | Its page showing only the records a field's value or range keeps, as picked in its statistics |
 | `/<path>?view=<views>` | The page with its tables' views - sort, filters, hidden columns, rows shown - as they were when the address was copied |

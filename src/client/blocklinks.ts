@@ -20,6 +20,7 @@ export class BlockLinks {
   )
   #block: HTMLElement | undefined
   #placed = ""
+  #pointer: { x: number; y: number } | undefined
   /** Opens where the block under the pointer came from. */
   onProvenance: (block: HTMLElement, button: HTMLElement) => void = () => {}
   onVersions: (block: HTMLElement, button: HTMLElement) => void = () => {}
@@ -62,14 +63,29 @@ export class BlockLinks {
     main.append(this.#mark, this.#past, this.#why, this.#copy)
     main.addEventListener("pointerover", (event) => this.#over(event))
     main.addEventListener("pointermove", (event) => this.#over(event))
-    main.addEventListener("pointerleave", () => this.#hide())
+    main.addEventListener("pointerleave", () => this.#left())
     // A leave is lost when the element under the pointer is replaced while it is there.
     document.addEventListener("pointerover", (event) => {
       if (!main.contains(event.target as Node)) {
-        this.#hide()
+        this.#left()
       }
     })
-    document.addEventListener("folio:redraw", () => this.#hide())
+    // A pointer at rest sends no event, so the block under it is found again where it stays.
+    document.addEventListener("folio:redraw", () => {
+      const pointer = this.#pointer
+      const on = pointer && document.elementFromPoint(pointer.x, pointer.y)
+      // A button can stand below a short block, so one under the pointer keeps its block.
+      const kept = on && this.#isButton(on) ? this.#block?.dataset.folioId : undefined
+      this.#hide()
+      const block = kept === undefined ? undefined : this.find(`#^${encodeURIComponent(kept)}`)
+      const element = pointer && document.elementFromPoint(pointer.x, pointer.y)
+
+      if (block) {
+        this.#show(block)
+      } else if (pointer && element && main.contains(element)) {
+        this.#point(element, pointer.y)
+      }
+    })
     this.#mark.addEventListener("click", (event) => {
       if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
         return
@@ -100,15 +116,13 @@ export class BlockLinks {
     this.#gone.hidden = !shown
   }
 
-  #over({ target, clientY }: PointerEvent): void {
-    const element = target as Element
+  #over({ target, clientX, clientY }: PointerEvent): void {
+    this.#pointer = { x: clientX, y: clientY }
+    this.#point(target as Element, clientY)
+  }
 
-    if (
-      element === this.#mark ||
-      this.#past.contains(element) ||
-      this.#why.contains(element) ||
-      this.#copy.contains(element)
-    ) {
+  #point(element: Element, clientY: number): void {
+    if (this.#isButton(element)) {
       return
     }
 
@@ -177,6 +191,20 @@ export class BlockLinks {
     this.#copy.style.top = `calc(${this.#mark.style.top} + ${heading ? 1.25 : 2.5}em)`
     this.#copy.style.left = this.#past.style.left
     this.#copy.hidden = !this.copies(block)
+  }
+
+  #isButton(element: Element): boolean {
+    return (
+      element === this.#mark ||
+      this.#past.contains(element) ||
+      this.#why.contains(element) ||
+      this.#copy.contains(element)
+    )
+  }
+
+  #left(): void {
+    this.#pointer = undefined
+    this.#hide()
   }
 
   #hide(): void {

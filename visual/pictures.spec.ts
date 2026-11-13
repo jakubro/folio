@@ -112,6 +112,14 @@ test.describe("the ridge folder", () => {
     await expect(page).toHaveScreenshot(["images", "map-and-model.png"])
   })
 
+  test("Components: the levels component, one station open on its days", async ({ page }) => {
+    await open(page, folder, "notes/rain.md", ".embed-component.drawn folio-component .gauge")
+    await page.click(".embed-component folio-component .gauge >> nth=0")
+    await page.waitForSelector(".embed-component folio-component .days")
+    await page.mouse.move(1390, 790)
+    await expect(page).toHaveScreenshot(["images", "component.png"])
+  })
+
   test("Linked from: the documents linking to a page", async ({ page }) => {
     await open(page, folder, "stations/north.md", ".backlinks .backlink-context")
     await page.evaluate(() => document.querySelector(".backlinks")?.scrollIntoView())

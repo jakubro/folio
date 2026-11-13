@@ -294,6 +294,73 @@ test("Own block, Included block, Computed block, Trust, Problems unasked, Quiet 
   }
 })
 
+test("a tilde fence reads its data as a backtick fence does", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-tilde-")))
+  writeIn(folder, {
+    "data/daily.csv": "day,rain_mm\n2026-10-01,0.7\n2026-10-02,4.1\n",
+    "report.md": [
+      "# Report",
+      "",
+      "~~~vega-lite",
+      '{"data": {"url": "data/daily.csv"}, "mark": "bar", "encoding": {"x": {"field": "day"}, "y": {"field": "rain_mm", "type": "quantitative"}}}',
+      "~~~",
+    ].join("\n"),
+    "query.md": "# Query\n\n~~~sql query\nselect nothing from 'data/daily.csv'\n~~~\n",
+    "missing.md":
+      '# Missing\n\n~~~vega-lite\n{"data": {"url": "absent.csv"}, "mark": "bar"}\n~~~\n',
+  })
+  const served = await serveFolder(folder)
+  const json = async (address: string) => (await fetch(`${served.base}/${address}`)).json()
+
+  try {
+    await waitFor(async () => (await json("data/daily.csv?used-by")).ready === true)
+    assert.deepEqual((await json("data/daily.csv?used-by")).documents, [
+      { source: "query.md", how: "embeds" },
+      { source: "report.md", how: "embeds" },
+    ])
+
+    const page = await context.newPage()
+    await page.goto(`${served.base}/data/daily.csv`)
+    await page.waitForSelector(".used-by:not([hidden]) li")
+    const users = await page.locator(".used-by li").allTextContents()
+    assert.equal(users.length, 2)
+    assert.match(users[0], /query\.md embeds or queries its data/)
+    assert.match(users[1], /report\.md embeds or queries its data/)
+
+    await page.goto(`${served.base}/report.md`)
+    await page.waitForSelector(".embed-chart.drawn > .chart svg")
+    await page.hover(".markdown-body > .embed-chart.drawn")
+    await page.click(".block-provenance")
+    await page.waitForSelector(".provenance-panel:not([hidden]) .provenance-line")
+    const lines = await page.$$eval(".provenance-panel .provenance-line", (found) =>
+      found.map((line) => line.textContent ?? ""),
+    )
+    assert.match(lines[1] ?? "", /^Data: data\/daily\.csv - reads data\/daily\.csv \(changed .+\)$/)
+    await page.close()
+
+    const listed = async () =>
+      ((await json("?api=health")).problems ?? []).map(
+        ({ path: at, kind, line, what }: Record<string, string>) => [
+          at,
+          kind,
+          line,
+          what.split(":")[0],
+        ],
+      )
+    await waitFor(async () => (await listed()).length === 2)
+    assert.deepEqual(
+      (await listed()).sort((a: string[], b: string[]) => a[0].localeCompare(b[0])),
+      [
+        ["missing.md", "data", 3, "absent.csv"],
+        ["query.md", "query", 3, "The query fails"],
+      ],
+    )
+  } finally {
+    served.stop()
+    fs.rmSync(folder, { recursive: true, force: true })
+  }
+})
+
 test("Marker characters, Link to an include, Query text changes: ties, formulas and links around includes", async () => {
   const lines = (sql: string) =>
     [

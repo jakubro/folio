@@ -120,6 +120,24 @@ test("every document's structure reads as tables without any declaration", async
   }
 })
 
+test("a document whose frontmatter is not YAML has no folio.frontmatter rows, and one beside it reads", async () => {
+  const { root, model, data } = await served({
+    "a.md": "---\nowner: ann\nwhy: a: b\n---\n# A\n",
+    "b.md": "---\nowner: bo\n---\n# B\n",
+  })
+
+  try {
+    assert.deepEqual(
+      (await data.query("select path, key, value from folio.frontmatter order by path", root)).grid
+        .rows,
+      [["b.md", "owner", "bo"]],
+    )
+  } finally {
+    model.close()
+    await data.close()
+  }
+})
+
 test("a query over documents is versioned by them, so it reads again when one changes", async () => {
   const { root, model, data } = await served({
     ...FOLDER,

@@ -4,6 +4,11 @@
  * reads none of it as syntax and a slug drops all of it; the page spells the literal back as written.
  */
 
+/**
+ * A target holds no brackets, braces, quotes or commas, so a YAML flow map opening with an include key
+ * is no include.
+ */
+export const INCLUDE = /(\\?)\{include:\s*([^}\n[\]{"',]*?)\s*\}/g
 const OPEN = "\uE000"
 /** Present in any text holding a marked include. */
 export const MARKED = OPEN

@@ -1,6 +1,7 @@
 /**
  * Everything wrong in the folder, worked out from the model on request: contradicted figures, broken links
- * and includes, diagrams and charts that do not draw, failing queries and data that cannot be read.
+ * and includes, diagrams, charts and components that do not draw, failing queries, data that cannot be read
+ * and frontmatter that is not YAML.
  */
 
 import { createHash } from "node:crypto"
@@ -8,9 +9,11 @@ import fs from "node:fs"
 import path from "node:path"
 import GithubSlugger from "github-slugger"
 import { chartSpec } from "../client/charts.ts"
+import { componentName, missingComponent, readComponent } from "../client/component.ts"
 import { problemKey } from "../client/problems.ts"
 import { MARKED, unmarked } from "../client/unresolved.ts"
 import type { Block } from "./blocks.ts"
+import { componentsOf } from "./components.ts"
 import {
   CHECKS,
   conventionsOf,
@@ -20,10 +23,11 @@ import {
 } from "./conventions.ts"
 import { type Data, timedOut } from "./data.ts"
 import { Drawing } from "./drawing.ts"
-import { type Fence, fencesOf, queryFences } from "./embeds.ts"
+import { componentData, type Fence, fencesOf, queryFences } from "./embeds.ts"
 import { guarded } from "./failures.ts"
 import { confine, isInside, linkTarget } from "./files.ts"
 import { type Expansion, expand } from "./includes.ts"
+import { frontmatterOf } from "./kinds.ts"
 import type { Model } from "./model.ts"
 import { claimStates } from "./provenance.ts"
 import { savedOf } from "./saved.ts"
@@ -40,7 +44,7 @@ export interface Problem {
   anchor?: string
   /** The document showing the problem, when another than its own: a loop shows on the other page. */
   opens?: string
-  /** How much a problem matters: a rule's as the rule declares it, another an error where health declares it. */
+  /** A rule's as it declares; frontmatter not YAML always an error; another an error where health declares. */
   severity?: "error" | "warning"
   /** Which of a rule's rows reading alike, at one place, this is: absent on the first, then 1, 2... */
   occurrence?: number
@@ -88,6 +92,8 @@ interface DocumentCheck {
   tables: TablesRead[]
   /** The kinds its fields name documents of by id. */
   names: string[]
+  /** The components folders its fences were checked against: under others, a kept result does not hold. */
+  components?: string
 }
 
 interface TablesRead {
@@ -110,11 +116,12 @@ const KINDS: readonly ProblemKind[] = CHECKS
 const DOCUMENT = /\.(md|markdown|mermaid|mmd)$/i
 const INCLUDE = /\{include:/
 const CHART = /^\s*(`{3,}|~{3,})\s*vega-lite\b/
+const COMPONENT = /(?:`{3,}|~{3,})[ \t]*component\b/
 const HTML_ID = /\b(?:id|name)\s*=\s*["']([^"']+)["']/g
 const NO_HTML = new Set(["code", "diagram", "math", "frontmatter"])
 const SLICE = 100
 const LOG_KEPT = 100
-const FORMAT = 4
+const FORMAT = 5
 const RETRY_MS = 30_000
 const BATCH = 64
 
@@ -195,7 +202,11 @@ class Health {
   readonly #boot = Date.now().toString(36)
   readonly #log: { from: string; added: Problem[]; changed: string[]; removed: string[] }[] = []
   readonly #waiting = new Set<string>()
-  readonly #checkingNow = new Set<string>()
+  readonly #checkingNow = new Map<string, number>()
+  readonly #landed = new Map<string, number>()
+  /** Taken by a check of the whole folder and not checked yet: a path's check takes them too. */
+  readonly #owed = new Set<string>()
+  #started = 0
   readonly #timedOut = new Set<string>()
   readonly #gone = new Set<string>()
   #retry: NodeJS.Timeout | undefined
@@ -205,6 +216,7 @@ class Health {
   #dirs: string[] | undefined
   #revision = 0
   #stale = true
+  #checkedOnce = false
   #running: Promise<void> | undefined
   #progress: { checked: number; of: number } | undefined
   #next: Promise<void> | undefined
@@ -243,6 +255,13 @@ class Health {
   /** Hear when health may have moved; checking it says whether it did. */
   listen(listener: () => void): void {
     this.#listeners.add(listener)
+  }
+
+  /** The problems as last checked, a path's checks included; undefined until a check of the whole folder ends. */
+  get checked(): HealthState | undefined {
+    return this.#checkedOnce
+      ? { ready: true, problems: this.#sortedProblems(), version: this.#version() }
+      : undefined
   }
 
   /** The latest check's count, kept once it ends; `of` counts only what it checks again. */
@@ -367,8 +386,8 @@ class Health {
       }
     }
 
-    // A document being checked holds no result yet, so what changed under it is checked again after.
-    for (const urlPath of this.#checkingNow) {
+    // A document being checked may have read what changed before the change, so it is checked again after.
+    for (const urlPath of this.#checkingNow.keys()) {
       this.#touched.add(urlPath)
       reached = true
     }
@@ -390,6 +409,82 @@ class Health {
     }
   }
 
+  /** The problems at a path, once its changes and the rules that may list something there are checked. */
+  async checkedAt(urlPath: string): Promise<HealthState> {
+    if (!this.#model.ready) {
+      return { ready: false, problems: [], version: "" }
+    }
+
+    await this.#model.settled()
+    this.#loaded ??= this.#load()
+    await this.#loaded
+    const at = urlPath.replace(/\/$/, "")
+    const under = (held: string) => !at || held === at || held.startsWith(`${at}/`)
+    const ruling = new Set(
+      conventionsOf(this.#model)
+        .all()
+        .filter(
+          ({ folder, rules }) =>
+            Object.keys(rules).length > 0 &&
+            (!folder || under(folder) || at.startsWith(`${folder}/`)),
+        )
+        .map((declaration) => declaration.path),
+    )
+    const queue: string[] = []
+    const dirty = this.#takeDirty()
+
+    // What changed is left to the next whole check too, which a whole check under way may have read before.
+    for (const held of new Set([...dirty, ...this.#owed])) {
+      if (under(held) || ruling.has(held)) {
+        queue.push(held)
+      }
+
+      if (dirty.has(held)) {
+        this.#touched.add(held)
+        this.#stale = true
+      }
+    }
+
+    const from = this.#revision
+    await this.#owing(queue)
+
+    if (this.#revision !== from) {
+      this.#notify()
+    }
+
+    return { ready: true, problems: this.#sortedProblems(), version: this.#version() }
+  }
+
+  /** Check documents taken from what was heard; any a failure leaves unchecked go to the next check. */
+  async #owing(queue: string[], each: () => void = () => {}): Promise<void> {
+    const exists = new Map<string, boolean>()
+    const anchors = new Map<string, Set<string>>()
+
+    for (const urlPath of queue) {
+      this.#owed.add(urlPath)
+    }
+
+    try {
+      for (let start = 0; start < queue.length; start += SLICE) {
+        await new Promise((resolve) => setImmediate(resolve))
+
+        for (const urlPath of queue.slice(start, start + SLICE)) {
+          await this.#recheck(urlPath, exists, anchors)
+          each()
+        }
+      }
+    } finally {
+      for (const urlPath of queue) {
+        if (this.#owed.delete(urlPath)) {
+          this.#touched.add(urlPath)
+          this.#stale = true
+        }
+      }
+    }
+
+    this.#settle(queue)
+  }
+
   /**
    * A document is checked again when its text changed, when a file it includes or a document it
    * links to changed, or when a folder holding what it reads or links to changed.
@@ -398,6 +493,14 @@ class Health {
     this.#progress = undefined
     this.#loaded ??= this.#load()
     await this.#loaded
+    const queue = [...this.#takeDirty()]
+    const progress = { checked: 0, of: queue.length }
+    this.#progress = progress
+    await this.#owing(queue, () => progress.checked++)
+    this.#checkedOnce = true
+  }
+
+  #takeDirty(): Set<string> {
     const changed = this.#everything ? this.#model.paths() : [...this.#pending]
     const everything = this.#everything
     this.#everything = false
@@ -483,32 +586,57 @@ class Health {
       }
     }
 
-    const exists = new Map<string, boolean>()
-    const anchors = new Map<string, Set<string>>()
-    const queue = [...dirty]
-    const progress = { checked: 0, of: queue.length }
-    this.#progress = progress
+    return dirty
+  }
 
-    for (let start = 0; start < queue.length; start += SLICE) {
-      await new Promise((resolve) => setImmediate(resolve))
+  /** Two checks may look at one document at once: only the result of the later one to start is kept. */
+  async #recheck(
+    urlPath: string,
+    exists: Map<string, boolean>,
+    anchors: Map<string, Set<string>>,
+  ): Promise<void> {
+    const started = ++this.#started
+    const hash = this.#model.hashOf(urlPath)
+    const check =
+      hash === undefined ? undefined : await this.#checkedNow(urlPath, hash, exists, anchors)
 
-      for (const urlPath of queue.slice(start, start + SLICE)) {
-        const hash = this.#model.hashOf(urlPath)
-        this.#forget(urlPath)
+    this.#owed.delete(urlPath)
 
-        if (hash !== undefined) {
-          this.#checkingNow.add(urlPath)
-          this.#remember(urlPath, await this.#document(urlPath, hash, exists, anchors))
-          this.#checkingNow.delete(urlPath)
-        }
+    if (started > (this.#landed.get(urlPath) ?? 0)) {
+      this.#landed.set(urlPath, started)
+      this.#forget(urlPath)
 
-        progress.checked++
+      if (check) {
+        this.#remember(urlPath, check)
       }
     }
+  }
 
+  async #checkedNow(
+    urlPath: string,
+    hash: string,
+    exists: Map<string, boolean>,
+    anchors: Map<string, Set<string>>,
+  ): Promise<DocumentCheck> {
+    this.#checkingNow.set(urlPath, (this.#checkingNow.get(urlPath) ?? 0) + 1)
+
+    try {
+      return await this.#document(urlPath, hash, exists, anchors)
+    } finally {
+      const left = (this.#checkingNow.get(urlPath) ?? 1) - 1
+
+      if (left > 0) {
+        this.#checkingNow.set(urlPath, left)
+      } else {
+        this.#checkingNow.delete(urlPath)
+      }
+    }
+  }
+
+  #settle(checked: string[]): void {
     this.#gather()
-    this.#save(queue)
-    this.#retryTimedOut(queue)
+    this.#save(checked)
+    this.#retryTimedOut(checked)
   }
 
   /** A check that only ran out of time is tried again with every later check, and after a pause meanwhile. */
@@ -561,7 +689,13 @@ class Health {
         return now === stamp
       })
 
-      if (this.#model.hashOf(held.path) !== check.hash || !current || check.tables.length > 0) {
+      if (
+        this.#model.hashOf(held.path) !== check.hash ||
+        !current ||
+        check.tables.length > 0 ||
+        (check.components !== undefined &&
+          check.components !== componentsOf(this.#model).foldersKey)
+      ) {
         continue
       }
 
@@ -659,6 +793,19 @@ class Health {
       check.problems.push({ kind: "declaration", path: urlPath, line, block, what })
     }
 
+    const frontmatter = frontmatterOf(blocks)
+
+    if (frontmatter?.fault) {
+      check.problems.push({
+        kind: "frontmatter",
+        severity: "error",
+        path: urlPath,
+        line: frontmatter.fault.line,
+        block: frontmatter.block,
+        what: frontmatter.fault.what,
+      })
+    }
+
     // A value that does not fit its field is the document's own problem.
     // An id it names moves with the kind holding that id, so the kinds it names are kept to check it again by.
     const own = conventions.document(urlPath)
@@ -701,7 +848,11 @@ class Health {
 
     // Diagrams, charts and queries are checked as the page shows them, includes expanded.
     const shown = blocks.some(
-      (block) => block.kind === "diagram" || block.queries || CHART.test(block.text),
+      (block) =>
+        block.kind === "diagram" ||
+        block.queries ||
+        CHART.test(block.text) ||
+        COMPONENT.test(block.text),
     )
       ? expand(this.#root, path.join(this.#root, urlPath), (target, text) =>
           this.#model.blocksReady(target, text),
@@ -710,6 +861,7 @@ class Health {
     const fences = shown ? fencesOf(shown) : []
 
     check.problems.push(...(await this.#diagramsOf(urlPath, blocks, shown, fences, check)))
+    check.problems.push(...this.#componentsOf(urlPath, blocks, fences, check, read))
 
     if (
       blocks.some(
@@ -1258,6 +1410,67 @@ class Health {
     return found
   }
 
+  #componentsOf(
+    urlPath: string,
+    blocks: Block[],
+    fences: Fence[],
+    check: DocumentCheck,
+    read: string[],
+  ): Problem[] {
+    const components = componentsOf(this.#model)
+    const found: Problem[] = []
+
+    for (const fence of fences.filter(({ lang }) => lang === "component")) {
+      const block = blocks.find((held) => within(held, fence.line))
+
+      if (!block) {
+        continue
+      }
+
+      const at = {
+        kind: "component" as const,
+        path: urlPath,
+        line: block.lines[0],
+        block: block.id,
+      }
+      check.components = components.foldersKey
+
+      // A fence whose include finds nothing is listed for that include alone, as its page does not draw it.
+      if (fence.unresolved) {
+        continue
+      }
+
+      let name: string
+
+      try {
+        name = componentName(fence.meta)
+        readComponent(fence.text)
+      } catch (error) {
+        found.push({ ...at, what: (error as Error).message })
+        continue
+      }
+
+      const { holders } = components.find(name)
+      read.push(...components.candidates(name))
+
+      for (const dir of components.watched(name)) {
+        check.dirs.add(dir)
+      }
+
+      if (holders.length === 0) {
+        found.push({ ...at, what: missingComponent(name, components.folders.length) })
+      } else if (holders.length > 1) {
+        const [first, ...rest] = holders.map((folder) => path.relative(this.#root, folder) || ".")
+        found.push({
+          ...at,
+          what: `${name}.js is in ${[first, ...rest].join(" and ")}; pages draw the one in ${first}.`,
+        })
+      }
+    }
+
+    return found
+  }
+
   /**
    * Run whenever the document is checked again; a result is reused only while the versions of what it
    * read are unchanged and it found nothing wrong, since a missing file's arrival changes no version.
@@ -1403,17 +1616,22 @@ class Health {
               },
         )
       }
-    } else if (!chart) {
-      for (const reference of new Set(block.references ?? [])) {
-        if (tied.has(reference)) {
-          continue
-        }
+    }
 
-        const embedded = await this.#data.embedReference(file, reference)
+    // A chart's data is checked as it draws, above; a component sharing its block has its entries read here.
+    const entries = chart
+      ? own.flatMap((fence) => (fence.lang === "component" ? componentData(fence.text) : []))
+      : (block.references ?? [])
 
-        if (embedded.error) {
-          found.push({ kind: kindOf(reference), ...at, what: `${reference}: ${embedded.error}` })
-        }
+    for (const reference of new Set(entries)) {
+      if (tied.has(reference)) {
+        continue
+      }
+
+      const embedded = await this.#data.embedReference(file, reference)
+
+      if (embedded.error) {
+        found.push({ kind: kindOf(reference), ...at, what: `${reference}: ${embedded.error}` })
       }
     }
 

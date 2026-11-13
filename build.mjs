@@ -55,6 +55,7 @@ await build({
     "sqlite-reader": "src/server/sqlite-reader.ts",
     "draw-worker": "src/server/draw-worker.ts",
     "embed-worker": "src/server/embed-worker.ts",
+    "writers-worker": "src/server/writers-worker.ts",
   },
   bundle: true,
   // A native addon: it ships as a runtime dependency and loads from node_modules.

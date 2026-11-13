@@ -2,6 +2,8 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+# npm's update notice would fail every gate's warning check whenever npm lags its latest release
+export npm_config_update_notifier := "false"
 # Test runner wrapper: time and total resident memory caps, each with a backstop, and a per-process limit
 RUN_CAPPED := justfile_directory() / "scripts/run-capped.sh"
 # Clone detector, pinned exactly: its fingerprints are the baseline's format
@@ -17,23 +19,28 @@ default:
 # Every gate: formatting, lint, types, unused code, clones, unit tests, build
 check: lint test build
 
-# Install dependencies from the lockfile
+# Install dependencies from the lockfiles, Folio's and its example components' build
 install:
     npm ci 2>&1 | tee /tmp/folio--install.log
+    npm ci --prefix visual/ridge/components 2>&1 | tee -a /tmp/folio--install.log
     npx playwright install chromium 2>&1 | tee -a /tmp/folio--install.log
+    scripts/warnings.sh /tmp/folio--install.log
 
 # Run the unit tests; ARGS narrows to files
 test *ARGS="test/*.test.ts":
     nice -n 19 {{ RUN_CAPPED }} 10 7168 131072 -- node --test {{ ARGS }} 2>&1 | tee /tmp/folio--test.log
+    scripts/warnings.sh /tmp/folio--test.log
 
-# Run every documented behaviour in headless Chromium against the built command
-e2e: build
+# Run every documented behaviour in headless Chromium against the built command; ARGS narrows to files
+e2e *ARGS="e2e/*.test.ts": build
     nice -n 19 {{ RUN_CAPPED }} 15 $(( {{ E2E_JOBS }} * 2048 )) 131072 -- \
-        node --test --test-concurrency={{ E2E_JOBS }} --test-timeout=60000 e2e/*.test.ts 2>&1 | tee /tmp/folio--e2e.log
+        node --test --test-concurrency={{ E2E_JOBS }} --test-timeout=60000 {{ ARGS }} 2>&1 | tee /tmp/folio--e2e.log
+    scripts/warnings.sh /tmp/folio--e2e.log
 
 # Compare every page against its recorded image, naming each one that changed
 snapshots: build
     nice -n 19 scripts/pictures.sh 2>&1 | tee /tmp/folio--snapshots.log
+    scripts/warnings.sh /tmp/folio--snapshots.log
 
 # Re-record every page's image after an intended change to how it looks
 update-snapshots: build
@@ -44,6 +51,7 @@ update-snapshots: build
 site:
     npm ci 2>&1 | tee /tmp/folio--site.log
     npm run build 2>&1 | tee -a /tmp/folio--site.log
+    ../scripts/warnings.sh /tmp/folio--site.log
 
 # Serve the documentation site with live reload; HOST=0.0.0.0 to reach it from outside
 [working-directory('site')]
@@ -54,16 +62,18 @@ preview HOST="127.0.0.1" PORT="4321":
 # Build the package into dist/
 build:
     node build.mjs 2>&1 | tee /tmp/folio--build.log
+    scripts/warnings.sh /tmp/folio--build.log
 
 # Lint, type-check, and fail on unused code and on new clones
 lint:
     rm -f /tmp/folio--lint.log
-    npx biome check 2>&1 | tee -a /tmp/folio--lint.log
+    npx biome check --error-on-warnings 2>&1 | tee -a /tmp/folio--lint.log
     npx tsc 2>&1 | tee -a /tmp/folio--lint.log
     {{ KNIP }} 2>&1 | tee -a /tmp/folio--lint.log
     {{ JSCPD }} --fail-on-new-clones --reporters json,sarif,silent 2>&1 | tee -a /tmp/folio--lint.log \
-        || { python3 scripts/new_clones.py /tmp/folio--jscpd/jscpd-report.json | tee -a /tmp/folio--lint.log; exit 1; }
+        || { python3 -W error scripts/new_clones.py /tmp/folio--jscpd/jscpd-report.json | tee -a /tmp/folio--lint.log; exit 1; }
     just clone-reasons 2>&1 | tee -a /tmp/folio--lint.log
+    scripts/warnings.sh /tmp/folio--lint.log
 
 # Refresh the clone baseline, print every clone, and list each accepted one still lacking a reason
 dupes:
@@ -72,7 +82,7 @@ dupes:
 
 # Fail unless each clone in the baseline has a reason in .jscpd-reasons.json, and each reason a clone
 clone-reasons:
-    python3 scripts/clone_reasons.py /tmp/folio--jscpd/jscpd-report.sarif
+    python3 -W error scripts/clone_reasons.py /tmp/folio--jscpd/jscpd-report.sarif
 
 # Auto-fix formatting and lint findings
 fix:

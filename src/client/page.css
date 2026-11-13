@@ -1726,6 +1726,11 @@ button.data-top-line:hover {
   border-radius: 6px;
   background: var(--subtle);
   font: 12px / 1.4 var(--mono);
+  font-variant-ligatures: no-contextual;
+}
+
+.data-panel-query code {
+  font: inherit;
 }
 
 .markdown-body .data-findings {
@@ -1870,12 +1875,13 @@ button.data-top-line:hover {
   display: inline-block;
 }
 
-.markdown-body .chart-reason {
+.markdown-body :is(.chart-reason, .component-reason) {
   margin: 4px 0 0;
+  padding: 0 8px;
   color: var(--muted);
 }
 
-.markdown-body .embed-chart.embed-missing {
+.markdown-body :is(.embed-chart, .embed-component).embed-missing {
   padding: 0;
   background: transparent;
 }
@@ -1967,7 +1973,9 @@ button.data-top-line:hover {
   height: 14px;
 }
 
-.markdown-body :is(.mermaid, .embed-chart, .geo-map, .stl-model):hover > .drawn-toolbar,
+.markdown-body
+  :is(.mermaid, .embed-chart, .embed-component, .geo-map, .stl-model):hover
+  > .drawn-toolbar,
 .markdown-body :is(img, picture):hover + .image-toolbar,
 .markdown-body .drawn-toolbar:hover,
 .markdown-body .drawn-toolbar:focus-within,
@@ -1987,8 +1995,25 @@ button.data-top-line:hover {
   }
 }
 
-.markdown-body .embed-chart {
+.markdown-body :is(.embed-chart, .embed-component) {
   position: relative;
+}
+
+.markdown-body .embed-component > folio-component {
+  display: block;
+  margin: 8px 0;
+}
+
+/* Clear of the corner holding the component's own switch and copy, two buttons wide. */
+.markdown-body folio-component .drawn-toolbar {
+  right: 58px;
+}
+
+/* A component draws only once its page is shown, so its YAML stays hidden meanwhile rather than flashing. */
+.markdown-body .embed-component:not(.embed-missing, .showing-source) > pre,
+.markdown-body .embed-component:is(.embed-missing, .showing-source) > folio-component,
+.markdown-body .embed-component.drawn > pre > .code-copy {
+  display: none;
 }
 
 .markdown-body .mermaid.showing-source > svg,
@@ -2092,6 +2117,12 @@ button.data-top-line:hover {
 
 :is(.markdown-body, .viewer-stage) .geo-map-canvas .leaflet-control-attribution a {
   color: var(--accent);
+}
+
+:is(.markdown-body, .viewer-stage)
+  .geo-map-canvas
+  :is(.leaflet-control-zoom-in, .leaflet-control-zoom-out) {
+  font-family: var(--mono);
 }
 
 .markdown-body .drawing-reason {

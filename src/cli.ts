@@ -7,6 +7,7 @@ import http from "node:http"
 import path from "node:path"
 import { HELP, parseOptions } from "./server/args.ts"
 import { check } from "./server/check.ts"
+import { componentFolders, componentsOf } from "./server/components.ts"
 import { Data } from "./server/data.ts"
 import { documentsOf } from "./server/documents.ts"
 import { Hub } from "./server/events.ts"
@@ -28,6 +29,7 @@ import { helpText, painter, reading, terminal } from "./server/terminal.ts"
 
 let options: ReturnType<typeof parseOptions>
 let root: string
+let components: string[]
 
 try {
   options = parseOptions(process.argv.slice(2))
@@ -57,6 +59,8 @@ try {
   if (!root || !fs.statSync(root).isDirectory()) {
     throw new Error(`Not a folder: ${options.folder}`)
   }
+
+  components = componentFolders(root, options.components ?? [])
 } catch (error) {
   fail((error as Error).message, 2)
 }
@@ -69,6 +73,8 @@ const standalone = (folder: string, log: Log = () => {}) => {
   const data = guarded("data engine", new Data(folder, store))
   data.useBlocks((file, text) => model.blocksReady(file, text))
   data.useDocuments(documentsOf(model))
+  data.useFolders(model)
+  componentsOf(model).use(components)
   return {
     indexer,
     model,
@@ -112,6 +118,8 @@ const model = new Model(root, store, indexer, log)
 const data = guarded("data engine", new Data(root, store))
 data.useBlocks((file, text) => model.blocksReady(file, text))
 data.useDocuments(documentsOf(model))
+data.useFolders(model)
+componentsOf(model).use(components)
 hub.follow(model)
 hub.read(data)
 const sockets = options.command === "serve" ? (options.sockets ?? []) : []
@@ -141,6 +149,10 @@ console.log(`  at ${paint("cyan", `http://localhost:${port}/`)}${taken(options.p
 
 for (const socket of sockets) {
   console.log(`  and on ${socket}`)
+}
+
+for (const folder of components) {
+  console.log(`  components from ${path.relative(root, folder) || "."}`)
 }
 
 try {

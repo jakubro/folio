@@ -3,8 +3,8 @@
 import { parse as parseYaml } from "yaml"
 import type { Embedded } from "../server/data.ts"
 import { cycleIn } from "./cycles.ts"
-import { rowsOf } from "./embeds.ts"
 import type { Theme } from "./render.ts"
+import { rowsOf } from "./rows.ts"
 
 const FONT = "Arimo"
 const THEMES = {

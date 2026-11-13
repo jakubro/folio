@@ -121,7 +121,7 @@ async function fromRunning(
 
     if (model.ready) {
       progress(`waiting for ${folio}, checking health`)
-      const health = (await ask(reach, "/?api=health", 0)) as {
+      const health = (await ask(reach, "/?api=health&wait", 0)) as {
         ready: boolean
         problems: Problem[]
       }

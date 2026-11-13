@@ -26,17 +26,28 @@ import { ALERTS, alerts } from "./alerts.ts"
 import { backticks } from "./backticks.ts"
 import { copyButton } from "./copy.ts"
 import { withSource } from "./drawings.ts"
-import { drawEmbeds, markEmbeds } from "./embeds.ts"
+import { drawEmbeds, type Fences, HANDED, markEmbeds } from "./embeds.ts"
 import { isFold } from "./folds.ts"
 import { ICONS } from "./icons.ts"
 import { byteOrderMark, moveSpan, type Span, setSpan, sitesIn } from "./markdown.ts"
 import { SCHEMA } from "./schema.ts"
 import { table, tables } from "./tables.ts"
-import { MARKED, markers, shown, spelledIn, unmarked, unmarkedAddress } from "./unresolved.ts"
+import {
+  INCLUDE,
+  MARKED,
+  marked,
+  markers,
+  shown,
+  spelledIn,
+  unmarked,
+  unmarkedAddress,
+} from "./unresolved.ts"
 import { keepWhole } from "./words.ts"
 import { expandDrawing, expandLive, imageCorner } from "./zoom.ts"
 
 export type Theme = "light" | "dark"
+/** A page's own text marks its embeds; a past version's leaves them as written; a component's reads nothing. */
+type Marking = "page" | "still" | "handed"
 type Rgb = [number, number, number]
 type Rgba = [number, number, number, number]
 type OwnBackgrounds = [HTMLElement, string][]
@@ -70,6 +81,7 @@ const SOURCE_ATTRIBUTES = [
   "data-folio-version",
 ]
 const SOURCED = "[data-folio-source]"
+const NO_SOURCES: Sources = { blocks: [], layout: { instances: [], owners: [] } }
 
 const DIAGRAM_FONT =
   '"Arimo", "KaTeX_Main", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'
@@ -124,31 +136,46 @@ export async function render(
   kind: "markdown" | "mermaid",
   theme: Theme,
   owner: Document = document,
-  still = false,
+  marking: Marking = "page",
 ): Promise<HTMLElement> {
-  const element = await markup(text, sources, kind, theme, owner, still)
+  const element = await markup(text, sources, kind, theme, owner, marking)
   await drawBlocks([...element.childNodes], theme, owner)
   return element
 }
 
-/**
- * Render a file's text into a detached element whose blocks carry their keys but are not drawn yet.
- * A still rendering, of text that is not the file's own today, leaves embeds as written.
- */
+/** Draw markdown a component hands over as a page draws its own, into a detached element. */
+export function drawHanded(text: string, theme: Theme): Promise<HTMLElement> {
+  // Nothing expands an include here, so each is marked as unresolved, its title saying why.
+  const unexpanded = text.replace(INCLUDE, (written, escaped: string, _, at: number) => {
+    const before = text.slice(0, at).split("\n")
+    const where = {
+      why: "handed",
+      line: before.length,
+      column: before.at(-1)?.length ?? 0,
+      file: "",
+    }
+
+    return escaped ? written : marked(where, written)
+  })
+
+  return render(unexpanded, NO_SOURCES, "markdown", theme, document, "handed")
+}
+
+/** Render a file's text into a detached element whose blocks carry their keys but are not drawn yet. */
 export async function markup(
   text: string,
   sources: Sources,
   kind: "markdown" | "mermaid",
   theme: Theme,
   owner: Document = document,
-  still = false,
+  marking: Marking = "page",
 ): Promise<HTMLElement> {
   const element = owner.createElement("article")
   element.className = "markdown-body"
   element.dataset.theme = theme
 
   if (kind === "markdown") {
-    const { html, spans } = await markdownHtml(text, sources, still)
+    const { html, spans } = await markdownHtml(text, sources, marking)
     element.innerHTML = html
 
     for (const block of element.querySelectorAll(":scope > [data-folio-span]")) {
@@ -523,10 +550,10 @@ function failedIn(pre: HTMLElement, reason: string, owner: Document): void {
 async function markdownHtml(
   text: string,
   sources: Sources,
-  still: boolean,
+  marking: Marking,
 ): Promise<{ html: string; spans: Span[] }> {
   const mdast = MARKDOWN.runSync(MARKDOWN.parse(text), text)
-  const queries = queryFences(mdast as MdastRoot)
+  const fences = namedFences(mdast as MdastRoot)
   const { frontmatter } = some(mdast, (node) => node.type === "yaml")
     ? await import("./frontmatter.ts")
     : { frontmatter: undefined }
@@ -569,10 +596,13 @@ async function markdownHtml(
           ? footnotesSource(sources)
           : node.position && sourceOf(sources, node.position.start.line, node.position.end.line)
 
-    if (node.type === "element" && !still) {
-      const from = found?.source ?? sources.layout.instances[0]?.source ?? ""
+    if (node.type === "element" && marking !== "still") {
+      const from =
+        marking === "handed"
+          ? undefined
+          : (found?.source ?? sources.layout.instances[0]?.source ?? "")
       const opens = node.position?.start.line ?? 0
-      markEmbeds(node, from, queries, (line) => (found?.lines?.[0] ?? opens) + line - opens)
+      markEmbeds(node, from, fences, (line) => (found?.lines?.[0] ?? opens) + line - opens)
     }
 
     if (node.type === "element" && found) {
@@ -601,7 +631,7 @@ async function markdownHtml(
   if (highlight) {
     html.use(highlight.default, {
       plainText: ["mermaid", "vega-lite", "stl"],
-      aliases: { json: ["geojson", "topojson"] },
+      aliases: { json: ["geojson", "topojson"], yaml: ["component"] },
     })
   }
 
@@ -880,7 +910,11 @@ function markIncludes(article: HTMLElement): void {
     marker.className = "include-missing"
     marker.textContent = found.written
     marker.title =
-      why === "loop" ? "This include leads back to itself" : "Nothing to include at this path"
+      why === "handed"
+        ? HANDED
+        : why === "loop"
+          ? "This include leads back to itself"
+          : "Nothing to include at this path"
     marker.dataset.include = `include-${file}:${line}:${column}`
     range.deleteContents()
     range.insertNode(marker)
@@ -1046,15 +1080,20 @@ function within<T extends Element = HTMLElement>(blocks: Node[], selector: strin
   )
 }
 
-/** A `sql query [name]` fence at any depth, keyed by the line it opens on; an unnamed one maps to "". */
-function queryFences(tree: MdastRoot): Map<number, string> {
-  const found = new Map<number, string>()
+/**
+ * A `sql query [name]` or `component <name>` fence at any depth, keyed by the line it opens on, as
+ * the name after the language is lost on the way to the page's tree; an unnamed one maps to "".
+ */
+function namedFences(tree: MdastRoot): Fences {
+  const found: Fences = new Map()
   const visit = (node: MdastNodes) => {
-    const match =
+    const query =
       node.type === "code" && node.lang === "sql" && /^query(?:\s+(\S+))?\s*$/.exec(node.meta ?? "")
 
-    if (match && node.position) {
-      found.set(node.position.start.line, match[1] ?? "")
+    if (query && node.position) {
+      found.set(node.position.start.line, { kind: "query", name: query[1] ?? "" })
+    } else if (node.type === "code" && node.lang === "component" && node.position) {
+      found.set(node.position.start.line, { kind: "component", name: (node.meta ?? "").trim() })
     }
 
     if ("children" in node) {

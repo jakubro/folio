@@ -4,7 +4,7 @@
  */
 
 import path from "node:path"
-import { parse as parseYaml } from "yaml"
+import { parseDocument, visit, type YAMLError } from "yaml"
 import { numberOf } from "../client/tableviews.ts"
 import { type Block, plainOf } from "./blocks.ts"
 import { globOf, linkTarget } from "./files.ts"
@@ -19,7 +19,7 @@ export interface FieldDefinition {
   /** The frontmatter key, the label or the section heading it is read from; the field's name by default. */
   key: string
   /** For a file name, the part a pattern's first group takes. */
-  pattern?: RegExp
+  pattern?: string
   /** For a link written as an id, the kind it names a document of, and the field holding that id. */
   to?: string
   by: string
@@ -29,6 +29,7 @@ export interface FieldDefinition {
 
 export interface KindDefinition {
   where: RegExp[]
+  globs: string[]
   fields: Record<string, FieldDefinition>
 }
 
@@ -63,6 +64,14 @@ export interface Read {
   fields: Record<string, Field>
   problems: { line: number; what: string }[]
   references: Reference[]
+}
+
+export interface Frontmatter {
+  block: string
+  /** Its opening line, where every field it holds is placed; a fault has a line of its own. */
+  line: number
+  value?: Record<string, unknown>
+  fault?: { line: number; what: string }
 }
 
 const SOURCES = ["frontmatter", "label", "section", "folder", "name"]
@@ -115,7 +124,7 @@ export function kindDefinition(name: string, value: unknown): KindDefinition | s
     definitions[field] = read
   }
 
-  return { where: places, fields: definitions }
+  return { where: places, globs: [where].flat() as string[], fields: definitions }
 }
 
 /** Path patterns as declared - one, or a list of them - or undefined when they are neither. */
@@ -156,8 +165,9 @@ export function readFields(
     const { raw, line } = found
     const text = typeof raw === "string" ? raw : JSON.stringify(raw)
     const misfit = (what: string) => read.problems.push({ line, what: `${name}: ${what}` })
+    const plain = text.trim().toLowerCase()
 
-    if (definition.empty.includes(text.trim().toLowerCase())) {
+    if (definition.empty.some((blank) => blank.trim().toLowerCase() === plain)) {
       read.fields[name] = { value: definition.type === "list" ? [] : null, text, line }
       continue
     }
@@ -218,6 +228,64 @@ export function readFields(
   return read
 }
 
+/** Every reader of frontmatter reads it here, so a fault is listed exactly where fields are lost. */
+export function frontmatterOf(blocks: Block[]): Frontmatter | undefined {
+  const block = blocks.find((found) => found.kind === "frontmatter")
+
+  if (!block) {
+    return undefined
+  }
+
+  const read = { block: block.id, line: block.lines[0] }
+  const body = block.text.replace(/^---[ \t]*\r?\n/, "").replace(/\r?\n---\s*$/, "")
+  const parsed = parseDocument(body)
+  const notYaml = (line: number, reason: string) => ({
+    ...read,
+    fault: { line: block.lines[0] + line, what: `The frontmatter is not YAML: ${reason}` },
+  })
+
+  if (parsed.errors.length > 0) {
+    return notYaml(parsed.errors[0].linePos?.[0].line ?? 1, yamlReason(parsed.errors[0]))
+  }
+
+  let value: unknown
+
+  try {
+    value = parsed.toJS()
+  } catch (error) {
+    return notYaml(aliasLine(parsed, body), (error as Error).message)
+  }
+
+  if (value === null || value === undefined) {
+    return read
+  }
+
+  return typeof value === "object" && !Array.isArray(value)
+    ? { ...read, value: value as Record<string, unknown> }
+    : { ...read, fault: { line: block.lines[0], what: "The frontmatter is not a map of keys" } }
+}
+
+/** A parser's message without the position it names, which is the parsed text's, not the file's. */
+export function yamlReason(error: YAMLError): string {
+  return error.message.split("\n")[0].replace(/ at line \d+, column \d+:?$/, "")
+}
+
+/** The line of an alias whose anchor is never set: it parses without an error and fails only once read. */
+export function aliasLine(parsed: ReturnType<typeof parseDocument>, body: string): number {
+  let offset = 0
+
+  visit(parsed, {
+    Alias(_, node) {
+      if (node.resolve(parsed) === undefined) {
+        offset = node.range?.[0] ?? 0
+        return visit.BREAK
+      }
+    },
+  })
+
+  return body.slice(0, offset).split("\n").length
+}
+
 function fieldDefinition(field: string, value: unknown): FieldDefinition | string {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return "a field is a map naming where it is read from: from, and its type"
@@ -264,11 +332,9 @@ function fieldDefinition(field: string, value: unknown): FieldDefinition | strin
     return "empty is a text, or a list of texts, written for no value"
   }
 
-  let compiled: RegExp | undefined
-
   if (pattern !== undefined) {
     try {
-      compiled = new RegExp(String(pattern))
+      new RegExp(String(pattern))
     } catch (error) {
       return `the pattern cannot be read: ${(error as Error).message}`
     }
@@ -279,10 +345,10 @@ function fieldDefinition(field: string, value: unknown): FieldDefinition | strin
     type: type as FieldDefinition["type"],
     of: of as Scalar,
     key: String(key ?? label ?? section ?? field),
-    ...(compiled && { pattern: compiled }),
+    ...(pattern !== undefined && { pattern: String(pattern) }),
     ...(to !== undefined && { to: to as string }),
     by: String(by),
-    empty: blanks.map((blank) => blank.trim().toLowerCase()),
+    empty: blanks,
   }
 }
 
@@ -290,12 +356,12 @@ function fieldDefinition(field: string, value: unknown): FieldDefinition | strin
 function written(
   urlPath: string,
   blocks: Block[],
-  frontmatter: { value: Record<string, unknown>; line: number } | undefined,
+  frontmatter: Frontmatter | undefined,
   definition: FieldDefinition,
 ): { raw: unknown; line: number } | undefined {
   switch (definition.from) {
     case "frontmatter":
-      return frontmatter && Object.hasOwn(frontmatter.value, definition.key)
+      return frontmatter?.value && Object.hasOwn(frontmatter.value, definition.key)
         ? { raw: frontmatter.value[definition.key], line: frontmatter.line }
         : undefined
     case "label":
@@ -309,11 +375,11 @@ function written(
     default: {
       const name = path.posix.basename(urlPath)
 
-      if (!definition.pattern) {
+      if (definition.pattern === undefined) {
         return { raw: name.replace(/\.[^.]*$/, ""), line: 1 }
       }
 
-      const match = definition.pattern.exec(name)
+      const match = new RegExp(definition.pattern).exec(name)
       return match ? { raw: match[1] ?? match[0], line: 1 } : undefined
     }
   }
@@ -369,25 +435,6 @@ function levelOf(heading: Block): number {
   return /^#{1,6}/.exec(heading.text)?.[0].length ?? (/\n=+\s*$/.test(heading.text) ? 1 : 2)
 }
 
-function frontmatterOf(
-  blocks: Block[],
-): { value: Record<string, unknown>; line: number } | undefined {
-  const block = blocks.find((found) => found.kind === "frontmatter")
-
-  if (!block) {
-    return undefined
-  }
-
-  try {
-    const value = parseYaml(block.text.replace(/^---\r?\n/, "").replace(/\r?\n---\s*$/, ""))
-    return value !== null && typeof value === "object" && !Array.isArray(value)
-      ? { value: value as Record<string, unknown>, line: block.lines[0] }
-      : undefined
-  } catch {
-    return undefined
-  }
-}
-
 /**
  * A line of links takes the links in it and, for a field naming a kind, every id of that kind it holds;
  * the rest - notes beside them, line break tags, punctuation - is notes, and a line opening with an empty
@@ -407,9 +454,10 @@ function linksIn(
   const { to, by } = definition
 
   if (
-    definition.empty.some(
-      (blank) => opening.startsWith(blank) && !/^[\p{L}\p{N}_]/u.test(opening.slice(blank.length)),
-    )
+    definition.empty.some((declared) => {
+      const blank = declared.trim().toLowerCase()
+      return opening.startsWith(blank) && !/^[\p{L}\p{N}_]/u.test(opening.slice(blank.length))
+    })
   ) {
     return values
   }

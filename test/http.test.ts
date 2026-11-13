@@ -7,7 +7,7 @@ import os from "node:os"
 import path from "node:path"
 import { after, before, test } from "node:test"
 import { api, type Refusal } from "../src/server/api.ts"
-import { versionOf } from "../src/server/blocks.ts"
+import { type Block, versionOf } from "../src/server/blocks.ts"
 import { conventionsOf } from "../src/server/conventions.ts"
 import { Data } from "../src/server/data.ts"
 import { documentsOf } from "../src/server/documents.ts"
@@ -19,6 +19,7 @@ import { Indexer } from "../src/server/indexer.ts"
 import { Model } from "../src/server/model.ts"
 import { presenceOf } from "../src/server/presence.ts"
 import { pageState } from "../src/server/versions.ts"
+import { rewriting } from "./rewriting.ts"
 import { served } from "./served.ts"
 
 const indexer = new Indexer(new URL("../src/server/index-worker.ts", import.meta.url))
@@ -632,6 +633,7 @@ test("a query failing inside the declarations, history or read record answers li
   const failing = (part: "history" | "read record") => {
     const tables = guarded("data engine", new Data(root, scratch()))
     tables.useDocuments({
+      ready: true,
       versionOf: () => "1",
       table: () =>
         within(part, () => {
@@ -772,6 +774,38 @@ test("lists the links into a page with a version, and nothing for an image", asy
   assert.deepEqual(content.links, [])
   assert.match(content.version, /^[0-9a-f]{16}$/)
   assert.equal((await get("/img/photo.png?links")).status, 404)
+})
+
+test("serves a page whose included file a program is rewriting in place with the text it writes", async () => {
+  const folder = await servedApart(indexer, {
+    "page.md": "# Page\n\n{include: part.md}\n",
+    "part.md": "The old part.\n",
+  })
+  const rewriter = await rewriting(path.join(folder.root, "part.md"), "The new part.\n")
+
+  try {
+    const page = await (await fetch(`${folder.base}/page.md?page`)).json()
+    assert.equal(page.text, "# Page\n\nThe new part.\n\n")
+  } finally {
+    rewriter.kill()
+    await folder.close()
+  }
+})
+
+test("serves a page emptied on purpose without the title of its text before", async () => {
+  const stalled = {
+    split: (text: string, kind: "markdown" | "mermaid", previous?: Block[]) =>
+      text === "" ? new Promise(() => {}) : indexer.split(text, kind, previous),
+  } as unknown as Indexer
+  const folder = await servedApart(stalled, { "pump.md": "# Pump\n\nIt runs.\n" })
+
+  try {
+    fs.writeFileSync(path.join(folder.root, "pump.md"), "")
+    const page = await (await fetch(`${folder.base}/pump.md?page`)).json()
+    assert.deepEqual([page.text, page.title], ["", null])
+  } finally {
+    await folder.close()
+  }
 })
 
 test("serves a page its parser cannot split at once, without block sources, never failing", async () => {
@@ -969,7 +1003,7 @@ test("the API lists its resources and answers each as JSON, refusing what names 
     (await json("/data/?api=query&sql=select name from 'scores.csv' order by score desc")).rows,
     [["bob"], ["ada"]],
   )
-  assert.equal((await json("/?api=health")).ready, true)
+  assert.equal((await json("/?api=health&wait")).ready, true)
   assert.deepEqual((await json("/?api=changes")).documents, [])
   assert.deepEqual((await json("/?api=reads")).documents, [])
 
@@ -1134,6 +1168,267 @@ test("health, needs, changes and stale narrow to a document or the folder under 
         )
         return true
       })
+    }
+  } finally {
+    fixture.model.close()
+    await fixture.data.close()
+  }
+})
+
+test("a path or block naming nothing is refused naming the served folder; a missing file something reads, and a document history holds, keep their answers", async () => {
+  const fixture = await served(indexer, {
+    "report.md": "# Report\n\n{include: parts/gone.md}\n\n{table: data.csv}\n",
+    "data.csv": "n\n3\n",
+    "lonely.csv": "x\n1\n",
+    "notes/a.md": "# A\n",
+  })
+  const asked = (resource: string, at: string, more: Record<string, string> = {}) =>
+    api(
+      fixture.root,
+      fixture.model,
+      fixture.data,
+      at,
+      new URLSearchParams({ api: resource, ...more }),
+    )
+  const refused = (
+    resource: string,
+    at: string,
+    message: string,
+    more: Record<string, string> = {},
+  ) =>
+    assert.rejects(asked(resource, at, more), (error: Refusal) => {
+      assert.equal(error.status, 404)
+      assert.equal(error.message, message)
+      return true
+    })
+  const rule = "a path is relative to it, or absolute under it."
+
+  try {
+    await fixture.model.history.saved("gone/old.md", "# Old\n", Date.now() - 2000)
+    await fixture.model.history.removed("gone/old.md", Date.now() - 1000)
+
+    await refused(
+      "used-by",
+      "nope/wettest.sql",
+      `nope/wettest.sql is no file of the served folder, ${fixture.root}, and nothing reads it: ${rule}`,
+    )
+    await refused(
+      "used-by",
+      "notes",
+      `notes is no file of the served folder, ${fixture.root}, and nothing reads it: ${rule}`,
+    )
+    assert.deepEqual(await asked("used-by", "parts/gone.md"), {
+      ready: true,
+      documents: [{ source: "report.md", how: "includes" }],
+    })
+    assert.deepEqual(await asked("used-by", "lonely.csv"), { ready: true, documents: [] })
+
+    for (const resource of ["documents", "reads"]) {
+      await refused(
+        resource,
+        "nope/",
+        `nope/ is no folder of the served folder, ${fixture.root}: ${rule}`,
+      )
+    }
+    await refused(
+      "documents",
+      "report.md",
+      `report.md is no folder of the served folder, ${fixture.root}: ${rule}`,
+    )
+    await refused(
+      "query",
+      "nope/",
+      `nope/ is no folder of the served folder, ${fixture.root}: ${rule}`,
+      { sql: "select 1" },
+    )
+    assert.deepEqual(await asked("documents", "notes/"), {
+      ready: true,
+      documents: [{ path: "notes/a.md", kind: null }],
+    })
+    assert.deepEqual(await asked("reads", "notes/"), { documents: [] })
+    assert.deepEqual(
+      ((await asked("query", "notes/", { sql: "select 1 as n" })) as { rows: unknown[] }).rows,
+      [[1]],
+    )
+
+    const modes: Record<string, string>[] = [
+      {},
+      { version: "0".repeat(40) },
+      { reference: "data.csv" },
+      { block: "zzzzzzzz" },
+    ]
+
+    for (const more of modes) {
+      await refused(
+        "history",
+        "never-existed.md",
+        `never-existed.md is no document of the served folder, ${fixture.root}, now or in its history: ${rule}`,
+        more,
+      )
+    }
+    await refused("history", "report.md", "No version of report.md holds the block zzzzzzzz.", {
+      block: "zzzzzzzz",
+    })
+
+    for (let save = 0; save < 201; save++) {
+      await fixture.model.history.saved("many.md", `# Draft ${save}\n`, Date.now() - 400_000 + save)
+    }
+    await refused(
+      "history",
+      "many.md",
+      "No version of many.md among its newest 200 holds the block zzzzzzzz.",
+      { block: "zzzzzzzz" },
+    )
+
+    const gone = (await asked("history", "gone/old.md")) as { versions: { removed?: true }[] }
+    assert.deepEqual(
+      gone.versions.map(({ removed }) => removed ?? false),
+      [true, false],
+    )
+
+    const [heading] = fixture.model.held("report.md") ?? []
+    const texts = (await asked("history", "report.md", { block: heading.id })) as {
+      versions: { text?: string }[]
+    }
+    assert.deepEqual(
+      texts.versions.map(({ text }) => text),
+      ["# Report"],
+    )
+  } finally {
+    fixture.model.close()
+    await fixture.data.close()
+  }
+})
+
+test("kinds answers each where, pattern and field option as the FOLIO.md writes them", async () => {
+  const fixture = await served(indexer, {
+    "FOLIO.md": [
+      "# Declared\n",
+      "```yaml folio",
+      "kinds:",
+      "  ticket:",
+      "    where: [tickets/**/*.md, archive/*.md]",
+      "    fields:",
+      "      id: {from: name, pattern: '^([A-Z]-\\d+)/?'}",
+      "      size: {from: label, label: Size, empty: [None, N/A]}",
+      "      whole: {from: name, pattern: ''}",
+      "health:",
+      "  - where: drafts/**",
+      "    skip: [link]",
+      "```\n",
+    ].join("\n"),
+    "stations/FOLIO.md":
+      "# Stations\n\n```yaml folio\nkinds:\n  station:\n    where: '*.md'\n```\n",
+    "tickets/T-7_pump.md": "# Pump\n\n**Size:** none\n",
+  })
+  const asked = (resource: string, at: string) =>
+    api(fixture.root, fixture.model, fixture.data, at, new URLSearchParams({ api: resource }))
+
+  try {
+    const { kinds, health } = JSON.parse(JSON.stringify(await asked("kinds", "stations/"))) as {
+      kinds: unknown[]
+      health: unknown[]
+    }
+    const { conventions } = (await asked("document", "tickets/T-7_pump.md")) as {
+      conventions: { fields: Record<string, unknown> }
+    }
+
+    assert.deepEqual(kinds, [
+      {
+        name: "ticket",
+        declaredIn: "FOLIO.md",
+        where: ["tickets/**/*.md", "archive/*.md"],
+        fields: {
+          id: {
+            from: "name",
+            type: "text",
+            of: "text",
+            key: "id",
+            pattern: "^([A-Z]-\\d+)/?",
+            by: "id",
+            empty: [],
+          },
+          size: {
+            from: "label",
+            type: "text",
+            of: "text",
+            key: "Size",
+            by: "id",
+            empty: ["None", "N/A"],
+          },
+          whole: {
+            from: "name",
+            type: "text",
+            of: "text",
+            key: "whole",
+            pattern: "",
+            by: "id",
+            empty: [],
+          },
+        },
+      },
+      { name: "station", declaredIn: "stations/FOLIO.md", where: ["*.md"], fields: {} },
+    ])
+    assert.deepEqual(health, [
+      { declaredIn: "FOLIO.md", where: ["drafts/**"], skip: ["link"], error: [] },
+    ])
+    assert.deepEqual(conventions.fields, { id: "T-7", size: null, whole: "" })
+  } finally {
+    fixture.model.close()
+    await fixture.data.close()
+  }
+})
+
+test("kinds and reads take a folder with or without its trailing slash, and a path naming nothing as a document", async () => {
+  const declared = (severity: string) =>
+    `# Declared\n\n\`\`\`yaml folio\nrules:\n  titled:\n    query: select path from folio.documents where false\n    severity: ${severity}\n\`\`\`\n`
+  const fixture = await served(indexer, {
+    "FOLIO.md": declared("warning"),
+    "stations/FOLIO.md": declared("error"),
+    "stations/alpha.md": "# Alpha\n",
+    "notes/a.md": "# A\n",
+    "notesy/b.md": "# B\n",
+  })
+  const asked = (resource: string, at: string) =>
+    api(fixture.root, fixture.model, fixture.data, at, new URLSearchParams({ api: resource }))
+  const kinds = async (at: string) => {
+    const { declarations, rules } = (await asked("kinds", at)) as {
+      declarations: string[]
+      rules: { name: string; declaredIn: string; severity: string }[]
+    }
+    return {
+      declarations,
+      rules: rules.map(({ name, declaredIn, severity }) => [name, declaredIn, severity]),
+    }
+  }
+  const station = {
+    declarations: ["FOLIO.md", "stations/FOLIO.md"],
+    rules: [["titled", "stations/FOLIO.md", "error"]],
+  }
+
+  try {
+    assert.deepEqual(await kinds("stations"), station)
+    assert.deepEqual(await kinds("stations/"), station)
+    assert.deepEqual(await kinds("stations/new.md"), station)
+    assert.deepEqual(await kinds("drafts"), {
+      declarations: ["FOLIO.md"],
+      rules: [["titled", "FOLIO.md", "warning"]],
+    })
+
+    for (const read of ["notes/a.md", "notesy/b.md"]) {
+      const blocks = fixture.model.held(read) ?? []
+      await fixture.model.reads.read(
+        read,
+        blocks.map((block) => ({ id: block.id, version: versionOf(block) })),
+      )
+    }
+
+    for (const at of ["notes", "notes/"]) {
+      const { documents } = (await asked("reads", at)) as { documents: { path: string }[] }
+      assert.deepEqual(
+        documents.map(({ path: found }) => found),
+        ["notes/a.md"],
+      )
     }
   } finally {
     fixture.model.close()
@@ -1428,6 +1723,22 @@ test("while sharing is paused, the views of what the reader read answer only tha
     assert.equal(JSON.parse((await get(view)).body).paused, undefined, view)
   }
 })
+
+async function servedApart(parser: Indexer, files: Record<string, string>) {
+  const { root: folder, model: own, data: engine } = await served(parser, files)
+  const other = http.createServer(createHandler(folder, assets, "build-1", own, engine, () => {}))
+  const at = `http://localhost:${await listen(other, 0)}`
+
+  return {
+    root: folder,
+    base: at,
+    close: async () => {
+      own.close()
+      await engine.close()
+      other.close()
+    },
+  }
+}
 
 /** `count` free ports in a row, the first held: undefined by a non-Folio server, a path by a Folio of it. */
 async function holding(

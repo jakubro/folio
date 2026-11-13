@@ -6,7 +6,7 @@ import { Backlinks } from "./backlinks.ts"
 import { BlockLinks, fragmentOf, landOn } from "./blocklinks.ts"
 import { copyButton } from "./copy.ts"
 import { reconcile } from "./drawings.ts"
-import { embedVersions, redrawEmbeds } from "./embeds.ts"
+import { componentVersions, embedVersions, redrawComponents, redrawEmbeds } from "./embeds.ts"
 import { blocksOf, foldable, foldedUnder, reveal, unfoldAll } from "./folds.ts"
 import { button, ICONS } from "./icons.ts"
 import { type Change, Live, type Subscription } from "./live.ts"
@@ -357,12 +357,13 @@ addEventListener("keydown", (event) => {
   const panel = PANEL_KEYS[event.key]
   const modified = event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
   const altOnly = event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+  const inComponent = Boolean((event.target as Element | null)?.closest?.("folio-component"))
 
   // Alt+arrows are the browser's back and forward, taken over so they never leave the page.
   if (panel && altOnly && !event.defaultPrevented) {
     event.preventDefault()
 
-    if (!event.repeat) {
+    if (!event.repeat && !inComponent) {
       togglePanel(panel)
     }
   } else if (
@@ -370,7 +371,8 @@ addEventListener("keydown", (event) => {
     !modified &&
     !event.defaultPrevented &&
     !scroller?.isConnected &&
-    !inField(event.target)
+    !inField(event.target) &&
+    !inComponent
   ) {
     event.preventDefault()
     queueStep(direction)
@@ -1135,13 +1137,15 @@ async function changed(change: Change): Promise<void> {
       : change.kind === (kind === "data" ? "data" : "page") && change.path === urlPath
 
   if (own) {
-    const updating = (async () => {
-      if (await load(true)) {
+    // Chained, since update() drops a draw under way once a newer one starts;
+    // and the server tells a version again when the tab resubscribes while still fetching it.
+    const updating = pageUpdating.then(async () => {
+      if (change.version !== version && (await load(true))) {
         await update()
         showMarks()
         showTitle()
       }
-    })()
+    })
     pageUpdating = updating.catch(() => {})
     await updating
   }
@@ -1181,13 +1185,25 @@ async function changed(change: Change): Promise<void> {
     await showProblems()
   }
 
-  if (change.kind === "embed" && kind !== "folder" && kind !== "data" && kind !== "view") {
+  if (
+    (change.kind === "embed" || change.kind === "component") &&
+    kind !== "folder" &&
+    kind !== "data" &&
+    kind !== "view"
+  ) {
     // A page update told just before may replace the embed, and draws it at its version itself.
     await pageUpdating
     const shown = article
     const place = hold(article, readingLine())
     const seen = interactions
-    await Promise.all(redrawEmbeds(article, change.path, theme(), change.version))
+    await Promise.all(
+      (change.kind === "embed" ? redrawEmbeds : redrawComponents)(
+        article,
+        change.path,
+        theme(),
+        change.version,
+      ),
+    )
 
     if (shown === article) {
       tables.attach(article, urlPath)
@@ -1295,6 +1311,7 @@ function subscription(): Subscription {
     page: textual ? { [urlPath]: version } : awaited ? { [urlPath]: null } : {},
     data: kind === "data" ? { [urlPath]: version } : {},
     embeds: textual ? embedVersions(article) : {},
+    components: textual ? componentVersions(article) : {},
     images: Object.fromEntries(images),
     folders,
     withData: dataShown(),

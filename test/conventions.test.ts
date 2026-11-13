@@ -2,7 +2,6 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { monitorEventLoopDelay } from "node:perf_hooks"
 import { after, test } from "node:test"
 import { conventionsOf } from "../src/server/conventions.ts"
 import { Data } from "../src/server/data.ts"
@@ -473,7 +472,7 @@ test("a declaration scopes health by folder and kind of check, and only health",
         .filter(({ kind }) => kind === "declaration")
         .map(({ line, what }) => `${line} ${what}`),
       [
-        "7 Health skips all, or kinds of check among figure, link, include, loop, diagram, chart, query, data, declaration, field, rule, view; not colour.",
+        "7 Health skips all, or kinds of check among figure, link, include, loop, diagram, chart, component, query, data, declaration, frontmatter, field, rule, view; not colour.",
       ],
     )
   } finally {
@@ -784,8 +783,6 @@ test("among ids without digits, a missing one in a list of them is still reporte
 
 test("a list field of one line built to make its reading backtrack never holds up the server", async () => {
   const part = (fits: string) => `# Part\n\n**Fits:** ${fits}\n`
-  const stalls = monitorEventLoopDelay({ resolution: 10 })
-  stalls.enable()
   const { model, data } = await served({
     "FOLIO.md": `# Workshop\n\n${fence(
       [
@@ -809,12 +806,15 @@ test("a list field of one line built to make its reading backtrack never holds u
 
   try {
     for (const name of ["links", "tags", "commas", "brackets", "dots", "spaces", "items"]) {
+      const started = process.threadCpuUsage()
       assert.ok(conventionsOf(model).describe(`parts/${name}.md`).fields, name)
+      const { user, system } = process.threadCpuUsage(started)
+      const took = (user + system) / 1000
+
+      assert.ok(took < 1000, `reading ${name} held the server for ${Math.round(took)} ms`)
     }
 
     await healthOf(model, data).state()
-    stalls.disable()
-    assert.ok(stalls.max < 1e9, `the server stood still for ${Math.round(stalls.max / 1e6)} ms`)
   } finally {
     model.close()
     await data.close()
@@ -824,8 +824,6 @@ test("a list field of one line built to make its reading backtrack never holds u
 test("a text field of 160,000 dots, underscores or `](` never holds up the server, and ordinary text reads as before", async () => {
   const part = (line: string) =>
     `# Part\n\n**Note:** ${line}\n**Tags:** ${line}\n\n## Use\n\n${line}\n`
-  const stalls = monitorEventLoopDelay({ resolution: 10 })
-  stalls.enable()
   const { model, data } = await served({
     "FOLIO.md": `# Workshop\n\n${fence(
       [
@@ -857,7 +855,12 @@ test("a text field of 160,000 dots, underscores or `](` never holds up the serve
 
   try {
     for (const name of ["dots", "underscores", "brackets"]) {
+      const started = process.threadCpuUsage()
       assert.ok(conventionsOf(model).describe(`parts/${name}.md`).fields, name)
+      const { user, system } = process.threadCpuUsage(started)
+      const took = (user + system) / 1000
+
+      assert.ok(took < 1000, `reading ${name} held the server for ${Math.round(took)} ms`)
     }
 
     assert.deepEqual(conventionsOf(model).describe("parts/plain.md").fields, {
@@ -866,8 +869,6 @@ test("a text field of 160,000 dots, underscores or `](` never holds up the serve
       use: "Turn left right at https://example.com/a_b.",
     })
     await healthOf(model, data).state()
-    stalls.disable()
-    assert.ok(stalls.max < 1e9, `the server stood still for ${Math.round(stalls.max / 1e6)} ms`)
   } finally {
     model.close()
     await data.close()

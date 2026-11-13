@@ -7,6 +7,7 @@ type Kind = keyof typeof KINDS
 
 const KINDS = {
   chart: { drawn: '[data-embed="chart"]', fence: "code.language-vega-lite" },
+  component: { drawn: '[data-embed="component"]', fence: "code.language-component" },
   diagram: { drawn: ".mermaid", fence: "code.language-mermaid" },
   map: { drawn: ".geo-map", fence: ":is(code.language-geojson, code.language-topojson)" },
   model: { drawn: ".stl-model", fence: "code.language-stl" },

@@ -19,6 +19,7 @@ import {
   marked,
   open,
   panel,
+  rewriteInPlace,
   root,
   serveFolder,
   waitFor,
@@ -114,6 +115,156 @@ test("Update on save, No update elsewhere: only the page's own files update it, 
   )
   assert.equal(await page.$eval("img[alt=logo]", (i) => i.getAttribute("src")), updated)
   await page.close()
+})
+
+test("a save is drawn before a later change is fetched, and a version told again is not fetched again", async () => {
+  write({ "notes/told.md": "# Told\n\nFirst." })
+  const page = await context.newPage()
+  let echo = false
+  let held: string | undefined
+  let tell: ((message: string) => void) | undefined
+  page.on("response", async (response) => {
+    if (response.url().endsWith("/notes/told.md?page")) {
+      held = (await response.json()).version
+    }
+  })
+  await page.routeWebSocket(/\?events$/, (socket) => {
+    const server = socket.connectToServer()
+    tell = (message) => socket.send(message)
+    server.onMessage((message) => {
+      socket.send(message)
+      const change = JSON.parse(String(message))
+
+      if (echo && change.type === "change" && change.kind === "page") {
+        echo = false
+        socket.send(JSON.stringify({ ...change, version: "another" }))
+      }
+    })
+  })
+  await page.addInitScript(() => {
+    const seen = { shown: Number.NaN }
+    ;(window as { seen?: typeof seen }).seen = seen
+    new MutationObserver(() => {
+      if (
+        Number.isNaN(seen.shown) &&
+        document.querySelector(".markdown-body")?.textContent?.includes("Saved once.")
+      ) {
+        seen.shown = performance.now()
+      }
+    }).observe(document, { subtree: true, childList: true, characterData: true })
+  })
+  await page.goto(`${base}/notes/told.md`)
+  await landed(page)
+  const fetches = (since: number) =>
+    page.evaluate(
+      (after) =>
+        performance
+          .getEntriesByType("resource")
+          .filter((entry) => entry.name.endsWith("/notes/told.md?page") && entry.startTime > after)
+          .map((entry) => entry.startTime),
+      since,
+    )
+  const saved = await page.evaluate(() => performance.now())
+
+  echo = true
+  write({ "notes/told.md": "# Told\n\nSaved once." })
+  await waitText(page, "Saved once.")
+  await page.waitForTimeout(1000)
+  const shown = await page.evaluate(
+    () => (window as { seen?: { shown: number } }).seen?.shown ?? Number.NaN,
+  )
+  const after = await fetches(saved)
+  assert.ok(after.length >= 2, `the change told while drawing was never fetched: ${after}`)
+  assert.ok(
+    after.slice(1).every((at) => at > shown),
+    `a page was fetched at ${after} before the save it drew showed at ${shown}`,
+  )
+
+  tell?.(JSON.stringify({ type: "change", kind: "page", path: "notes/told.md", version: held }))
+  await page.waitForTimeout(1000)
+  assert.deepEqual(await fetches(saved), after, "a version told again was fetched")
+  await page.close()
+})
+
+test("a file rewritten in place never shows or keeps an empty text", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-in-place-")))
+  const file = path.join(folder, "pump.md")
+  const text = (hours: number) => `# Pump\n\nThe pump runs ${hours} hours.\n\nSteady text.\n`
+  const EMPTY = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+  writeIn(folder, { "pump.md": text(1) })
+  const served = await serveFolder(folder)
+  const json = async (address: string) => (await fetch(`${served.base}/${address}`)).json()
+  const page = await context.newPage()
+
+  try {
+    await page.goto(`${served.base}/pump.md`)
+    await page.waitForSelector(".markdown-body > p[data-folio-id]")
+    await page.evaluate(() => {
+      const article = document.querySelector(".markdown-body") as HTMLElement
+      const seen = window as unknown as { emptied?: boolean }
+      new MutationObserver(() => {
+        if (!article.textContent?.includes("Steady text.")) {
+          seen.emptied = true
+        }
+      }).observe(article, { childList: true, subtree: true, characterData: true })
+    })
+    const ids = () =>
+      page.$$eval(".markdown-body > p", (found) =>
+        found.map((p) => (p as HTMLElement).dataset.folioId),
+      )
+    const first = await ids()
+    const written: [number, number][] = []
+
+    for (let hours = 2; hours <= 6; hours++) {
+      const started = Date.now()
+      await rewriteInPlace(file, text(hours), 150)
+      written.push([started, Date.now()])
+      await waitText(page, `The pump runs ${hours} hours.`)
+      await page.waitForSelector(".markdown-body > p[data-folio-id]")
+    }
+
+    assert.equal(await page.evaluate(() => (window as { emptied?: boolean }).emptied), undefined)
+    await waitFor(async () => (await ids()).every((id) => id !== undefined))
+    assert.deepEqual(await ids(), first, "the reworded paragraph and the steady one keep their ids")
+
+    const { versions } = await json("pump.md?versions")
+    assert.deepEqual(
+      versions.filter(({ id }: { id: string }) => id === EMPTY),
+      [],
+      "no empty version",
+    )
+    const saves = versions
+      .filter(({ seen }: { seen: string[] }) => seen.includes("saved"))
+      .map(({ at }: { at: number }) => at)
+      .reverse()
+      .slice(-written.length)
+    saves.forEach((at: number, index: number) => {
+      assert.ok(
+        at >= written[index][0] - 1 && at <= written[index][1] + 1,
+        `save ${index} at its own time`,
+      )
+    })
+    const past = (
+      await json(`pump.md?block-history=${encodeURIComponent(String(first[0]))}`)
+    ).versions.map(({ text: was }: { text?: string }) => was)
+    assert.deepEqual(
+      past.filter((was: string | undefined) => was !== undefined).slice(0, 6),
+      [6, 5, 4, 3, 2, 1].map((hours) => `The pump runs ${hours} hours.`),
+    )
+
+    fs.writeFileSync(file, "")
+    const emptied = Date.now()
+    await page.waitForFunction(() => !document.querySelector(".markdown-body h1"))
+    assert.ok(Date.now() - emptied < 500, `emptied in ${Date.now() - emptied} ms`)
+    await waitFor(async () =>
+      (await json("pump.md?versions")).versions.some(({ id }: { id: string }) => id === EMPTY),
+    )
+    assert.equal(await page.title(), "pump.md")
+  } finally {
+    await page.close()
+    served.stop()
+    fs.rmSync(folder, { recursive: true, force: true })
+  }
 })
 
 test("Tree changes: added, renamed and removed files show in the tree and listings without reloading pages", async () => {

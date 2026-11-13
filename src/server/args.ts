@@ -17,9 +17,17 @@ export type Options =
       port: number
       portGiven?: true
       sockets?: string[]
+      components?: string[]
       verbose?: true
     }
-  | { command: "check" | "lsp"; folder: string; port: number; portGiven?: true; socket?: string }
+  | {
+      command: "check" | "lsp"
+      folder: string
+      port: number
+      portGiven?: true
+      socket?: string
+      components?: string[]
+    }
   | { command: "mcp"; port: number; portGiven?: true; socket?: string }
   | { command: "help"; topic: Command }
   | { command: "version" }
@@ -30,9 +38,9 @@ export interface Help {
 }
 
 const USAGE: Record<Command, string> = {
-  serve: "folio [FOLDER] [--port N] [--socket PATH]... [--verbose]",
-  check: "folio check [FOLDER] [--port N | --socket PATH]",
-  lsp: "folio lsp [FOLDER]",
+  serve: "folio [FOLDER] [--port N] [--socket PATH]... [--components PATH]... [--verbose]",
+  check: "folio check [FOLDER] [--port N | --socket PATH] [--components PATH]...",
+  lsp: "folio lsp [FOLDER] [--components PATH]...",
   mcp: "folio mcp [FOLIO | --port N | --socket PATH]",
 }
 
@@ -64,6 +72,10 @@ export const HELP: Record<Command, Help> = {
             `The port, 1 to 65535 (default: ${DEFAULT_PORT}, or the next free one above it unless FOLDER is served on one taken)`,
           ],
           ["--socket PATH", "Also serve on a unix socket; give it again for several"],
+          [
+            "--components PATH",
+            "Draw component fences with the scripts in PATH, a folder inside FOLDER; give it again for several, a name drawn from the first holding it",
+          ],
           ["--verbose", "Print every request and update, not only pages opened and problems"],
           ["--version", "Print Folio's version"],
           ["-h, --help", "Show this help; folio COMMAND --help shows a command's"],
@@ -76,12 +88,20 @@ export const HELP: Record<Command, Help> = {
             "1",
             "The port given or a socket is taken, FOLDER is already served, or no port is free",
           ],
-          ["2", "The arguments are wrong, or FOLDER is not a folder"],
+          [
+            "2",
+            "The arguments are wrong, FOLDER is not a folder, or a components folder is not a folder inside it",
+          ],
         ],
       },
       {
         title: "Examples",
-        rows: ["folio ~/notes", "folio ~/notes --port 9000", "folio check ~/notes"],
+        rows: [
+          "folio ~/notes",
+          "folio ~/notes --port 9000",
+          "folio ~/notes --components ~/notes/components",
+          "folio check ~/notes",
+        ],
       },
     ],
   },
@@ -101,6 +121,10 @@ export const HELP: Record<Command, Help> = {
             `Ask the Folio serving FOLDER on this port (default: wherever a Folio serving FOLDER serves, else ${DEFAULT_PORT})`,
           ],
           ["--socket PATH", "Ask the Folio serving FOLDER on this unix socket"],
+          [
+            "--components PATH",
+            "With no Folio serving FOLDER, check component fences against the scripts in PATH, a folder inside FOLDER; give it again for several",
+          ],
           HELP_ROW,
         ],
       },
@@ -109,7 +133,10 @@ export const HELP: Record<Command, Help> = {
         rows: [
           ["0", "No problem is an error"],
           ["1", "A problem is an error"],
-          ["2", "No health could be worked out, or the arguments are wrong"],
+          [
+            "2",
+            "No health could be worked out, the arguments are wrong, or a components folder is not a folder inside FOLDER",
+          ],
         ],
       },
       {
@@ -128,12 +155,24 @@ export const HELP: Record<Command, Help> = {
           ["FOLDER", "The folder whose markdown the editor opens (default: the current folder)"],
         ],
       },
-      { title: "Options", rows: [HELP_ROW] },
+      {
+        title: "Options",
+        rows: [
+          [
+            "--components PATH",
+            "Check component fences against the scripts in PATH, a folder inside FOLDER; give it again for several",
+          ],
+          HELP_ROW,
+        ],
+      },
       {
         title: "Exit codes",
         rows: [
           ["0", "The editor closed the connection"],
-          ["2", "The arguments are wrong, or FOLDER is not a folder"],
+          [
+            "2",
+            "The arguments are wrong, FOLDER is not a folder, or a components folder is not a folder inside it",
+          ],
         ],
       },
       { title: "Examples", rows: ["folio lsp ~/notes"] },
@@ -215,6 +254,18 @@ export function parseOptions(argv: string[]): Options {
     throw new Error(`A socket needs a path.\n${usage(command)}`)
   }
 
+  const components = values.components ?? []
+
+  if (components.includes("")) {
+    throw new Error(`A components folder needs a path.\n${usage(command)}`)
+  }
+
+  if (command === "mcp" && components.length > 0) {
+    throw new Error(
+      `folio mcp takes no --components: the Folio it reads draws with its own.\n${usage(command)}`,
+    )
+  }
+
   if (command === "serve") {
     return {
       command,
@@ -222,6 +273,7 @@ export function parseOptions(argv: string[]): Options {
       port,
       ...(values.port !== undefined && { portGiven: true as const }),
       ...(sockets.length > 0 && { sockets }),
+      ...(components.length > 0 && { components }),
       ...(values.verbose && { verbose: true as const }),
     }
   }
@@ -243,7 +295,12 @@ export function parseOptions(argv: string[]): Options {
   }
 
   if (command !== "mcp") {
-    return { command, folder: positionals[0] ?? ".", ...reach }
+    return {
+      command,
+      folder: positionals[0] ?? ".",
+      ...reach,
+      ...(components.length > 0 && { components }),
+    }
   }
 
   // The plugin passes its setting as the argument, an empty one while the setting is unset.
@@ -266,6 +323,7 @@ function parsed(args: string[], command: Command) {
       options: {
         port: { type: "string", short: "p" },
         socket: { type: "string", multiple: true },
+        components: { type: "string", multiple: true },
         verbose: { type: "boolean" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean" },

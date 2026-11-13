@@ -181,7 +181,9 @@ test("Malformed YAML: the block shows as highlighted YAML and the body renders",
       ?.textContent,
     tables: document.querySelectorAll(".markdown-body table").length,
     body: document.querySelector(".markdown-body h1")?.textContent,
-    outline: [...document.querySelectorAll(".outline a")].map((link) => link.textContent),
+    outline: [...document.querySelectorAll(".outline a:not(.outline-problem)")].map(
+      (link) => link.textContent,
+    ),
   }))
 
   assert.deepEqual(facts, {

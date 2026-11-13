@@ -1,10 +1,10 @@
 /** Include expansion: every {include: <path>} is replaced by that file's text before the page renders. */
 
-import fs from "node:fs"
 import path from "node:path"
-import { marked } from "../client/unresolved.ts"
+import { INCLUDE, marked } from "../client/unresolved.ts"
 import type { Block } from "./blocks.ts"
 import { confine, isInside } from "./files.ts"
+import { steadyRead } from "./writers.ts"
 
 export interface Expansion {
   text: string
@@ -18,6 +18,7 @@ export interface Expansion {
   partial: boolean
   /** Each include that found nothing or would hold itself, by the file and line holding it. */
   problems: IncludeProblem[]
+  emptyIncludes: string[]
 }
 
 interface IncludeProblem {
@@ -60,13 +61,8 @@ interface Output {
   owners: number[]
   partial: boolean
   problems: IncludeProblem[]
+  emptyIncludes: Set<string>
 }
-
-/**
- * A target holds no brackets, braces, quotes or commas, so a YAML flow map opening with an include key
- * is no include.
- */
-const TOKEN = /(\\?)\{include:\s*([^}\n[\]{"',]*?)\s*\}/g
 
 /**
  * Expand includes in a real file inside root, recursively, wherever they stand, code included. Paths
@@ -94,14 +90,23 @@ export function expandText(
     owners: [],
     partial: false,
     problems: [],
+    emptyIncludes: new Set(),
   }
 
   if (text !== undefined) {
     expandPart(root, instance(file, text, 1, text), text, [], out, blocksOf)
   }
 
-  const { chunks, files, instances, owners, partial, problems } = out
-  return { text: chunks.join(""), files: [...files], instances, owners, partial, problems }
+  const { chunks, files, instances, owners, partial, problems, emptyIncludes } = out
+  return {
+    text: chunks.join(""),
+    files: [...files],
+    instances,
+    owners,
+    partial,
+    problems,
+    emptyIncludes: [...emptyIncludes],
+  }
 }
 
 function expandPart(
@@ -119,7 +124,7 @@ function expandPart(
   out.files.add(instance.file)
   out.instances.push(instance)
 
-  for (const match of part.matchAll(TOKEN)) {
+  for (const match of part.matchAll(INCLUDE)) {
     emit(part.slice(last, match.index), instance, out)
     last = match.index + match[0].length
 
@@ -164,6 +169,10 @@ function include(
     whole.file || hash < 0 ? [target, ""] : [target.slice(0, hash), target.slice(hash + 1)]
   const { file, missing } = whole.file ? whole : resolve(root, from.file, address)
   const text = file ? read(file) : undefined
+
+  if (file && text === "") {
+    out.emptyIncludes.add(file)
+  }
 
   const holder = chain[chain.length - 1]
   const problem = (why: IncludeProblem["why"]) => {
@@ -279,11 +288,7 @@ function levelOf(heading: Block): number {
 }
 
 function read(file: string): string | undefined {
-  try {
-    return fs.readFileSync(file, "utf8")
-  } catch {
-    return undefined
-  }
+  return steadyRead(file)?.text
 }
 
 function emit(segment: string, instance: Instance, out: Output): void {

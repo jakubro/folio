@@ -123,8 +123,9 @@ test("help pages lay their rows in columns, plain when piped", () => {
     text,
     /\nExit codes\n {2}0 {2}No problem is an error\n {2}1 {2}A problem is an error\n/,
   )
-  assert.match(text, /\n {2}-p, --port N {3}Ask the Folio serving FOLDER on this port/)
-  assert.match(text, /\n {2}--socket PATH {2}Ask/)
+  assert.match(text, /\n {2}-p, --port N {7}Ask the Folio serving FOLDER on this port/)
+  assert.match(text, /\n {2}--socket PATH {6}Ask/)
+  assert.match(text, /\n {2}--components PATH {2}With no Folio/)
 })
 
 test("a client is named as it names itself, and not at all when its name is empty", () => {

@@ -519,6 +519,75 @@ test("a list too long for one answer is cut to fit, saying how many entries each
   }
 })
 
+test("a tool refuses an argument it does not take, naming those it takes, and two it cannot take together; every cut notice says omitted counts what each list left out", async () => {
+  const stand = await standIn("/notes")
+  const calls: [string, Record<string, unknown>][] = [
+    ["folio_documents", { path: "notes/" }],
+    ["folio_health", { folder: "notes/" }],
+    ["folio_embed", { path: "report.md", reference: "data.csv", extra: 1 }],
+    ["folio_presence", { page: "a.md", tab: 2 }],
+    ["folio_history", { path: "report.md", version: "v1", block: "3f9a1c2e" }],
+    ["folio_related", { path: "report.md", block: "3f9a1c2e", question: "rain" }],
+    ["folio_related", { path: "report.md", question: "rain" }],
+    ["folio_related", { block: "3f9a1c2e" }],
+    ["folio_history", { path: "report.md", block: "3f9a1c2e", version: "" }],
+    ["folio_related", { question: "rain" }],
+  ]
+
+  try {
+    const [initialized, listed, ...replies] = await exchange(
+      ["--port", String(stand.port)],
+      [
+        { method: "initialize", params: { protocolVersion: "2025-06-18" } },
+        { method: "tools/list", params: {} },
+        ...calls.map(([name, args]) => ({
+          method: "tools/call",
+          params: { name, arguments: args },
+        })),
+      ],
+    )
+    const answered = replies.map(
+      (reply) => reply.result as { content: { text: string }[]; isError?: boolean },
+    )
+    const notice =
+      "adds omitted, how many entries each list left out, and narrow, how to ask for less."
+    const passed = JSON.stringify({ root: "/notes", documents: [] })
+    const { tools } = listed.result as { tools: { name: string; description: string }[] }
+
+    assert.deepEqual(
+      answered.map(({ content, isError }) => [isError ?? false, content[0].text]),
+      [
+        [true, "folio_documents takes folder, not path."],
+        [true, "folio_health takes path, not folder."],
+        [true, "folio_embed takes path and reference, not extra."],
+        [true, "folio_presence takes no argument, not page or tab."],
+        [true, "folio_history takes at most one of version, block and reference."],
+        [true, "folio_related takes a question, or path and block, never both."],
+        [true, "folio_related takes a question, or path and block, never both."],
+        [true, "folio_related takes block only with path, the page holding it."],
+        [false, passed],
+        [false, passed],
+      ],
+    )
+    assert.deepEqual(stand.asked.filter((url) => url !== "/?api").sort(), [
+      "/?api=related&question=rain",
+      "/report.md?api=history&block=3f9a1c2e",
+    ])
+    assert.match(
+      (initialized.result as { instructions: string }).instructions,
+      /adds omitted, how many entries each list left out, and narrow, how to ask for less\./,
+    )
+    assert.deepEqual(
+      tools
+        .filter(({ description }) => description.includes("omitted"))
+        .map(({ name, description }) => [name, description.includes(notice)]),
+      tools.filter(({ name }) => name !== "folio_query").map(({ name }) => [name, true]),
+    )
+  } finally {
+    await stand.close()
+  }
+})
+
 async function exchange(
   args: string[],
   requests: { method: string; params: object }[],

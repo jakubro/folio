@@ -12,6 +12,7 @@ export interface Change {
     | "links"
     | "data"
     | "embed"
+    | "component"
     | "reads"
     | "changes"
     | "health"

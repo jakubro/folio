@@ -82,6 +82,12 @@ const COMMITS: {
     files: { "notes/sites.md": null, "notes/sites.geojson": null, "notes/funnel.stl": null },
   },
   {
+    at: "2026-10-08T13:10:00Z",
+    by: OREN,
+    subject: "Draw the rain by station",
+    files: { "notes/rain.md": null, "components/levels.js": null },
+  },
+  {
     at: "2026-10-12T09:15:00Z",
     by: OREN,
     subject: "Chart the daily rain",
@@ -111,9 +117,13 @@ export async function ridge(): Promise<Ridge> {
   date(folder, WRITTEN_AT)
 
   const port = await free()
-  const child = spawn(process.execPath, [CLI, folder, "--port", String(port)], {
-    env: { ...process.env, XDG_STATE_HOME: path.join(root, "state") },
-  })
+  const child = spawn(
+    process.execPath,
+    [CLI, folder, "--port", String(port), "--components", path.join(folder, "components")],
+    {
+      env: { ...process.env, XDG_STATE_HOME: path.join(root, "state") },
+    },
+  )
 
   await indexed(child)
 

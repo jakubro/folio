@@ -4,6 +4,7 @@ import type http from "node:http"
 import path from "node:path"
 import type { Duplex } from "node:stream"
 import { type WebSocket, WebSocketServer } from "ws"
+import { componentsOf } from "./components.ts"
 import { type Data, urgently } from "./data.ts"
 import { confine, isDocument, isInside, renderable, subfolders } from "./files.ts"
 import { healthOf } from "./health.ts"
@@ -13,9 +14,17 @@ import type { Model } from "./model.ts"
 import { presenceOf } from "./presence.ts"
 import type { Seen } from "./reads.ts"
 import { relatedOf } from "./related.ts"
+import { savedOf } from "./saved.ts"
 import { shownChanges, shownHealth, shownNeeds, shownOf } from "./shown.ts"
 import { staleOf } from "./stale.ts"
-import { fileVersion, folderState, linksState, pageState, readState } from "./versions.ts"
+import {
+  fileVersion,
+  folderState,
+  linksState,
+  pageState,
+  readState,
+  settledPage,
+} from "./versions.ts"
 import { WatchRegistry } from "./watch.ts"
 
 type Kind =
@@ -25,6 +34,7 @@ type Kind =
   | "links"
   | "data"
   | "embed"
+  | "component"
   | "reads"
   | "changes"
   | "health"
@@ -51,6 +61,8 @@ export interface Subscription {
   data?: Record<string, string | null>
   /** Embeds, each keyed by the document holding it and its reference, a line break between. */
   embeds?: Record<string, string | null>
+  /** The scripts of the components a page draws, keyed by name rather than path. */
+  components?: Record<string, string | null>
   withData?: boolean
 }
 
@@ -60,10 +72,15 @@ interface Item {
   version: string | null
   dirs: string[]
   withData: boolean
-  /** Whether what it shows reads the folder's documents as tables, which any change in the folder can move. */
-  documents?: boolean
+  /** The document tables what it shows reads, and their version when last worked out. */
+  tables?: { names: string[]; version: string }
   /** Counts refreshes, so one overtaken by a later refresh or a release lands nowhere. */
   refreshes: number
+  /** One refresh runs at a time; those asked for meanwhile become one more, run once it ends. */
+  running?: boolean
+  again?: boolean
+  /** Its last refresh failed, so a subscription naming it again works it out again. */
+  failed?: boolean
 }
 
 interface Tab {
@@ -88,6 +105,7 @@ const KINDS: Record<Exclude<keyof Subscription, "withData">, Kind> = {
   related: "related",
   data: "data",
   embeds: "embed",
+  components: "component",
 }
 const DEBOUNCE_MS = 50
 const MAX_MESSAGE = 1 << 20
@@ -127,6 +145,8 @@ export class Hub {
       this.#refreshKinds(["links", "reads", "changes", "health", "needs", "stale"], true),
     )
     model.reads.listen(() => this.#refreshKinds(["reads", "changes", "needs", "stale"]))
+    // An item worked out between a change and the model hearing it read the walk before the change.
+    model.listenFolders((dir) => this.#touched(dir))
     relatedOf(model).listen(() => this.#refreshKinds(["related"]))
     presenceOf(model).listen((paused) => {
       for (const tab of this.#tabs) {
@@ -146,17 +166,22 @@ export class Hub {
           part === "health" ? "health" : part === "changes" ? "changes" : "needs",
         ]),
       )
+      savedOf(this.#model, data).listenWrites((file) => this.#written(path.dirname(file)))
     }
   }
 
   #refreshKinds(kinds: Kind[], documents = false): void {
+    const data = this.#data
+    // Tables move with every document read until the folder is read, and again when it is, which refreshes them.
+    const moved = (item: Item) =>
+      documents &&
+      this.#model?.ready === true &&
+      item.tables !== undefined &&
+      data?.documentsVersion(item.tables.names) !== item.tables.version
+
     for (const tab of this.#tabs) {
       for (const [key, item] of tab.items) {
-        if (
-          kinds.includes(item.kind) ||
-          item.version?.endsWith("-partial") ||
-          (documents && item.documents)
-        ) {
+        if (kinds.includes(item.kind) || item.version?.endsWith("-partial") || moved(item)) {
           tab.pending.add(key)
         }
       }
@@ -374,12 +399,21 @@ export class Hub {
       for (const [urlPath, version] of Object.entries(subscription[field] ?? {})) {
         const key = `${kind}:${urlPath}`
         const held = previous.get(key)
+        const withData = kind === "folder" && subscription.withData === true
+
+        // Named again at the version last sent, it is current: its watches and any refresh under way carry on.
+        if (held && !held.failed && held.version === version && held.withData === withData) {
+          previous.delete(key)
+          tab.items.set(key, held)
+          continue
+        }
+
         const item: Item = {
           kind,
           urlPath,
           version,
           dirs: held?.dirs ?? [],
-          withData: kind === "folder" && subscription.withData === true,
+          withData,
           refreshes: 0,
         }
 
@@ -388,20 +422,52 @@ export class Hub {
         }
 
         tab.items.set(key, item)
-        this.#refresh(tab, item)
+
+        // A tab resubscribes while it still fetches a change, so an item it held waits for the subscription after.
+        if (held) {
+          tab.pending.add(key)
+        } else {
+          this.#refresh(tab, item)
+        }
       }
     }
 
     for (const item of previous.values()) {
       this.#release(item)
     }
+
+    this.#schedule(tab)
   }
 
   #changed(dir: string): void {
+    this.#heard(dir)
+    this.#touched(dir)
+  }
+
+  /** Folio writes a document whole, so no burst of saves is waited out before telling its tabs. */
+  #written(dir: string): void {
+    this.#heard(dir)
+
+    for (const tab of this.#tabs) {
+      const keys = [...tab.items].filter(([, item]) => item.dirs.includes(dir)).map(([key]) => key)
+
+      for (const key of keys) {
+        tab.pending.delete(key)
+      }
+
+      void this.#refreshInTurn(tab, keys)
+    }
+  }
+
+  #heard(dir: string): void {
+    this.#data?.heard(dir)
+
     if (this.#model && this.#data) {
       healthOf(this.#model, this.#data).heard(dir)
     }
+  }
 
+  #touched(dir: string): void {
     for (const tab of this.#tabs) {
       for (const [key, item] of tab.items) {
         if (item.dirs.includes(dir)) {
@@ -422,40 +488,68 @@ export class Hub {
   /** Editors save in bursts - a temporary file, a rename, a chmod - so changes settle before checking. */
   #flush(tab: Tab): void {
     tab.timer = undefined
-
-    for (const key of tab.pending) {
-      const item = tab.items.get(key)
-
-      if (item) {
-        this.#refresh(tab, item)
-      }
-    }
+    const keys = [...tab.pending]
 
     tab.pending.clear()
+    void this.#refreshInTurn(tab, keys)
+  }
+
+  /** A turn per item, not a microtask: its change goes out in a promise reaction, first. */
+  async #refreshInTurn(tab: Tab, keys: string[]): Promise<void> {
+    const shown = (key: string) => key.startsWith("page:") || key.startsWith("data:")
+
+    for (const key of [...keys.filter(shown), ...keys.filter((key) => !shown(key))]) {
+      const item = tab.items.get(key)
+
+      if (item && this.#tabs.has(tab)) {
+        this.#refresh(tab, item)
+      }
+
+      await new Promise((resolve) => setImmediate(resolve))
+    }
   }
 
   /** Each item lands on its own, so a page never waits for the folder's health to be worked out again. */
   #refresh(tab: Tab, item: Item): void {
+    if (item.running) {
+      item.again = true
+      return
+    }
+
     const refresh = ++item.refreshes
+    item.running = true
 
     this.#state(item)
       .then((landed) => {
+        item.failed = false
+
         if (refresh === item.refreshes && this.#tabs.has(tab)) {
           this.#apply(tab, item, landed)
         }
       })
-      .catch((error: Error) => this.#log(`update ${item.kind} /${item.urlPath}: ${error.message}`))
+      .catch((error: Error) => {
+        item.failed = true
+        this.#log(`update ${item.kind} /${item.urlPath}: ${error.message}`)
+      })
+      .finally(() => {
+        item.running = false
+
+        if (item.again) {
+          item.again = false
+          this.#refresh(tab, item)
+        }
+      })
   }
 
   #apply(
     tab: Tab,
     item: Item,
-    { version, dirs, documents }: { version: string | null; dirs: string[]; documents?: boolean },
+    { version, dirs, tables }: { version: string | null; dirs: string[]; tables?: Item["tables"] },
   ): void {
     const previousDirs = item.dirs
 
     item.dirs = dirs
-    item.documents = documents
+    item.tables = tables
 
     for (const dir of dirs) {
       this.registry.acquire(dir)
@@ -474,7 +568,7 @@ export class Hub {
 
   async #state(
     item: Item,
-  ): Promise<{ version: string | null; dirs: string[]; documents?: boolean }> {
+  ): Promise<{ version: string | null; dirs: string[]; tables?: Item["tables"] }> {
     const root = this.#root
     const lexicalDir = path.dirname(path.join(root, item.urlPath))
 
@@ -517,7 +611,9 @@ export class Hub {
 
       return {
         version,
-        dirs: [...new Set(files.flat().map((file) => watchable(root, path.dirname(file))))],
+        dirs: [
+          ...new Set(files.flat().map((file) => watchable(root, path.dirname(file), this.#model))),
+        ],
       }
     }
 
@@ -576,6 +672,16 @@ export class Hub {
       return this.#embedState(item.urlPath)
     }
 
+    if (item.kind === "component") {
+      const components = this.#model && componentsOf(this.#model)
+      return {
+        version: components?.version(item.urlPath) ?? null,
+        dirs: [
+          ...new Set((components?.watched(item.urlPath) ?? []).map((dir) => watchable(root, dir))),
+        ],
+      }
+    }
+
     // A folder lists a subfolder only while it holds something renderable, so its subfolders are watched too.
     // The first file saved into a new subfolder then shows in the listing.
     if (item.kind === "folder") {
@@ -597,15 +703,20 @@ export class Hub {
       return { version: fileVersion(target.file) ?? null, dirs: [path.dirname(target.file)] }
     }
 
-    const page = pageState(root, target.file, this.#model)
+    const settled = settledPage(root, target.file, this.#model)
+    // Awaited only when it waits, so a page's change goes out as soon as it is read, as other items' do.
+    const { page } = settled instanceof Promise ? await settled : settled
     const dirs = new Set([lexicalDir, ...page.files.map((file) => path.dirname(file))])
-    return { version: page.version, dirs: [...dirs].map((dir) => watchable(root, dir)) }
+    return {
+      version: page.version,
+      dirs: [...dirs].map((dir) => watchable(root, dir, this.#model)),
+    }
   }
 
   /** A reference that names nothing yet is watched where its file would appear. */
   async #embedState(
     key: string,
-  ): Promise<{ version: string | null; dirs: string[]; documents?: boolean }> {
+  ): Promise<{ version: string | null; dirs: string[]; tables?: Item["tables"] }> {
     const root = this.#root
     const data = this.#data
     const [from, reference] = key.split("\n")
@@ -623,8 +734,8 @@ export class Hub {
       dirs: matched = [],
     } = await urgently(() => data.reads(document.file, reference))
     const dirs = new Set([
-      ...files.map((file) => watchable(root, path.dirname(file))),
-      ...matched.map((dir) => watchable(root, dir)),
+      ...files.map((file) => watchable(root, path.dirname(file), this.#model)),
+      ...matched.map((dir) => watchable(root, dir, this.#model)),
       ...(missing && isInside(root, missing) ? [watchable(root, path.dirname(missing))] : []),
       // One of the document's own queries moves with the document's text, as nothing else it reads does.
       ...((files.length === 0 && !missing) || reference.startsWith("#")
@@ -632,11 +743,16 @@ export class Hub {
         : []),
     ])
 
-    return { version, dirs: [...dirs], ...(tables && { documents: true }) }
+    return {
+      version,
+      dirs: [...dirs],
+      ...(tables && { tables: { names: tables, version: data.documentsVersion(tables) } }),
+    }
   }
 
   #release(item: Item): void {
     item.refreshes++
+    item.again = false
 
     for (const dir of item.dirs) {
       this.registry.release(dir)
@@ -662,7 +778,11 @@ function isVersions(value: unknown): value is Record<string, string> {
  * The nearest existing folder inside root at or above a path. A missing folder is watched through
  * its parent, so creating it is heard, and nothing outside root is ever watched.
  */
-function watchable(root: string, target: string): string {
+function watchable(root: string, target: string, watched?: Model): string {
+  if (watched?.watches(target)) {
+    return target
+  }
+
   for (let dir = target; isInside(root, dir); dir = path.dirname(dir)) {
     const real = confine(root, path.relative(root, dir))
 

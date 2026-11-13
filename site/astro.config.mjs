@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url"
 
+import { unified } from "@astrojs/markdown-remark"
 import starlight from "@astrojs/starlight"
 import { defineConfig } from "astro/config"
 import mermaid from "astro-mermaid"
@@ -27,6 +28,7 @@ const REFERENCE = [
   "files",
   "data-files",
   "embedded-data",
+  "components",
   "queries",
   "reading",
   "history",
@@ -57,16 +59,26 @@ export default defineConfig({
   base: BASE,
   trailingSlash: "always",
   markdown: {
-    smartypants: false,
-    remarkPlugins: [
-      dropLeadingHeading,
-      [
-        rewriteMarkdownLinks,
-        { docsRoot: DOCS_ROOT, repoRoot: REPO_ROOT, base: BASE, repository: REPOSITORY, ref: REF },
+    processor: unified({
+      smartypants: false,
+      remarkPlugins: [
+        dropLeadingHeading,
+        [
+          rewriteMarkdownLinks,
+          {
+            docsRoot: DOCS_ROOT,
+            repoRoot: REPO_ROOT,
+            base: BASE,
+            repository: REPOSITORY,
+            ref: REF,
+          },
+        ],
+        unescapeIncludes,
       ],
-      unescapeIncludes,
-    ],
+    }),
   },
+  // Mermaid's layout engine and core are single modules of 1.4 MB and 0.6 MB that no split can cut.
+  vite: { build: { chunkSizeWarningLimit: 1500 } },
   integrations: [
     // Claims fenced mermaid blocks before Starlight's renderer sees them, so it must stay first.
     mermaid({ autoTheme: true }),

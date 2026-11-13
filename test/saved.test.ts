@@ -9,6 +9,7 @@ import { healthOf } from "../src/server/health.ts"
 import { Indexer } from "../src/server/indexer.ts"
 import { Model } from "../src/server/model.ts"
 import { Saved, savedOf } from "../src/server/saved.ts"
+import { heldForWriting } from "../src/server/writers.ts"
 import { served as servedFolder } from "./served.ts"
 
 const indexer = new Indexer(new URL("../src/server/index-worker.ts", import.meta.url))
@@ -45,9 +46,12 @@ const PLAN = [
   "",
 ].join("\n")
 
-async function served(files: Record<string, string>) {
+/** On the test's own thread, so a test rewriting what /proc answers reaches the check. */
+const onThisThread = (file: string, stat: fs.Stats) => Promise.resolve(heldForWriting(file, stat))
+
+async function served(files: Record<string, string>, held?: typeof onThisThread) {
   const { root, model, data } = await servedFolder(indexer, files)
-  const saved = savedOf(model, data)
+  const saved = held ? new Saved(model, data, undefined, undefined, held) : savedOf(model, data)
   saved.start()
   const read = (name: string) => fs.readFileSync(path.join(root, name), "utf8")
   const write = (name: string, text: string) => fs.writeFileSync(path.join(root, name), text)
@@ -469,6 +473,36 @@ test("a view whose result moves with each of its own writes is stopped and repor
     await saved.settled()
     assert.equal(fs.readFileSync(path.join(root, "loop.md"), "utf8"), stopped)
   } finally {
+    model.close()
+    await data.close()
+  }
+})
+
+test("a view whose result moves with each of its own writes is stopped though each flush to disk is slow", async () => {
+  const { model, data } = await servedFolder(indexer, {
+    "FOLIO.md": `# Saved\n\n${fence("save:\n  - where: '*.md'")}\n`,
+    "loop.md": LOOP,
+  })
+  const probe = await fs.promises.open(path.join(model.root, "loop.md"), "r")
+  const handles = Object.getPrototypeOf(probe) as { sync: () => Promise<void> }
+  await probe.close()
+  const flush = handles.sync
+  handles.sync = async function (this: unknown) {
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    return flush.call(this)
+  }
+  const saved = new Saved(model, data, 0)
+  saved.start()
+
+  try {
+    for (let tries = 0; saved.problems("loop.md").length === 0; tries++) {
+      assert.ok(tries < 600, "the view never stopped")
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+
+    assert.match(saved.problems("loop.md")[0].what, /changes with every write into this document/)
+  } finally {
+    handles.sync = flush
     model.close()
     await data.close()
   }
@@ -939,11 +973,14 @@ test("a program holding a file open to append is waited for even when Folio wrot
 })
 
 test("a program writing another file that shares the document's inode number holds no write", async () => {
-  const { root, model, data, read, write, until } = await served({
-    "FOLIO.md": `# Saved\n\n${fence("save:\n  - where: rota.md")}\n`,
-    "rota.md": PLAN,
-    "tasks.csv": "name,size,done\nwire,3,false\n",
-  })
+  const { root, model, data, read, write, until } = await served(
+    {
+      "FOLIO.md": `# Saved\n\n${fence("save:\n  - where: rota.md")}\n`,
+      "rota.md": PLAN,
+      "tasks.csv": "name,size,done\nwire,3,false\n",
+    },
+    onThisThread,
+  )
   const others = [
     path.join(fs.mkdtempSync("/dev/shm/folio-"), "log"),
     path.join(root, "beside.log"),
@@ -982,11 +1019,14 @@ test("a program writing another file that shares the document's inode number hol
 })
 
 test("on a kernel naming no inode, a program appending through another hard link is waited for", async () => {
-  const { root, model, data, read, write, until } = await served({
-    "FOLIO.md": `# Saved\n\n${fence("save:\n  - where: rota.md")}\n`,
-    "rota.md": PLAN,
-    "tasks.csv": "name,size,done\nwire,3,false\n",
-  })
+  const { root, model, data, read, write, until } = await served(
+    {
+      "FOLIO.md": `# Saved\n\n${fence("save:\n  - where: rota.md")}\n`,
+      "rota.md": PLAN,
+      "tasks.csv": "name,size,done\nwire,3,false\n",
+    },
+    onThisThread,
+  )
   const keep = path.join(root, "rota.keep")
 
   try {
@@ -1062,6 +1102,81 @@ test("a file dated in the future is still written, and one Folio cannot write is
   }
 })
 
+test("a view is worked out as soon as the change it shows is heard", async () => {
+  let checked = 0
+  const { model, data, read, write, until } = await served(
+    {
+      "FOLIO.md": `# Saved\n\n${fence("save:\n  - where: rota.md")}\n`,
+      "rota.md": PLAN,
+      "tasks.csv": "name,size,done\nwire,3,false\n",
+    },
+    () => {
+      checked = Date.now()
+      return Promise.resolve(false)
+    },
+  )
+  const heard: number[] = []
+  model.listenFolders(() => heard.push(Date.now()))
+
+  try {
+    await until(() => read("rota.md").includes("| wire | 3 |"))
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const saved = Date.now()
+    write("tasks.csv", "name,size,done\nwire,3,false\nseal,1,false\n")
+    await until(() => read("rota.md").includes("| seal | 1 |"))
+    const waited = checked - (heard.find((at) => at >= saved) ?? Number.NaN)
+    assert.ok(waited < 80, `the view was ready to write ${waited} ms after its change was heard`)
+  } finally {
+    model.close()
+    await data.close()
+  }
+})
+
+test("a slow flush to disk never holds Folio's thread while a view is written", async () => {
+  const { model, data, read, write, until } = await served({
+    "FOLIO.md": `# Saved\n\n${fence("save:\n  - where: rota.md")}\n`,
+    "rota.md": PLAN,
+    "tasks.csv": "name,size,done\nwire,3,false\n",
+  })
+  const probe = await fs.promises.open(path.join(model.root, "rota.md"), "r")
+  const handles = Object.getPrototypeOf(probe) as { sync: () => Promise<void> }
+  await probe.close()
+  const flush = handles.sync
+  const flushSync = fs.fsyncSync
+  let longest = 0
+  let last = performance.now()
+  const ticks = setInterval(() => {
+    longest = Math.max(longest, performance.now() - last)
+    last = performance.now()
+  }, 5)
+
+  try {
+    await until(() => read("rota.md").includes("| wire | 3 |"))
+    handles.sync = async function (this: unknown) {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      return flush.call(this)
+    }
+    fs.fsyncSync = (descriptor) => {
+      for (const until = performance.now() + 300; performance.now() < until; ) {}
+      flushSync(descriptor)
+    }
+    last = performance.now()
+    longest = 0
+    write("tasks.csv", "name,size,done\nwire,3,false\nseal,1,false\n")
+    await until(() => read("rota.md").includes("| seal | 1 |"))
+    assert.ok(
+      longest < 150,
+      `the thread was held ${Math.round(longest)} ms while the view was written`,
+    )
+  } finally {
+    clearInterval(ticks)
+    handles.sync = flush
+    fs.fsyncSync = flushSync
+    model.close()
+    await data.close()
+  }
+})
+
 test("a change landing while Folio checks for writers is no echo of its own write", async () => {
   const doc = [
     "# Status",
@@ -1090,7 +1205,7 @@ test("a change landing while Folio checks for writers is no echo of its own writ
 
     return (readdir as (...all: unknown[]) => unknown)(at, ...rest)
   }) as typeof fs.readdirSync
-  const saved = new Saved(model, data, 0)
+  const saved = new Saved(model, data, 0, Date.now, onThisThread)
   const read = () => fs.readFileSync(path.join(root, "status.md"), "utf8")
   saved.start()
 

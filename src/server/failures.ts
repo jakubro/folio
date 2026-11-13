@@ -14,6 +14,7 @@ const PARTS = {
   "used-by": "Folio's list of what a file feeds",
   presence: "Folio's view of what the reader looks at",
   related: "Folio's relating by meaning",
+  components: "Folio's components",
   server: "Folio's server",
 } as const
 const WHERE = "The reason is in Folio's log, in the terminal running it."

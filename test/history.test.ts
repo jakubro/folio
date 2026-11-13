@@ -6,6 +6,7 @@ import path from "node:path"
 import { test } from "node:test"
 import { type Block, blocks, identify, type Part } from "../src/server/blocks.ts"
 import { blobId, History, type Splitter } from "../src/server/history.ts"
+import { rewriting } from "./rewriting.ts"
 
 const DAY = 86_400_000
 const split: Splitter = {
@@ -44,6 +45,22 @@ test("a save and a commit of the same text are one version; git's history and Fo
   assert.equal(await history.text("notes/log.md", versions[2].id), "# Log\n\nFirst.\n")
   assert.equal(await history.text("notes/log.md", versions[1].id), "# Log\n\nSecond.\n")
   assert.equal(await history.text("notes/log.md", blobId("# Elsewhere\n")), undefined)
+})
+
+test("a file a program is rewriting in place is listed as the text it writes, never empty", async () => {
+  const { root, history } = setup()
+  const file = path.join(root, "notes/rota.md")
+  fs.writeFileSync(file, "# Rota\n")
+  const rewriter = await rewriting(file, "# Rota, rewritten\n")
+
+  try {
+    assert.deepEqual(
+      (await history.versions("notes/rota.md")).map(({ id }) => id),
+      [blobId("# Rota, rewritten\n")],
+    )
+  } finally {
+    rewriter.kill()
+  }
 })
 
 test("a file in a nested repository takes its history from that repository", async () => {

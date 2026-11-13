@@ -225,6 +225,53 @@ test("Pass, Fail, Built-in as error, Nothing by default, Running Folio, Standalo
   }
 })
 
+test("folio check: frontmatter that is not YAML prints as an error and fails, standalone and through a running Folio alike", async () => {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-check-front-")))
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-check-front-state-"))
+  const env = { ...ENV, XDG_STATE_HOME: state }
+  const run = (...args: string[]) =>
+    new Promise<{ status: number; out: string }>((resolve) => {
+      let out = ""
+      const child = spawn(process.execPath, [CLI, "check", folder, ...args], { env })
+      child.stdout?.on("data", (chunk) => {
+        out += chunk
+      })
+      child.once("exit", (status) => resolve({ status: status ?? -1, out }))
+    })
+  writeIn(folder, { "stations/north.md": "---\nelevation: 412\nnote: a: b\n---\n# North\n" })
+
+  try {
+    const alone = await run("--port", String(await freePort()))
+    assert.equal(alone.status, 1, alone.out)
+    assert.match(
+      alone.out,
+      /stations\/north\.md:3 {2}error {2}frontmatter {2}The frontmatter is not YAML: Nested mappings are not allowed in compact mappings/,
+    )
+
+    const port = await freePort()
+    let said = ""
+    const server = spawn(process.execPath, [CLI, folder, "--port", String(port), "--verbose"], {
+      env,
+    })
+    server.stdout?.on("data", (chunk) => {
+      said += chunk
+    })
+
+    try {
+      await until(() => said.includes("documents in"))
+      const running = await run("--port", String(port))
+      assert.equal(running.status, 1)
+      assert.equal(running.out, alone.out)
+      assert.ok(said.includes("GET /?api=health"), "the running Folio answered")
+    } finally {
+      server.kill()
+    }
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true })
+    fs.rmSync(state, { recursive: true, force: true })
+  }
+})
+
 test("Check, Folio moved; Agent's folder served; Folio restarted: without --port, check and mcp find the Folio serving their folder wherever it serves", async () => {
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-found-")))
   const state = fs.mkdtempSync(path.join(os.tmpdir(), "folio-e2e-found-state-"))

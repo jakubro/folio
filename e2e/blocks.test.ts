@@ -778,6 +778,8 @@ test("Open, Few versions, No history, Absent, The page, A version, New tab, One 
         modifiers: button === "left" ? ["ControlOrMeta"] : [],
       }),
     ])
+    // A tab a click opens starts at about:blank, whose load can be the one waited for.
+    await tab.waitForURL((url) => url.href !== "about:blank")
     await tab.waitForLoadState()
     assert.equal(
       decodeURIComponent(new URL(tab.url()).search),
@@ -849,6 +851,65 @@ test("Open, Few versions, No history, Absent, The page, A version, New tab, One 
     "no history",
   )
   await gone.close()
+})
+
+test("a block's buttons stay under a pointer that does not move while a save and its ids redraw the page", async () => {
+  write({ "past/resting.md": "# Resting\n\nThe pump runs at noon.\n\nA second paragraph.\n" })
+  const page = await open("past/resting.md")
+  await page.waitForSelector(".markdown-body > p[data-folio-id]")
+  await page.hover(".markdown-body > p >> nth=0", { position: { x: 5, y: 5 } })
+  await page.waitForSelector(".block-history:not([hidden])")
+  await page.evaluate(() => {
+    document.addEventListener("folio:redraw", () => {
+      ;(window as unknown as { redraws: number }).redraws =
+        ((window as unknown as { redraws?: number }).redraws ?? 0) + 1
+    })
+  })
+
+  write({
+    "past/resting.md": "# Resting\n\nThe pump runs at noon.\n\nA second paragraph, saved.\n",
+  })
+  await waitText(page, "A second paragraph, saved.")
+  await page.waitForFunction(
+    () =>
+      ((window as unknown as { redraws?: number }).redraws ?? 0) > 0 &&
+      [...document.querySelectorAll(".markdown-body > p")].every(
+        (p) => (p as HTMLElement).dataset.folioId,
+      ),
+  )
+  await page.waitForTimeout(200)
+  assert.deepEqual(
+    await page.$$eval(".block-link, .block-history, .block-provenance, .block-copy", (found) =>
+      found.map((button) => (button as HTMLElement).hidden),
+    ),
+    [false, false, false, false],
+  )
+
+  const first = await page.$eval(".markdown-body > p", (p) => (p as HTMLElement).dataset.folioId)
+  await page.hover(".block-copy")
+  const redrawn = await page.evaluate(() => (window as unknown as { redraws: number }).redraws)
+  write({
+    "past/resting.md": "# Resting\n\nThe pump runs at noon.\n\nA second paragraph, saved again.\n",
+  })
+  await waitText(page, "A second paragraph, saved again.")
+  await page.waitForFunction(
+    (before) => (window as unknown as { redraws: number }).redraws > before,
+    redrawn,
+  )
+  await page.waitForTimeout(200)
+  assert.deepEqual(
+    await page.$$eval(".block-history, .block-copy", (found) =>
+      found.map((button) => (button as HTMLElement).hidden),
+    ),
+    [false, false],
+  )
+  assert.equal(
+    new URL(
+      await page.$eval(".block-history", (a) => (a as HTMLAnchorElement).href),
+    ).searchParams.get("block"),
+    first,
+  )
+  await page.close()
 })
 
 test("See incoming links, Into a section, Follow back, New link, No links: a page shows what links to it", async () => {

@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { after, test } from "node:test"
 import { versionOf } from "../src/server/blocks.ts"
+import { blobId } from "../src/server/history.ts"
 import { expand, type Instance } from "../src/server/includes.ts"
 import { Indexer, IndexerDown } from "../src/server/indexer.ts"
 import { Model, modelStore, type PageBlock } from "../src/server/model.ts"
@@ -100,6 +101,50 @@ test("picks up documents and folders added or removed while running", async () =
   await waitFor(() => model.inspect("plans/next.md") === undefined)
   write({ "plans/next.md": "# Next\n\nReplace the gasket." })
   await until(model, "plans/next.md", () => true)
+  model.close()
+})
+
+test("a folder removed and made again within one burst goes on being followed", async () => {
+  write({ "burst/one.md": "# One" })
+  const model = await started()
+
+  fs.rmSync(path.join(root, "burst"), { recursive: true })
+  write({ "burst/one.md": "# One" })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  await model.settled()
+  write({ "burst/two.md": "# Two" })
+  await until(model, "burst/two.md", () => true)
+  model.close()
+})
+
+test("a folder moved aside and made again goes on being followed, its deeper folders too", async () => {
+  write({ "aside/deep/one.md": "# One" })
+  const model = await started()
+
+  fs.renameSync(path.join(root, "aside"), path.join(root, "aside-old"))
+  write({ "aside/deep/one.md": "# One" })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  await model.settled()
+  write({ "aside/deep/two.md": "# Two" })
+  await until(model, "aside/deep/two.md", () => true)
+  model.close()
+})
+
+test("a folder moved aside and made again is heard, its deeper folders too, once watched anew", async () => {
+  write({ "swapped/deep/one.md": "# One" })
+  const model = await started()
+  const heard: string[] = []
+  model.listenFolders((dir) => heard.push(path.relative(root, dir)))
+
+  fs.renameSync(path.join(root, "swapped"), path.join(root, "swapped-old"))
+  write({ "swapped/deep/one.md": "# One" })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  await model.settled()
+
+  assert.deepEqual(
+    ["swapped", "swapped/deep"].map((dir) => heard.includes(dir)),
+    [true, true],
+  )
   model.close()
 })
 
@@ -1023,6 +1068,19 @@ test("a moved document asked for at its new place before Folio indexes it keeps 
     read.blocks.map((block) => block.id),
   )
   assert.equal(model.reads.get("early/b.md")?.blocks[paragraph.id]?.version, versionOf(paragraph))
+  model.close()
+})
+
+test("an empty text read of a document not indexed yet is never kept as one of its versions", async () => {
+  const model = await started()
+  write({ "fresh/new.md": "# Fresh\n\nFilled.\n" })
+
+  assert.deepEqual(model.blocksReady(path.join(root, "fresh/new.md"), ""), [])
+  await until(model, "fresh/new.md", (found) => found.blocks.length > 0)
+  assert.deepEqual(
+    (await model.history.versions("fresh/new.md")).map(({ id }) => id),
+    [blobId("# Fresh\n\nFilled.\n")],
+  )
   model.close()
 })
 

@@ -5,10 +5,11 @@
 
 import fs from "node:fs"
 import path from "node:path"
-import { isMap, isSeq, parseDocument, visit } from "yaml"
+import { isMap, isSeq, parseDocument } from "yaml"
 import { guarded } from "./failures.ts"
 import { isPruned } from "./files.ts"
 import {
+  aliasLine,
   type Field,
   type KindDefinition,
   kindDefinition,
@@ -16,6 +17,7 @@ import {
   type Read,
   readFields,
   within,
+  yamlReason,
 } from "./kinds.ts"
 import type { Model } from "./model.ts"
 
@@ -65,6 +67,7 @@ export interface Layered {
 /** A part of the folder: the checks health leaves out there, and those whose problems count as errors. */
 interface HealthScope {
   where: RegExp[]
+  globs: string[]
   skip: "all" | string[]
   error: "all" | string[]
 }
@@ -526,9 +529,7 @@ function read(urlPath: string, model: Model): Declaration {
 
     if (parsed.errors.length > 0) {
       const [error] = parsed.errors
-      // The parser places the fault within the fence; the problem's line places it in the file.
-      const reason = error.message.split("\n")[0].replace(/ at line \d+, column \d+:?$/, "")
-      at(error.linePos?.[0].line ?? 1, `The declaration cannot be read: ${reason}`)
+      at(error.linePos?.[0].line ?? 1, `The declaration cannot be read: ${yamlReason(error)}`)
       continue
     }
 
@@ -760,21 +761,6 @@ function fenceLineOf(
   return body.slice(0, offset).split("\n").length
 }
 
-function aliasLine(parsed: ReturnType<typeof parseDocument>, body: string): number {
-  let offset = 0
-
-  visit(parsed, {
-    Alias(_, node) {
-      if (node.resolve(parsed) === undefined) {
-        offset = node.range?.[0] ?? 0
-        return visit.BREAK
-      }
-    },
-  })
-
-  return body.slice(0, offset).split("\n").length
-}
-
 function ruleDefinition(
   name: string,
   value: unknown,
@@ -815,9 +801,11 @@ export const CHECKS = [
   "loop",
   "diagram",
   "chart",
+  "component",
   "query",
   "data",
   "declaration",
+  "frontmatter",
   "field",
   "rule",
   "view",
@@ -848,7 +836,12 @@ function healthScope(value: unknown): HealthScope | string {
     ? skipped.wrong
     : "wrong" in errors
       ? errors.wrong
-      : { where: places, skip: skipped.kinds, error: errors.kinds }
+      : {
+          where: places,
+          globs: [where].flat() as string[],
+          skip: skipped.kinds,
+          error: errors.kinds,
+        }
 }
 
 function checksOf(value: unknown, verb: string): { kinds: "all" | string[] } | { wrong: string } {

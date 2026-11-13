@@ -1,8 +1,9 @@
 # Folio
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.5.1-blue.svg)](https://www.npmjs.com/package/@jakubro/folio)
+[![Version](https://img.shields.io/badge/version-0.6.0-blue.svg)](https://www.npmjs.com/package/@jakubro/folio)
 [![Status](https://img.shields.io/badge/status-actively_developed-green.svg)](#)
+[![Folio MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/jakubro/folio/badges/score.svg)](https://glama.ai/mcp/servers/jakubro/folio)
 
 **A live view of a folder of markdown and data.** Point Folio at a folder and read it in your browser: every page rendered with GitHub-flavoured markdown, math, highlighted code and diagrams, every page current the moment you save it, and the folder known as a whole - what you have not read yet, which figures no longer match their data, what links where and what is broken.
 
@@ -31,6 +32,7 @@ Folio keeps a model of the whole folder:
 
 - **What is new to you.** Folio remembers what you have read. Reopen a page and every block added, changed or removed since is marked - a table by its rows, a list by its items, code by its lines - the old wording a click away, and the tree points at every document that moved.
 - **Data files and data in documents.** CSV, JSON, Parquet, SQLite and other data files open as tables and trees, with each column's spread under its header and, for any filter, what sets its records apart from the rest. A document embeds a table, a chart or a single value from them, or a SQL query across them, and each one redraws when its data changes.
+- **Components.** A ` ```component ` fence is drawn by a script from a folder Folio is started with - a calendar, a timeline, a form - from the data the fence names, and gets the new data each time it changes. Markdown a component hands back draws as it does on a page, and what it asks to change leaves the page as an event for a browser extension; Folio writes nothing.
 - **Tables that sort and filter.** Tables written in a page, embedded from data or opened from a data file sort by several columns and filter by text, whole values, patterns or several values at once, the filters joined by *and* or *or*. None of it touches the file, and the view lives in the page's address.
 - **Figures checked against their data.** Tie a number in your prose to the data it quotes, and Folio flags it the moment the data disagrees.
 - **Folder conventions and health.** Declare kinds of documents and rules as queries in a `FOLIO.md`. One health view - and `folio check` in CI - lists every broken link, missing include, failing query and broken rule.

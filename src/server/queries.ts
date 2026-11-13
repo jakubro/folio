@@ -44,15 +44,40 @@ export interface Matched extends Reference {
 }
 
 /** Binds a table of the folder's documents, `folio.<name>` or `kind.<name>`, to a view for the query. */
-export type Documents = (schema: "folio" | "kind", name: string) => Promise<string>
+type Documents = (schema: "folio" | "kind", name: string) => Promise<string>
 
 interface Argument {
   name: string
   expression: Record<string, unknown>
 }
 
-interface Runner {
+export interface Runner {
   runAndReadAll(sql: string, values?: string[]): Promise<{ getRowsJS(): unknown[][] }>
+}
+
+interface Planning {
+  documents?: Documents
+  reserve?: (readers: number) => void
+  absolute?: boolean
+  walks?: Walks
+  /** Only what the query reads: nothing is bound and no SQL rebuilt, so only parsing needs the engine. */
+  filesOnly?: boolean
+}
+
+interface Walked {
+  at: string
+  left: number
+  files: Omit<Matched, "part">[]
+  subdirs: string[]
+  linked: boolean
+  /** Read while the folder model watched it and with no link the pattern matches, whose target it never hears. */
+  trusted: boolean
+  identity: string | undefined
+}
+
+interface Kept {
+  dirs: Map<string, Walked>
+  stale: Set<string>
 }
 
 const READERS = new Set([
@@ -69,6 +94,9 @@ const READERS = new Set([
 const GENERATORS = new Set(["range", "generate_series", "unnest"])
 const SCHEME = /^[a-z][a-z\d+.-]*:/i
 const PATTERN = /[*?]/
+const PARSED = new Map<string, string>()
+const PARSED_KEPT = 256
+const WALKS_KEPT = 64
 /** `JSON.rawJSON`: in every supported Node, though not yet in TypeScript's library. */
 export const RAW_JSON = JSON as unknown as { rawJSON(text: string): unknown }
 
@@ -82,14 +110,9 @@ export async function plan(
   root: string,
   folder: string,
   source: Source,
-  documents?: Documents,
-  reserve?: (readers: number) => void,
-  absolute = false,
-): Promise<{ sql: string; files: string[]; documents: string[]; dirs: string[] }> {
-  const [[serialized]] = (
-    await runner.runAndReadAll("select json_serialize_sql(?::varchar)", [sql])
-  ).getRowsJS()
-  const tree = treeOf(serialized)
+  { documents, reserve, absolute = false, walks, filesOnly = false }: Planning = {},
+): Promise<{ sql: string; files: string[]; documents: string[]; dirs: string[]; linked: boolean }> {
+  const tree = treeOf(await parsed(runner, sql))
 
   if (tree.error && !/only select/i.test(tree.error_message)) {
     throw new Error(tree.error_message)
@@ -104,6 +127,7 @@ export async function plan(
   const files = new Set<string>()
   const tables = new Set<string>()
   const dirs = new Set<string>()
+  let linked = false
   // The visit below is synchronous, and a walk of a large folder must not hold up the server.
   const walked = new Map(
     await Promise.all(
@@ -111,7 +135,9 @@ export async function plan(
         async (name) =>
           [
             name,
-            await matches(name, root, folder, absolute).catch((error: unknown) => ({ error })),
+            await matches(name, root, folder, absolute, walks).catch((error: unknown) => ({
+              error,
+            })),
           ] as const,
       ),
     ),
@@ -122,6 +148,8 @@ export async function plan(
     if ("error" in found) {
       throw found.error
     }
+
+    linked ||= found.linked
 
     for (const dir of found.dirs) {
       dirs.add(dir)
@@ -157,6 +185,7 @@ export async function plan(
       })
     } else if (record.type === "BASE_TABLE" && fileLike(record)) {
       const reference = resolve(String(record.table_name), root, folder, absolute)
+      linked ||= viaLink(String(record.table_name), reference, root, folder, absolute)
       files.add(relative(root, reference.file))
       bindings.push(async () => {
         const bound = await source(reference, String(record.table_name))
@@ -234,7 +263,7 @@ export async function plan(
             inline += files.length
           }
 
-          if (batched) {
+          if (batched && !filesOnly) {
             bindings.push(async () => {
               const readers: string[] = []
 
@@ -262,6 +291,7 @@ export async function plan(
           }
         } else {
           const reference = resolve(literal.text, root, folder, absolute)
+          linked ||= viaLink(literal.text, reference, root, folder, absolute)
           files.add(relative(root, reference.file))
           literal.text = reference.file
 
@@ -284,13 +314,188 @@ export async function plan(
     await bind()
   }
 
-  const [[rebuilt]] = (
-    await runner.runAndReadAll("select json_deserialize_sql(json(?::varchar))", [
-      JSON.stringify(tree),
-    ])
-  ).getRowsJS()
+  const [[rebuilt]] = filesOnly
+    ? [[""]]
+    : (
+        await runner.runAndReadAll("select json_deserialize_sql(json(?::varchar))", [
+          JSON.stringify(tree),
+        ])
+      ).getRowsJS()
 
-  return { sql: String(rebuilt), files: [...files], documents: [...tables], dirs: [...dirs] }
+  return {
+    sql: String(rebuilt),
+    files: [...files],
+    documents: [...tables],
+    dirs: [...dirs],
+    linked,
+  }
+}
+
+/** Whether a name reached its file through a link, whose target no change in the folders read is heard for. */
+function viaLink(
+  name: string,
+  { file }: Reference,
+  root: string,
+  folder: string,
+  absolute: boolean,
+): boolean {
+  const asked = absolute ? fromRoot(root, name) : name
+  const written = asked.startsWith("/") ? path.join(root, asked) : path.resolve(folder, asked)
+  return file !== written && file !== written.slice(0, written.lastIndexOf("#"))
+}
+
+/** Every pattern's walk, kept: a folder is read again once a change in it is heard, or whenever unwatched. */
+export class Walks {
+  readonly #watched: (dir: string) => boolean
+  readonly #kept = new Map<string, Kept>()
+  readonly #turns = new Map<string, Promise<void>>()
+
+  constructor(watched: (dir: string) => boolean) {
+    this.#watched = watched
+  }
+
+  heard(dir: string): void {
+    for (const { dirs, stale } of this.#kept.values()) {
+      if (dirs.has(dir)) {
+        stale.add(dir)
+      }
+    }
+  }
+
+  /** Walks of one pattern from one folder take turns, so none reads a walk another has only half done. */
+  walk(
+    pattern: string,
+    root: string,
+    start: string,
+    at: string,
+    depth: number,
+  ): Promise<{ files: Omit<Matched, "part">[]; dirs: string[]; linked: boolean }> {
+    const key = `${pattern}\0${start}`
+    const turn = (this.#turns.get(key) ?? Promise.resolve()).then(() =>
+      this.#walkNow(key, pattern, root, start, at, depth),
+    )
+    const settled = turn.then(
+      () => {},
+      () => {},
+    )
+    this.#turns.set(key, settled)
+    void settled.then(() => {
+      if (this.#turns.get(key) === settled) {
+        this.#turns.delete(key)
+      }
+    })
+
+    return turn
+  }
+
+  async #walkNow(
+    key: string,
+    pattern: string,
+    root: string,
+    start: string,
+    at: string,
+    depth: number,
+  ): Promise<{ files: Omit<Matched, "part">[]; dirs: string[]; linked: boolean }> {
+    let kept = this.#kept.get(key)
+
+    if (kept) {
+      this.#kept.delete(key)
+    } else {
+      kept = { dirs: new Map(), stale: new Set([start]) }
+      kept.dirs.set(start, {
+        at,
+        left: depth,
+        files: [],
+        subdirs: [],
+        linked: false,
+        trusted: false,
+        identity: undefined,
+      })
+    }
+
+    this.#kept.set(key, kept)
+
+    for (const old of this.#kept.keys()) {
+      if (this.#kept.size <= WALKS_KEPT) {
+        break
+      }
+
+      this.#kept.delete(old)
+    }
+
+    const regex = globOf(pattern)
+
+    for (const [dir, walked] of [...kept.dirs]) {
+      const current = kept.dirs.get(dir) === walked
+      const unheard = walked.trusted && this.#watched(dir) && !kept.stale.has(dir)
+
+      if (current && !unheard) {
+        kept.stale.delete(dir)
+        await this.#read(kept, dir, walked.at, walked.left, regex, root)
+      }
+    }
+
+    const files = [...kept.dirs.values()].flatMap((walked) => walked.files)
+    return {
+      files: files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+      dirs: [...kept.dirs.keys()],
+      linked: [...kept.dirs.values()].some((walked) => walked.linked),
+    }
+  }
+
+  async #read(
+    kept: Kept,
+    dir: string,
+    at: string,
+    left: number,
+    regex: RegExp,
+    root: string,
+  ): Promise<void> {
+    const { dirs } = kept
+    const watched = this.#watched(dir)
+    const before = dirs.get(dir)
+    const linked: string[] = []
+    const walked: Walked = {
+      at,
+      left,
+      files: [],
+      subdirs: [],
+      linked: false,
+      trusted: false,
+      identity: await identityOf(dir),
+    }
+    dirs.set(dir, walked)
+    await visitDir(dir, at, left, regex, root, walked.files, walked.subdirs, linked)
+    walked.linked = linked.length > 0
+    walked.trusted = watched && !walked.linked
+
+    for (const sub of before?.subdirs ?? []) {
+      // A folder moved away and made again under its name is another folder, walked again whole.
+      const replaced =
+        walked.subdirs.includes(sub) && dirs.get(sub)?.identity !== (await identityOf(sub))
+
+      if (!walked.subdirs.includes(sub) || replaced) {
+        for (const held of [...dirs.keys()]) {
+          if (held === sub || held.startsWith(`${sub}${path.sep}`)) {
+            dirs.delete(held)
+          }
+        }
+      }
+    }
+
+    for (const sub of walked.subdirs) {
+      if (!dirs.has(sub)) {
+        await this.#read(
+          kept,
+          sub,
+          `${at ? `${at}/` : ""}${path.basename(sub)}`,
+          left - 1,
+          regex,
+          root,
+        )
+      }
+    }
+  }
 }
 
 /**
@@ -329,7 +534,8 @@ async function matches(
   root: string,
   folder: string,
   absolute: boolean,
-): Promise<{ files: Matched[]; dirs: string[] }> {
+  walks?: Walks,
+): Promise<{ files: Matched[]; dirs: string[]; linked: boolean }> {
   if (SCHEME.test(name)) {
     throw new Unreadable(`Only the served folder's files can be read, not ${name}.`)
   }
@@ -354,34 +560,32 @@ async function matches(
   const files: Matched[] = []
   const dirs: string[] = []
   const walk = async (dir: string, at: string, left: number): Promise<void> => {
+    const subdirs: string[] = []
     dirs.push(dir)
+    await visitDir(dir, at, left, regex, root, files, subdirs)
 
-    const dirents = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [])
-
-    for (const dirent of dirents.filter(({ name: entry }) => !isPruned(entry))) {
-      const within = at ? `${at}/${dirent.name}` : dirent.name
-
-      if (dirent.isDirectory()) {
-        if (left > 1) {
-          await walk(path.join(dir, dirent.name), within, left - 1)
-        }
-
-        continue
-      }
-
-      const real = regex.test(within) ? confine(root, within) : undefined
-      const format = real && formatOf(real)
-
-      const file = real ? await fs.promises.stat(real).catch(() => undefined) : undefined
-
-      if (real && format && format !== "sql" && file?.isFile()) {
-        files.push({ file: real, format, part, path: within })
-      }
+    for (const sub of subdirs) {
+      await walk(sub, `${at ? `${at}/` : ""}${path.basename(sub)}`, left - 1)
     }
   }
 
   if (start && (await fs.promises.stat(start)).isDirectory()) {
-    await walk(start, segments.slice(0, fixed).join("/"), depth)
+    const at = segments.slice(0, fixed).join("/")
+
+    if (walks) {
+      const walked = await walks.walk(pattern, root, start, at, depth)
+      const found = walked.files.map((match) => ({ ...match, part }))
+      return {
+        files: found,
+        dirs: walked.dirs,
+        linked: walked.linked || linkedOf(root, start, at, found),
+      }
+    }
+
+    await walk(start, at, depth)
+    for (const found of files) {
+      found.part = part
+    }
   } else {
     // A pattern whose fixed folder is not there yet is heard through the nearest folder that is.
     for (let at = fixed - 1; at >= 0; at--) {
@@ -394,7 +598,89 @@ async function matches(
     }
   }
 
-  return { files: files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)), dirs }
+  const sorted = files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+  return {
+    files: sorted,
+    dirs,
+    linked: start ? linkedOf(root, start, segments.slice(0, fixed).join("/"), sorted) : false,
+  }
+}
+
+function linkedOf(root: string, start: string, at: string, found: Matched[]): boolean {
+  return (
+    start !== path.join(root, at) ||
+    found.some(({ file, path: within }) => file !== path.join(root, within))
+  )
+}
+
+async function visitDir(
+  dir: string,
+  at: string,
+  left: number,
+  regex: RegExp,
+  root: string,
+  files: Omit<Matched, "part">[],
+  subdirs: string[],
+  linked: string[] = [],
+): Promise<void> {
+  const dirents = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [])
+
+  for (const dirent of dirents.filter(({ name: entry }) => !isPruned(entry))) {
+    const within = at ? `${at}/${dirent.name}` : dirent.name
+
+    if (dirent.isDirectory()) {
+      if (left > 1) {
+        subdirs.push(path.join(dir, dirent.name))
+      }
+
+      continue
+    }
+
+    const real = regex.test(within) ? confine(root, within) : undefined
+    const format = real && formatOf(real)
+    const file = real ? await fs.promises.stat(real).catch(() => undefined) : undefined
+
+    if (real && format && format !== "sql" && file?.isFile()) {
+      files.push({ file: real, format, path: within })
+
+      if (real !== path.join(dir, dirent.name)) {
+        linked.push(real)
+      }
+    } else if (dirent.isSymbolicLink() && regex.test(within)) {
+      linked.push(path.join(dir, dirent.name))
+    }
+  }
+}
+
+async function identityOf(dir: string): Promise<string | undefined> {
+  const stat = await fs.promises.stat(dir).catch(() => undefined)
+  return stat && `${stat.dev}:${stat.ino}`
+}
+
+/** Kept by text, since parsing takes an engine connection. */
+async function parsed(runner: Runner, sql: string): Promise<string> {
+  const held = PARSED.get(sql)
+
+  if (held !== undefined) {
+    PARSED.delete(sql)
+    PARSED.set(sql, held)
+    return held
+  }
+
+  const [[serialized]] = (
+    await runner.runAndReadAll("select json_serialize_sql(?::varchar)", [sql])
+  ).getRowsJS()
+  PARSED.set(sql, String(serialized))
+
+  for (const old of PARSED.keys()) {
+    if (PARSED.size <= PARSED_KEPT) {
+      break
+    }
+
+    PARSED.delete(old)
+  }
+
+  return String(serialized)
 }
 
 /** Exactly the names the visit in `plan` reads through a pattern, each of which it looks up walked. */

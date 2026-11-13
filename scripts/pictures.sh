@@ -4,7 +4,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-GATE=(scripts/run-capped.sh 15 8192 131072 -- npx playwright test "$@")
+# A fifth of the cores draw at once, as playwright.config.ts sets, each with a Folio and a browser of its own.
+WORKERS=$(($(nproc) / 5 > 1 ? $(nproc) / 5 : 1))
+GATE=(scripts/run-capped.sh 15 $((WORKERS * 2048 > 8192 ? WORKERS * 2048 : 8192)) 131072 -- npx playwright test "$@")
 
 # The release gate already runs inside the image, and a machine known to draw as it does may skip it.
 if [[ ${FOLIO_DRAW_HERE:-} == 1 ]]; then

@@ -26,4 +26,4 @@ The pictures show an invented folder: a small network of weather stations, with 
 
 **Copy as markdown** - the copy button beside the download button copies the page as markdown, as it shows: included sections in place, embedded values filled in, tables and query results as markdown tables in the order their views show them. The copy button in a block's margin copies that block, a heading its whole section.
 
-**Freeze** - the download button saves the page as one HTML file, with its diagrams, charts, values and tables as they are now. It opens anywhere, offline and without Folio, and its tables still sort and filter.
+**Freeze** - the download button saves the page as one HTML file, with its diagrams, charts, components, values and tables as they are now. It opens anywhere, offline and without Folio, and its tables still sort and filter.

@@ -10,6 +10,7 @@ import type { Embedded } from "./data.ts"
 import { isInside } from "./files.ts"
 import { type Commit, commits, gitText, repositoryOf, tracked } from "./git.ts"
 import type { Log } from "./http.ts"
+import { writers } from "./writers.ts"
 
 export interface Version {
   /** The git blob id of the version's text, whichever way it was seen. */
@@ -59,7 +60,7 @@ const DAY_MS = 86_400_000
 const KEEP_EVERY_MS = 30 * DAY_MS
 const VALUE_ROWS = 200
 const VALUES_KEPT = 1000
-const BLOCK_VERSIONS = 200
+export const BLOCK_VERSIONS = 200
 const COMPARED = 2000
 const LOG = "saves.log"
 const PER_DOCUMENT = 500
@@ -133,13 +134,12 @@ export class History {
       })
     }
 
-    const now = await fs.promises.readFile(file, "utf8").catch(() => undefined)
+    const now = await writers.settled(file)
 
     // What is on disk is the newest version, whatever the clocks say.
     if (now !== undefined) {
-      const stat = await fs.promises.stat(file)
-      const newest = Math.max(stat.mtimeMs, ...events.map(({ at }) => at))
-      events.push({ id: blobId(now), at: newest, seen: ["file"] })
+      const newest = Math.max(now.at, ...events.map(({ at }) => at))
+      events.push({ id: blobId(now.text), at: newest, seen: ["file"] })
     }
 
     return collapse(events).reverse()
@@ -165,7 +165,7 @@ export class History {
       return undefined
     }
 
-    const now = await fs.promises.readFile(file, "utf8").catch(() => undefined)
+    const now = (await writers.settled(file))?.text
 
     if (now !== undefined && blobId(now) === id) {
       return now

@@ -4,7 +4,7 @@
 
 ![A station's page with an amber bar beside a reworded paragraph and its earlier wording open below it, a red tick where a section was removed and a green bar beside a new paragraph](../images/marks.png)
 
-**When the data changes** - a value, table, chart or query result whose data changed since you read it is marked like any changed block, and so is a block an include brings in from a file that changed.
+**When the data changes** - a value, table, chart, component or query result whose data changed since you read it is marked like any changed block, and so is a block an include brings in from a file that changed.
 
 ![The report after a new day of readings, with amber bars beside the sentence holding a value, the query's result, the table and the chart](../images/data-changed.png)
 

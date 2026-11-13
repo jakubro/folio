@@ -99,7 +99,7 @@ test("only what a declaration places is related, short, lead-in and repeated blo
     ].sort(),
   )
 
-  first.close()
+  await first.close()
   const { related: again, embedded: anew } = relating(model)
   await ready(again, "kept/a.md")
 
@@ -147,7 +147,7 @@ test("a block relates only within its own declaration's documents, a word-for-wo
   const empty = first.near("empty/short.md", [])
   assert.ok(empty.asked && empty.state.status === "ready", "nothing to relate is ready, not 0 of 0")
 
-  first.close()
+  await first.close()
   const file = path.join(model.store, "related", "embeddinggemma-300m-5090578d.vec")
   const whole = fs.statSync(file).size
   fs.appendFileSync(file, Buffer.alloc(100))
